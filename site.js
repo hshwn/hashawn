@@ -21,7 +21,6 @@
     el._dy = (s && !phone()) ? s.dy : 0;
     el.style.setProperty('--dx', `${el._dx}px`);
     el.style.setProperty('--dy', `${el._dy}px`);
-    el.addEventListener('animationend', () => el.classList.add('settled'), { once: true });
 
     let start = null, moved = false, ox = 0, oy = 0;
 
@@ -60,10 +59,13 @@
 
     // a drag must not count as a click
     el.addEventListener('click', (e) => {
-      if (el._swallow) { e.preventDefault(); el._swallow = false; return; }
-      if (el.classList.contains('poster')) { e.preventDefault(); open(el); }
+      if (el._swallow) { e.preventDefault(); el._swallow = false; }
     });
     el.addEventListener('dragstart', (e) => e.preventDefault());
+  });
+
+  document.querySelectorAll('.poster').forEach((el) => {
+    el.addEventListener('click', (e) => { e.preventDefault(); open(el); });
   });
 
   // lightbox
@@ -84,5 +86,4 @@
     addEventListener('keydown', (e) => { if (e.key === 'Escape' && !box.hidden) close(); });
   }
 
-  requestAnimationFrame(() => document.body.classList.add('ready'));
 })();
