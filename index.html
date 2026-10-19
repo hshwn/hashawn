@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>hashawn!</title>
+<meta name="description" content="hashawn — posters, stickers, and Nardo.">
+<meta name="theme-color" content="#000000">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@800;900&display=swap">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+
+<main class="sheet" id="sheet">
+
+  <!-- identity -->
+  <div class="sticker logo" data-id="logo" style="--x:50%; --y:22%; --w:58%; --rot:-3deg; --i:0">
+    <svg viewBox="0 0 906 205" aria-label="hashawn!">
+      <use href="#logo" class="halo"/>
+      <use href="#logo" class="key"/>
+      <use href="#logo" class="ink"/>
+    </svg>
+  </div>
+
+  <!-- posters -->
+  <a class="sticker poster" data-id="poupees" href="assets/poupees.jpg" data-title="Les Poupées de Paris" style="--x:20%; --y:62%; --w:26%; --rot:5deg; --i:1">
+    <img src="assets/poupees-thumb.jpg" alt="Les Poupées de Paris, a sheet of twelve showbiz badges" width="640" height="558">
+  </a>
+  <a class="sticker poster" data-id="harvest" href="assets/harvest.jpg" data-title="Harvest Everything!" style="--x:50%; --y:70%; --w:20%; --rot:-4deg; --i:2">
+    <img src="assets/harvest-thumb.jpg" alt="Harvest Everything, a doodle poster" width="640" height="905">
+  </a>
+  <a class="sticker poster" data-id="ram" href="assets/ram.jpg" data-title="RAM!" style="--x:80%; --y:63%; --w:22%; --rot:3deg; --i:3">
+    <img src="assets/ram-thumb.jpg" alt="RAM!, a sticker poster of a pile of rams" width="640" height="902">
+  </a>
+
+  <!-- links -->
+  <a class="sticker pill nardo" data-id="nardo" href="nardo/" style="--x:82%; --y:30%; --w:17%; --rot:7deg; --i:4">
+    <svg class="ic"><use href="#i-rays"/></svg><span>nardo</span>
+  </a>
+  <a class="sticker pill ig" data-id="ig" href="https://instagram.com/hashawnnn" target="_blank" rel="noopener" style="--x:17%; --y:36%; --w:19%; --rot:-8deg; --i:5">
+    <svg class="ic"><use href="#i-ig"/></svg><span>@hashawnnn</span>
+  </a>
+  <a class="sticker pill mail" data-id="mail" href="mailto:hi@hashawn.com" style="--x:36%; --y:92%; --w:13%; --rot:4deg; --i:6">
+    <svg class="ic"><use href="#i-mail"/></svg><span>mail</span>
+  </a>
+  <a class="sticker pill gh" data-id="gh" href="https://github.com/hshwn" target="_blank" rel="noopener" style="--x:66%; --y:93%; --w:13%; --rot:-5deg; --i:7">
+    <svg class="ic"><use href="#i-github"/></svg><span>github</span>
+  </a>
+
+  <!-- the little one -->
+  <div class="sticker mark" data-id="mark" style="--x:92%; --y:90%; --w:6%; --rot:12deg; --i:8">
+    <svg viewBox="0 0 217 200" aria-hidden="true">
+      <use href="#hmark" class="halo"/>
+      <use href="#hmark" class="key"/>
+      <use href="#hmark" class="ink"/>
+    </svg>
+  </div>
+
+</main>
+
+<div class="lightbox" id="lightbox" hidden>
+  <img alt="">
+  <p class="cap"></p>
+</div>
+
+<script src="sprite.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

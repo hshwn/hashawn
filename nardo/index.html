@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nardo</title>
+<meta name="description" content="Nardo — a desktop layer for macOS. Hold Caps Lock and the whole Mac answers.">
+<meta name="theme-color" content="#000000">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&display=swap">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+
+<main class="study">
+
+  <nav class="topbar" aria-label="Home">
+    <a class="sticker mark" href="../" aria-label="hashawn! home">
+      <svg viewBox="0 0 217 200" aria-hidden="true"><use href="#hmark" class="halo"/><use href="#hmark" class="key"/><use href="#hmark" class="ink"/></svg>
+    </a>
+    <a class="sticker pill ig" href="https://instagram.com/hashawnnn" target="_blank" rel="noopener"><svg class="ic"><use href="#i-ig"/></svg><span>@hashawnnn</span></a>
+  </nav>
+
+  <header class="nardo-hero" style="--role:var(--nardo)">
+    <span class="chip big"><svg><use href="#i-rays"/></svg></span>
+    <div>
+      <h1>Nardo</h1>
+      <p class="sub">A desktop layer for macOS. Hold Caps Lock, the whole Mac answers.</p>
+    </div>
+    <div class="meta">macOS 26 · Swift<br>Solo, 2026</div>
+  </header>
+
+  <section class="sec" id="layer" style="--role:var(--nardo)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-rays"/></svg></span>
+        <h2 class="name" style="margin-top:12px">The layer</h2>
+        <p>Not a feature pile. One key, Caps Lock, and everything composes as layers on the same stacked surface: bar, cards, strip, sheet. A card tears off into a window. The mini browser grows into the full browser on Enter. Glance, card, window, app, without switching.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ hold</span><span class="tag">⇪ + 1…9 workspaces</span><span class="tag">tear-off cards</span><span class="tag">progressive commitment</span></div>
+    </div>
+    <div class="media">screen recording · the layer</div>
+  </section>
+
+  <section class="sec flip" id="held" style="--role:var(--amber)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-hand"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Held items</h2>
+        <p>Hold the noun, type the verb. Find a file, lift it above the bar, then type at it: <em>under 100mb</em>, <em>mail susan</em>, <em>done</em>. The thing stays held across every step. Modules add verbs, so there is nothing to open and no app to switch to.</p>
+      </div>
+      <div class="tags"><span class="tag">noun → verb</span><span class="tag">verbs typed by noun</span><span class="tag">modules = verbs</span></div>
+    </div>
+    <div class="media">screen recording · held items</div>
+  </section>
+
+  <section class="sec" id="tiling" style="--role:var(--sky)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-grid"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Animated tiling</h2>
+        <p>Other apps' real windows move on a spring, every frame, through the Accessibility API. No snapshots, no stand-ins, no SIP tricks. Auto-tile per display, split and master layouts, workspaces that carry windows with them.</p>
+      </div>
+      <div class="tags"><span class="tag">120 Hz</span><span class="tag">AX, off main</span><span class="tag">no SIP off</span></div>
+    </div>
+    <div class="media">screen recording · tiling</div>
+  </section>
+
+  <section class="sec flip" id="terminal" style="--role:var(--coal)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-term"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Terminal</h2>
+        <p>libghostty under a bare grid. Shells live in a small daemon, so they survive rebuilds and quits. Prompt marks turn output into blocks you can jump, copy and drag out. A card taps you when a long command finishes out of sight.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ T</span><span class="tag">pty daemon</span><span class="tag">OSC 133 blocks</span><span class="tag">⌘ x-ray</span></div>
+    </div>
+    <div class="media">screenshot · terminal</div>
+  </section>
+
+  <section class="sec" id="canvas" style="--role:var(--rose)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-pen"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Surface</h2>
+        <p>An infinite canvas on its own engine: nodes and props, reversible ops, branching history, incremental SQLite saves. Boards, ink, notebooks, PDFs. Everything draws from the document, so undo is a jump, not a replay.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ N</span><span class="tag">branching history</span><span class="tag">own engine</span></div>
+    </div>
+    <div class="media">screenshot · canvas</div>
+  </section>
+
+  <section class="sec flip" id="browser" style="--role:var(--mint)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-globe"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Browser</h2>
+        <p>WebKit with Chrome and Firefox extensions. Spaces with their own sign-ins, tab trees grouped by site, containers. It starts as a result in the bar and becomes the whole window when you commit.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ B</span><span class="tag">extensions</span><span class="tag">spaces</span></div>
+    </div>
+    <div class="media">screenshot · browser</div>
+  </section>
+
+  <section class="sec" id="cards" style="--role:var(--amber)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-stack"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Cards</h2>
+        <p>Clipboard, calendar, mail, media, calculator, answers. Each is a card in the sheet under the bar, ranked by what you typed. Any card tears off into a window and stays live.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ C</span><span class="tag">⇪ E</span><span class="tag">ranked</span><span class="tag">tear-off</span></div>
+    </div>
+    <div class="media">screenshot · cards</div>
+  </section>
+
+  <section class="sec flip" id="dictation" style="--role:var(--sky)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-mic"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Dictation</h2>
+        <p>A live strip that types as you speak, on device. A swipe keyboard for the trackpad. Both are layers in the same stack, so they sit above whatever you are doing.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ D</span><span class="tag">⇪ K</span><span class="tag">on device</span></div>
+    </div>
+    <div class="media">screen recording · dictation</div>
+  </section>
+
+  <section class="sec" id="brain" style="--role:var(--nardo)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-chip"/></svg></span>
+        <h2 class="name" style="margin-top:12px">One brain</h2>
+        <p>One small on-device model behind every layer: ranking results, tagging words by meaning, hearing, reading what is on screen. Any language. Nothing leaves the Mac.</p>
+      </div>
+      <div class="tags"><span class="tag">multimodal</span><span class="tag">multilingual</span><span class="tag">on device</span></div>
+    </div>
+    <div class="media">diagram · one brain</div>
+  </section>
+
+</main>
+
+
+<script src="../sprite.js"></script>
+<script src="../site.js"></script>
+</body>
+</html>
