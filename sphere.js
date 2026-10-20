@@ -72,7 +72,6 @@ window.Face = (() => {
     1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y),
     2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x),
     2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)];
-  const qDecay = (q, k) => qNorm([q[0] + (1 - q[0]) * k, q[1] * (1 - k), q[2] * (1 - k), q[3] * (1 - k)]);   // ease toward identity, short way
 
   const create = (canvas, urls, onReady) => {
     const gl = canvas.getContext('webgl2', { antialias: true, alpha: true, premultipliedAlpha: true });
@@ -109,25 +108,24 @@ window.Face = (() => {
       // screen-space pose (springs toward targets)
       x: 0, y: 0, r: 100, tx: 0, ty: 0, tr: 100, vx: 0, vy: 0, vr: 0,
       q: qI(), roll: qI(), moving: false,              // q = how you spun him, roll = the trip's planned turn
-      spinAxis: [0, 1, 0], spinSpeed: 0, free: false, dizzy: false, held: false, lastDrag: 0,
+      w: [0, 0, 0], dizzy: false, held: false, lastDrag: 0,      // w = angular velocity, rad/s
       setRoll(ax, ay, angle) { F.roll = angle ? qAxis(ax, ay, 0, angle) : qI(); },
       squash: 0, squashV: 0,
       eyesShut: false, mouthOpen: false, ready: false,
       snap(x, y, r) { F.x = F.tx = x; F.y = F.ty = y; F.r = F.tr = r; F.vx = F.vy = F.vr = 0; },
       target(x, y, r) { F.tx = x; F.ty = y; F.tr = r; },
-      grab() { F.held = true; F.free = false; F.spinSpeed = 0; F.lastDrag = performance.now(); },
+      grab() { F.held = true; F.w = [0, 0, 0]; F.lastDrag = performance.now(); },
       drag(dx, dy) {                                   // trackball: the surface follows the finger 1:1
         const d = Math.hypot(dx, dy); if (d < 0.01) return;
         const now = performance.now(), dt = Math.max(0.004, (now - F.lastDrag) / 1000); F.lastDrag = now;
-        const axis = [dy / d, dx / d, 0], angle = d / F.r;
-        F.q = qNorm(qMul(qAxis(axis[0], axis[1], 0, angle), F.q));
-        F.spinAxis = axis; F.spinSpeed = angle / dt;
+        const angle = d / F.r;
+        F.q = qNorm(qMul(qAxis(dy / d, dx / d, 0, angle), F.q));
+        const sp = angle / dt; F.w = [dy / d * sp, dx / d * sp, 0];
       },
       release() {
         F.held = false;
-        if (performance.now() - F.lastDrag > 80) F.spinSpeed = 0;   // stopped before letting go: no fling
-        F.free = F.spinSpeed > 0.4;
-        F.dizzy = F.spinSpeed > 9;
+        if (performance.now() - F.lastDrag > 80) F.w = [0, 0, 0];   // stopped before letting go: no fling
+        F.dizzy = Math.hypot(...F.w) > 9;
       },
       poke() { F.squashV = -1.6; },
     };
@@ -140,13 +138,22 @@ window.Face = (() => {
       [F.y, F.vy] = spring(F.y, F.vy, F.ty, dt, 160, 22);
       [F.r, F.vr] = spring(F.r, F.vr, F.tr, dt, 160, 22);
       // the roll itself is planned by the page (setRoll): a whole turn across each trip
-      if (F.free) {                                     // flung: keeps spinning on that axis, slowing down
-        F.q = qNorm(qMul(qAxis(F.spinAxis[0], F.spinAxis[1], 0, F.spinSpeed * dt), F.q));
-        F.spinSpeed *= Math.pow(0.965, dt * 60);
-        if (F.spinSpeed < 2) F.dizzy = false;
-        if (F.spinSpeed < 0.4) { F.free = false; F.spinSpeed = 0; }
-      } else if (!F.held) {                             // at rest: slowly turns back to look at you
-        F.q = qDecay(F.q, Math.min(1, dt * 1.6));
+      if (!F.held) {
+        // roly-poly: the face is the heavy side. outside a ~25° cone a weak pull brings it
+        // toward you; inside, nothing. a fainter pull keeps him upright. light damping = wobble.
+        const M = qToMat(F.q);
+        const f = [M[6], M[7], M[8]], u = [M[3], M[4], M[5]];
+        const th = Math.acos(Math.max(-1, Math.min(1, f[2])));
+        const DEAD = 0.42, K = 16, KUP = 3.5;
+        let tx = 0, ty = 0, tz = 0;
+        if (th > DEAD) { const n = Math.hypot(f[1], f[0]) || 1; const m = K * (th - DEAD); tx += f[1] / n * m; ty += -f[0] / n * m; }
+        tx += -u[2] * KUP; tz += u[0] * KUP;
+        F.w[0] += tx * dt; F.w[1] += ty * dt; F.w[2] += tz * dt;
+        const sp = Math.hypot(F.w[0], F.w[1], F.w[2]);
+        if (sp > 1e-4) F.q = qNorm(qMul(qAxis(F.w[0] / sp, F.w[1] / sp, F.w[2] / sp, sp * dt), F.q));
+        const damp = Math.pow(sp > 6 ? 0.975 : 0.955, dt * 60);
+        F.w[0] *= damp; F.w[1] *= damp; F.w[2] *= damp;
+        if (sp < 2) F.dizzy = false;
       }
       [F.squash, F.squashV] = spring(F.squash, F.squashV, 0, dt, 300, 16);
 
