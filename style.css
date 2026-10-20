@@ -60,11 +60,14 @@ a { color: inherit; text-decoration: none; }
 main { max-width: 1200px; margin: 0 auto; padding: 0 20px 80px; }
 .hero { position: relative; height: 100svh; min-height: 560px; }
 .logo {
-  position: absolute; left: 50%; top: 22%; transform: translate(-50%, -50%);
+  position: fixed; left: 0; top: 0; transform-origin: 0 0;
   width: min(620px, 74vw); height: auto; overflow: visible;
   color: var(--cream); fill: currentColor;
-  z-index: 1;
+  z-index: 40; cursor: pointer;
+  transition: filter 0.2s;
 }
+.logo.small { filter: drop-shadow(0 4px 14px rgba(0,0,0,0.8)); }
+body.locked { overflow: hidden; }
 .pills {
   position: absolute; left: 0; right: 0; bottom: 28px;
   display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px 14px;
@@ -124,7 +127,6 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 20px 80px; }
 @media (max-width: 720px) {
   main { padding: 0 14px 60px; }
   .hero { min-height: 520px; }
-  .logo { width: 90vw; top: 16%; }
   .pills { bottom: 18px; gap: 10px; }
   .pill { font-size: 15px; }
   .grid { grid-template-columns: 1fr; gap: 12px; }

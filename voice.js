@@ -50,31 +50,31 @@ window.Voice = (() => {
       osc.connect(bp).connect(g).connect(mix);
     }
     const g = ctx.createGain(); env(g, t, 0.012, loud, dur);
-    mix.connect(g).connect(master);
+    mix.connect(g).connect(line);
     osc.start(t); osc.stop(t + dur + 0.02);
   };
   // plosive: a click of noise plus a tiny low thump
   const plosive = (t, c, f0, loud) => {
     const n = noise(); const hp = ctx.createBiquadFilter(); hp.type = 'bandpass'; hp.frequency.value = 'ptk'.includes(c) ? 2600 : 1200; hp.Q.value = 1.2;
     const g = ctx.createGain(); env(g, t, 0.002, loud * 0.5, 0.028);
-    n.connect(hp).connect(g).connect(master); n.start(t); n.stop(t + 0.04);
+    n.connect(hp).connect(g).connect(line); n.start(t); n.stop(t + 0.04);
     const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(f0 * 0.9, t); o.frequency.exponentialRampToValueAtTime(f0 * 0.5, t + 0.04);
     const g2 = ctx.createGain(); env(g2, t, 0.003, loud * 0.5, 0.045);
-    o.connect(g2).connect(master); o.start(t); o.stop(t + 0.06);
+    o.connect(g2).connect(line); o.start(t); o.stop(t + 0.06);
   };
   // fricative: a hiss, brighter for s/z/c/x, softer for f/h/v/j
   const fric = (t, c, loud, dur) => {
     const n = noise(); const bp = ctx.createBiquadFilter(); bp.type = 'bandpass';
     bp.frequency.value = 'szcx'.includes(c) ? 5200 : 'h' === c ? 1500 : 3000; bp.Q.value = 0.8;
     const g = ctx.createGain(); env(g, t, 0.008, loud * ('h' === c ? 0.25 : 0.4), dur);
-    n.connect(bp).connect(g).connect(master); n.start(t); n.stop(t + dur + 0.02);
+    n.connect(bp).connect(g).connect(line); n.start(t); n.stop(t + dur + 0.02);
   };
   // nasal / liquid: a soft hum an octave down, slightly closed
   const nasal = (t, c, f0, loud, dur) => {
     const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f0 * 1.03, t + dur);
     const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 'mn'.includes(c) ? 700 : 1400;
     const g = ctx.createGain(); env(g, t, 0.01, loud * 0.7, dur);
-    o.connect(lp).connect(g).connect(master); o.start(t); o.stop(t + dur + 0.02);
+    o.connect(lp).connect(g).connect(line); o.start(t); o.stop(t + dur + 0.02);
   };
 
   // ---------- prosody ----------
@@ -118,9 +118,10 @@ window.Voice = (() => {
     return { events: out, seed };
   };
 
-  let current = null;
+  let current = null, line = null;                             // line = this utterance's gain node
   const say = (text, { onChar, onMouth, onEnd } = {}) => {
     stop(); unlock();
+    line = ctx.createGain(); line.connect(master);
     const { events, seed } = plan(text);
     const base = CFG.base * st((seed - 0.5) * 1.5);            // each line sits a hair higher or lower
     const r = 1 / CFG.rate;
@@ -154,7 +155,11 @@ window.Voice = (() => {
     current = me; tick();
     return stop;
   };
-  const stop = () => { if (!current) return; cancelAnimationFrame(current.raf); current = null; };
+  const stop = () => {
+    if (line) { const l = line; line = null; l.gain.setTargetAtTime(0, ctx.currentTime, 0.008); setTimeout(() => l.disconnect(), 80); }
+    if (!current) return; cancelAnimationFrame(current.raf); current = null;
+  };
+  const speaking = () => !!current;
 
-  return { say, stop, unlock, setMuted, get muted() { return muted; }, config: CFG };
+  return { say, stop, unlock, setMuted, speaking, get muted() { return muted; }, config: CFG };
 })();

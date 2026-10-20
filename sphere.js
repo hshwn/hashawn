@@ -111,11 +111,11 @@ window.Face = (() => {
       x: 0, y: 0, r: 100, tx: 0, ty: 0, tr: 100, vx: 0, vy: 0, vr: 0,
       q: qI(), roll: qI(), moving: false,              // q = how you spun him, roll = the trip's planned turn
       w: [0, 0, 0], lambda: 0, dizzy: false, held: false, lastDrag: 0,   // w = angular velocity, rad/s
-      // planned part of the orientation: the trip's turn, then a lean toward whatever he should face
-      setRoll(ax, ay, angle, lax = 0, lay = 0, lean = 0) {
-        const turn = angle ? qAxis(ax, ay, 0, angle) : qI();
-        F.roll = lean ? qMul(qAxis(lax, lay, 0, lean), turn) : turn;
-      },
+      // planned part of the orientation: the trip's one revolution
+      setRoll(ax, ay, angle) { F.roll = angle ? qAxis(ax, ay, 0, angle) : qI(); },
+      // where he should roughly face once everything has settled (unit vector, +z = at you)
+      face: [0, 0, 1],
+      setFace(x, y, z) { const L = Math.hypot(x, y, z) || 1; F.face = [x / L, y / L, z / L]; },
       squash: 0, squashV: 0,
       eyesShut: false, mouthOpen: false, ready: false,
       snap(x, y, r) { F.x = F.tx = x; F.y = F.ty = y; F.r = F.tr = r; F.vx = F.vy = F.vr = 0; },
@@ -173,6 +173,18 @@ window.Face = (() => {
         const sp = Math.hypot(F.w[0], F.w[1], F.w[2]);
         if (sp > 1e-4) F.q = qNorm(qMul(qAxis(F.w[0] / sp, F.w[1] / sp, F.w[2] / sp, sp * dt), F.q));
         if (sp < 2) F.dizzy = false;
+        // settled: a slow, gentle push toward roughly the right direction. stops inside a loose cone.
+        if (sp < 0.15 && !F.moving) {
+          const M = qToMat(F.q), f = [M[6], M[7], M[8]], T = F.face;
+          const c = Math.max(-1, Math.min(1, f[0] * T[0] + f[1] * T[1] + f[2] * T[2]));
+          const ang = Math.acos(c);
+          if (ang > 0.3) {
+            const ax = [f[1] * T[2] - f[2] * T[1], f[2] * T[0] - f[0] * T[2], f[0] * T[1] - f[1] * T[0]];
+            const n = Math.hypot(ax[0], ax[1], ax[2]) || 1;
+            const step = Math.min(0.55, 0.25 + ang * 0.35) * dt;
+            F.q = qNorm(qMul(qAxis(ax[0] / n, ax[1] / n, ax[2] / n, step), F.q));
+          }
+        }
       }
       [F.squash, F.squashV] = spring(F.squash, F.squashV, 0, dt, 300, 16);
 
