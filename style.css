@@ -64,7 +64,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 20px 80px; }
   position: fixed; left: 0; top: 0; transform-origin: 0 0;
   width: min(620px, 74vw); height: auto; overflow: visible;
   color: var(--cream); fill: currentColor;
-  z-index: 46; cursor: pointer;                 /* in front of him: he peeks out from behind the nameplate */
+  z-index: 40; cursor: pointer;                 /* behind him */
   transition: filter 0.2s, opacity 0.15s;
 }
 .logo.small { filter: drop-shadow(0 4px 14px rgba(0,0,0,0.8)); }
