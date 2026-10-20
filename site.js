@@ -256,18 +256,6 @@
       if (e.target.closest('.meta')) return;                 // the caption is not the close target
       if (el.classList.contains('open') && !el._justOpened) closeIt();
     });
-    // process strip: tap a version to see it big; the current one is marked
-    el.querySelectorAll('.strip button').forEach((b) => {
-      b.addEventListener('pointerdown', (e) => e.stopPropagation());
-      b.addEventListener('pointerup', (e) => e.stopPropagation());
-      b.addEventListener('click', (e) => {
-        e.preventDefault(); e.stopPropagation();
-        const big = el.querySelector(':scope > img');
-        if (b.dataset.src !== big.dataset.cur) { big.dataset.cur = b.dataset.src; big.src = b.dataset.src; }
-        el.querySelectorAll('.strip button').forEach((o) => o.classList.toggle('cur', o === b));
-        if (b.dataset.say) say(b.dataset.say);
-      });
-    });
     el.addEventListener('dragstart', (e) => e.preventDefault());
   });
 
