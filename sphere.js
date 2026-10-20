@@ -158,7 +158,7 @@ window.Face = (() => {
         F.yaw += (ly - F.yaw) * Math.min(1, dt * 5);
         F.pitch += (lp - F.pitch) * Math.min(1, dt * 5);
       }
-      [F.squash, F.squashV] = spring(F.squash, F.squashV, 0, dt, 300, 9);
+      [F.squash, F.squashV] = spring(F.squash, F.squashV, 0, dt, 300, 16);
 
       const w = canvas.clientWidth, h = canvas.clientHeight, dpr = Math.min(devicePixelRatio || 1, 3);
       if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
