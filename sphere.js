@@ -178,10 +178,10 @@ window.Face = (() => {
           const M = qToMat(F.q), f = [M[6], M[7], M[8]], T = F.face;
           const c = Math.max(-1, Math.min(1, f[0] * T[0] + f[1] * T[1] + f[2] * T[2]));
           const ang = Math.acos(c);
-          if (ang > 0.3) {
+          if (ang > 0.26) {
             const ax = [f[1] * T[2] - f[2] * T[1], f[2] * T[0] - f[0] * T[2], f[0] * T[1] - f[1] * T[0]];
             const n = Math.hypot(ax[0], ax[1], ax[2]) || 1;
-            const step = Math.min(0.55, 0.25 + ang * 0.35) * dt;
+            const step = Math.min(0.55, 1.1 * (ang - 0.26)) * dt;        // eases out as it reaches the cone
             F.q = qNorm(qMul(qAxis(ax[0] / n, ax[1] / n, ax[2] / n, step), F.q));
           }
         }
