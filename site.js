@@ -35,7 +35,7 @@
   // ---------- geometry ----------
   // the logo lives on top of him in the hero, then shrinks into the top bar on scroll
   // desktop: the lockup runs wall to wall like a poster title; phone: 90% of the width
-  const logoHero = () => { const w = innerWidth, h = hero.getBoundingClientRect().height; const lw = phone() ? w * 0.9 : Math.min(w * 0.8, h * 1.6); return { x: w / 2, y: h * (phone() ? 0.16 : 0.23), w: lw }; };
+  const logoHero = () => { const w = innerWidth, h = hero.getBoundingClientRect().height; const lw = phone() ? w * 0.9 : Math.min(w * 0.7, h * 1.4); return { x: w / 2, y: h * (phone() ? 0.16 : 0.2), w: lw }; };
   const logoTop = () => ({ x: innerWidth / 2, y: phone() ? 30 : 38, w: phone() ? 118 : 170 });
   const LOGO_RATIO = 205 / 906;
   const placeLogo = (e) => {
@@ -51,9 +51,10 @@
   const heroPose = () => {
     const w = innerWidth, h = hero.getBoundingClientRect().height, lg = logoHero();
     const logoBottom = lg.y + lg.w * LOGO_RATIO / 2;
-    // as big as fits between the logo and the pills; his crown tucks 14% of his radius under the logo
-    const r = phone() ? Math.min(w * 0.40, h * 0.26) : Math.min(w * 0.3, h * 0.40, (h - 130 - logoBottom) / 1.86);
-    return { x: w * 0.5, y: logoBottom - r * 0.14 + r, r };
+    // desktop: as big as fits between the logo and the dock, overlapping the letters by a third of his radius
+    const tuck = phone() ? 0.14 : 0.34;
+    const r = phone() ? Math.min(w * 0.40, h * 0.26) : Math.min(w * 0.3, h * 0.55 / 2, (h - 96 - logoBottom) / (2 - tuck));
+    return { x: w * 0.5, y: logoBottom - r * tuck + r, r };
   };
   const cornerPose = () => { const r = phone() ? 44 : 58; return { x: innerWidth - r - (phone() ? 18 : 36), y: innerHeight - r - (phone() ? 18 : 36), r }; };
   // beside the open poster (its box includes the caption): to its left when there's
