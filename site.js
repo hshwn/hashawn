@@ -35,7 +35,7 @@
   // ---------- geometry ----------
   // the logo lives on top of him in the hero, then shrinks into the top bar on scroll
   // desktop: the lockup runs wall to wall like a poster title; phone: 90% of the width
-  const logoHero = () => { const w = innerWidth, h = hero.getBoundingClientRect().height; const lw = phone() ? w * 0.9 : Math.min(w * 0.8, h * 1.6); return { x: w / 2, y: h * (phone() ? 0.16 : 0.2), w: lw }; };
+  const logoHero = () => { const w = innerWidth, h = hero.getBoundingClientRect().height; const lw = phone() ? w * 0.9 : Math.min(w * 0.8, h * 1.6); return { x: w / 2, y: h * (phone() ? 0.16 : 0.23), w: lw }; };
   const logoTop = () => ({ x: innerWidth / 2, y: phone() ? 30 : 38, w: phone() ? 118 : 170 });
   const LOGO_RATIO = 205 / 906;
   const placeLogo = (e) => {
