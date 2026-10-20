@@ -161,6 +161,10 @@ window.Face = (() => {
     let last = performance.now();
     const spring = (p, v, t, dt, k = 220, c = 26) => { const a = (t - p) * k - v * c; v += a * dt; p += v * dt; return [p, v]; };
     const step = (now) => {
+      try { frame(now); } catch (e) { F.error = String(e && e.stack || e); }
+      requestAnimationFrame(step);
+    };
+    const frame = (now) => {
       const dt = Math.min(0.05, (now - last) / 1000); last = now;
       [F.x, F.vx] = spring(F.x, F.vx, F.tx, dt, 160, 22);
       [F.y, F.vy] = spring(F.y, F.vy, F.ty, dt, 160, 22);
@@ -200,7 +204,6 @@ window.Face = (() => {
         gl.uniform2f(U.uViewport, w, h); gl.uniform2f(U.uCenter, F.x, F.y); gl.uniform1f(U.uRadius, F.r); gl.uniform1f(U.uSquash, F.squash);
         gl.drawElements(gl.TRIANGLES, g.idx.length, gl.UNSIGNED_SHORT, 0);
       }
-      requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
 
