@@ -144,19 +144,19 @@ window.Face = (() => {
         const M = qToMat(F.q);
         const f = [M[6], M[7], M[8]];
         const th = Math.acos(Math.max(-1, Math.min(1, f[2])));          // 0 = face dead on, π = hidden
-        const VIS = 1.15, CRAWL = 1.3;                                   // ~66° cone counts as visible
+        const VIS = 1.15, CRAWL = 0.9;                                   // ~66° cone counts as visible
+        // one smooth friction curve, never a brake
+        const damp = Math.pow(0.962, dt * 60);
+        F.w[0] *= damp; F.w[1] *= damp; F.w[2] *= damp;
         let sp = Math.hypot(F.w[0], F.w[1], F.w[2]);
-        if (sp < CRAWL && th > VIS) {
-          // slow and hidden: keep coming round at a crawl. same axis if that brings the face
-          // out; otherwise ease the axis toward the one that does
+        if (th > VIS && sp < CRAWL) {
+          // hidden: don't let him stall, keep drifting round at a crawl. same axis if that brings
+          // the face out; otherwise ease the axis toward the one that does
           const n = Math.hypot(f[1], f[0]) || 1, tw = [f[1] / n, -f[0] / n, 0];
           let ax = sp > 0.05 ? [F.w[0] / sp, F.w[1] / sp, F.w[2] / sp] : tw;
           const dot = ax[0] * tw[0] + ax[1] * tw[1];
-          if (dot < 0.3) { ax = [ax[0] * 0.8 + tw[0] * 0.2, ax[1] * 0.8 + tw[1] * 0.2, ax[2] * 0.8]; const l = Math.hypot(...ax) || 1; ax = ax.map((v) => v / l); }
-          F.w = [ax[0] * CRAWL, ax[1] * CRAWL, ax[2] * CRAWL]; sp = CRAWL;
-        } else {
-          const damp = Math.pow(sp > CRAWL ? 0.965 : 0.9, dt * 60);    // free spin, then a short skid to a stop
-          F.w[0] *= damp; F.w[1] *= damp; F.w[2] *= damp;
+          if (dot < 0.3) { ax = [ax[0] * 0.9 + tw[0] * 0.1, ax[1] * 0.9 + tw[1] * 0.1, ax[2] * 0.9]; const l = Math.hypot(...ax) || 1; ax = ax.map((v) => v / l); }
+          sp = Math.max(sp, CRAWL); F.w = [ax[0] * sp, ax[1] * sp, ax[2] * sp];
         }
         if (sp > 1e-4) F.q = qNorm(qMul(qAxis(F.w[0] / sp, F.w[1] / sp, F.w[2] / sp, sp * dt), F.q));
         if (sp < 2) F.dizzy = false;
