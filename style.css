@@ -60,7 +60,7 @@ a { color: inherit; text-decoration: none; }
 main { max-width: 1200px; margin: 0 auto; padding: 0 20px 80px; }
 .hero { position: relative; height: 100svh; min-height: 560px; }
 .logo {
-  position: absolute; left: 50%; top: 66%; transform: translate(-50%, -50%);
+  position: absolute; left: 50%; top: 22%; transform: translate(-50%, -50%);
   width: min(620px, 74vw); height: auto; overflow: visible;
   color: var(--cream); fill: currentColor;
   z-index: 1;
@@ -124,7 +124,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 20px 80px; }
 @media (max-width: 720px) {
   main { padding: 0 14px 60px; }
   .hero { min-height: 520px; }
-  .logo { width: 86vw; top: 58%; }
+  .logo { width: 86vw; top: 20%; }
   .pills { bottom: 18px; gap: 10px; }
   .pill { font-size: 15px; }
   .grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
