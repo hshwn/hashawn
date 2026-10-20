@@ -228,35 +228,40 @@ body.locked { overflow: hidden; }
   .nardo-hero h1 { font-size: 34px; }
 }
 
-/* ---------- blog ---------- */
+/* ---------- blog: cream pages, one per post ---------- */
+html.blog, body.blog { background: #f3efe8; color: #141311; }
+body.blog { min-height: 100svh; }
 body.blog #face { pointer-events: none; }
-.sheet {
-  background: #f3efe8; color: #141311; border-radius: var(--r); padding: 28px 28px 36px;
-  box-shadow: 0 0 0 var(--rim) #fff; margin: 8px;
-  font-weight: 600; font-size: 17px; line-height: 1.55;
-  max-width: 720px; justify-self: center; width: calc(100% - 16px);
+.blogbar {
+  display: flex; align-items: center; gap: 14px;
+  max-width: 720px; margin: 0 auto; padding: 22px 20px 0;
 }
-.sheet h1 { font-size: 34px; font-weight: 900; letter-spacing: -0.02em; margin: 0 0 4px; line-height: 1.1; }
-.sheet .date, .sheet .muted { color: #7a766f; font-size: 14px; font-weight: 700; margin: 0 0 18px; }
-.sheet .back { display: inline-block; font-size: 14px; font-weight: 800; color: #009f4d; margin-bottom: 14px; }
-.sheet article h2 { font-size: 22px; font-weight: 900; margin: 28px 0 8px; }
-.sheet article h3 { font-size: 18px; font-weight: 900; margin: 22px 0 6px; }
-.sheet article p { margin: 0 0 14px; }
-.sheet article a { color: #009f4d; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
-.sheet article img { display: block; max-width: 100%; height: auto; border-radius: 10px; margin: 18px 0; }
-.sheet article code { font: 600 0.92em ui-monospace, "SF Mono", Menlo, monospace; background: rgba(0,0,0,0.06); padding: 2px 5px; border-radius: 5px; }
-.sheet article pre { background: #141311; color: #f1ede6; padding: 14px 16px; border-radius: 10px; overflow-x: auto; margin: 18px 0; }
-.sheet article pre code { background: none; padding: 0; color: inherit; }
-.sheet article blockquote { margin: 18px 0; padding: 4px 0 4px 16px; border-left: 4px solid #009f4d; color: #3d3a35; }
-.sheet article ul, .sheet article ol { padding-left: 22px; margin: 0 0 14px; }
-.sheet article hr { border: 0; border-top: 2px solid rgba(0,0,0,0.08); margin: 24px 0; }
-.posts { list-style: none; padding: 0; margin: 0; }
-.posts li + li { border-top: 2px solid rgba(0,0,0,0.07); }
-.posts a { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 14px 0; }
-.posts b { font-weight: 900; font-size: 20px; }
-.posts span { color: #7a766f; font-size: 14px; font-weight: 700; white-space: nowrap; }
+.blogbar .mark { display: block; width: 44px; transform: rotate(-6deg); color: #141311; }
+.blogbar .mark svg { width: 100%; height: auto; display: block; overflow: visible; fill: currentColor; }
+.blogbar .crumb { font-weight: 900; font-size: 15px; color: #7a766f; }
+.page { max-width: 720px; margin: 0 auto; padding: 28px 20px 120px; font-weight: 600; font-size: 18px; line-height: 1.6; }
+.page .muted { color: #7a766f; font-weight: 700; }
+.page h1 { font-size: clamp(34px, 5vw, 52px); font-weight: 900; letter-spacing: -0.025em; line-height: 1.02; margin: 0 0 10px; }
+.page .date { color: #7a766f; font-size: 14px; font-weight: 800; margin: 0; }
+.post header { margin: 22px 0 34px; }
+.post h2 { font-size: 24px; font-weight: 900; margin: 34px 0 10px; letter-spacing: -0.01em; }
+.post h3 { font-size: 19px; font-weight: 900; margin: 26px 0 8px; }
+.post p { margin: 0 0 18px; }
+.post a { color: #009f4d; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.post img { display: block; width: 100%; height: auto; border-radius: 12px; margin: 26px 0; }
+.post code { font: 600 0.9em ui-monospace, "SF Mono", Menlo, monospace; background: rgba(0,0,0,0.06); padding: 2px 6px; border-radius: 6px; }
+.post pre { background: #141311; color: #f1ede6; padding: 16px 18px; border-radius: 12px; overflow-x: auto; margin: 22px 0; font-size: 15px; line-height: 1.5; }
+.post pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+.post blockquote { margin: 22px 0; padding: 2px 0 2px 18px; border-left: 4px solid #009f4d; color: #3d3a35; }
+.post ul, .post ol { padding-left: 24px; margin: 0 0 18px; }
+.post hr { border: 0; border-top: 2px solid rgba(0,0,0,0.08); margin: 30px 0; }
+.index h1 { margin-bottom: 18px; }
+.entry { display: block; padding: 22px 0; border-top: 2px solid rgba(0,0,0,0.08); color: inherit; }
+.entry:first-of-type { border-top: 0; }
+.entry h2 { font-size: 28px; font-weight: 900; letter-spacing: -0.02em; margin: 0 0 4px; line-height: 1.1; }
+.entry .line { margin: 8px 0 0; color: #3d3a35; }
+.entry:hover h2 { color: #009f4d; }
 @media (max-width: 720px) {
-  .sheet { padding: 22px 18px 28px; font-size: 16px; }
-  .sheet h1 { font-size: 28px; }
-  .posts a { flex-direction: column; gap: 2px; }
+  .page { padding: 20px 18px 100px; font-size: 17px; }
+  .entry h2 { font-size: 24px; }
 }

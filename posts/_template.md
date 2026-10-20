@@ -10,7 +10,7 @@ Write here. Blank line between paragraphs.
 
 **bold**, *italic*, `code`, [a link](https://example.com), and images:
 
-![alt text](../assets/some-image.jpg)
+![alt text](/assets/some-image.jpg)
 
 - a list
 - of things
