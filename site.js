@@ -9,6 +9,7 @@
   const bubbleTxt = bubble.querySelector('.txt');
   const shade = document.getElementById('shade');
   const muteBtn = document.getElementById('mute');
+  const pills = document.querySelector('.pills');
   const phone = () => matchMedia('(max-width: 720px)').matches;
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
 
@@ -42,6 +43,9 @@
     logo.style.width = `${w}px`;
     logo.style.transform = `translate(${x - w / 2}px, ${y - w * LOGO_RATIO / 2}px)`;
     logo.classList.toggle('small', e > 0.9);
+    // don't sit on the pills while they scroll past
+    const lh = w * LOGO_RATIO, pr = pills.getBoundingClientRect();
+    logo.style.opacity = (e > 0.2 && pr.bottom > y - lh / 2 - 6 && pr.top < y + lh / 2 + 6) ? '0' : '1';
   };
   const heroPose = () => {
     const w = innerWidth, h = hero.getBoundingClientRect().height, lg = logoHero();
