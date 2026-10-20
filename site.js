@@ -54,7 +54,7 @@
     return { x: w * 0.5, y: logoBottom - r * 0.14 + r, r };          // his crown tucks 14% of his radius under the logo
   };
   const cornerPose = () => { const r = phone() ? 44 : 58; return { x: innerWidth - r - (phone() ? 18 : 36), y: innerHeight - r - (phone() ? 18 : 36), r }; };
-  // beside the open poster (its box includes the caption and strip): to its left when there's
+  // beside the open poster (its box includes the caption): to its left when there's
   // room, else below it, else small in the bottom-right corner
   const talkPose = (rect) => {
     let r = phone() ? 42 : 74;
@@ -215,7 +215,6 @@
     a.onfinish = () => {
       el.classList.remove('open'); slot.remove(); el._slot = null;
       const big = el.querySelector(':scope > img'); if (big.dataset.thumb) { big.src = big.dataset.thumb; big.dataset.cur = ''; }
-      el.querySelectorAll('.strip button').forEach((o) => o.classList.toggle('cur', o.dataset.src === el.getAttribute('href')));
     };
     openPoster = null; const from = { x: face.x, y: face.y }; mode = 'hero'; place();
     setTrip(from, { x: face.tx, y: face.ty });
@@ -254,7 +253,7 @@
     el.addEventListener('pointercancel', up);
     el.addEventListener('click', (e) => {
       e.preventDefault();
-      if (e.target.closest('.meta')) return;                 // caption and strip are not the close target
+      if (e.target.closest('.meta')) return;                 // the caption is not the close target
       if (el.classList.contains('open') && !el._justOpened) closeIt();
     });
     // process strip: tap a version to see it big; the current one is marked
