@@ -99,40 +99,35 @@
 
   // ---------- pointer on the ball ----------
   const onBall = (px, py) => Math.hypot(px - face.x, py - face.y) <= face.r;
-  let drag = null, lastMove = 0;
+  let drag = null;
   addEventListener('pointermove', (e) => {
-    lastMove = performance.now();
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       drag.dist += Math.hypot(dx, dy);
-      face.drag(dx, dy); drag.vx = dx; drag.vy = dy; drag.x = e.clientX; drag.y = e.clientY;
+      face.drag(dx, dy); drag.x = e.clientX; drag.y = e.clientY;
       return;
     }
     canvas.classList.toggle('hot', onBall(e.clientX, e.clientY));
-    face.look(e.clientX, e.clientY);
   }, { passive: true });
   canvas.addEventListener('pointerdown', (e) => {
     if (!onBall(e.clientX, e.clientY)) return;
     Voice.unlock();
-    drag = { x: e.clientX, y: e.clientY, vx: 0, vy: 0, dist: 0 };
+    drag = { x: e.clientX, y: e.clientY, dist: 0 };
+    face.grab();
     canvas.classList.add('grabbing'); try { canvas.setPointerCapture(e.pointerId); } catch {}
   });
   const endDrag = () => {
     if (!drag) return;
     canvas.classList.remove('grabbing');
+    face.release();
     if (drag.dist < 6) {                                   // a tap: poke
-      face.poke(); face.free = false;
+      face.poke();
       if (!speaking) say(LINES.poke[Math.floor(Math.random() * LINES.poke.length)]);
-    } else {
-      face.release(drag.vx, drag.vy);
-      if (face.dizzy && !speaking) setTimeout(() => { if (!speaking) say(LINES.dizzy); }, 900);
-    }
+    } else if (face.dizzy && !speaking) setTimeout(() => { if (!speaking) say(LINES.dizzy); }, 900);
     drag = null;
   };
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
-  // idle: after a while with no pointer, glance around
-  setInterval(() => { if (!drag && !face.free && performance.now() - lastMove > 4000) face.look(face.x + (Math.random() - 0.5) * 600, face.y + (Math.random() - 0.5) * 300); }, 2600);
 
   // ---------- posters: pull one out ----------
   const posters = [...document.querySelectorAll('.poster')];

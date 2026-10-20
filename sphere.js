@@ -58,22 +58,21 @@ window.Face = (() => {
     return { pos: new Float32Array(pos), uv: new Float32Array(uv), idx: new Uint16Array(idx) };
   };
 
-  // 3x3 rotation: Rz(roll) · Rx(pitch) · Ry(yaw)
-  const rot = (yaw, pitch, roll) => {
-    const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch), cr = Math.cos(roll), sr = Math.sin(roll);
-    const Ry = [cy, 0, -sy, 0, 1, 0, sy, 0, cy];             // column-major
-    const Rx = [1, 0, 0, 0, cp, sp, 0, -sp, cp];
-    const Rz = [cr, sr, 0, -sr, cr, 0, 0, 0, 1];
-    return mul(Rz, mul(Rx, Ry));
-  };
   const mul = (A, B) => { const M = new Array(9); for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) M[c * 3 + r] = A[r] * B[c * 3] + A[3 + r] * B[c * 3 + 1] + A[6 + r] * B[c * 3 + 2]; return M; };
-  // quaternions [w, x, y, z] for the roll: always a pure rotation after normalising
+  // quaternions [w, x, y, z]: always a pure rotation after normalising
   const qI = () => [1, 0, 0, 0];
   const qAxis = (ax, ay, az, a) => { const s = Math.sin(a / 2); return [Math.cos(a / 2), ax * s, ay * s, az * s]; };
-  const qToMat = ([w, x, y, z]) => [                        // column-major
+  const qMul = (a, b) => [
+    a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+    a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+    a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+    a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]];
+  const qNorm = (q) => { const n = Math.hypot(q[0], q[1], q[2], q[3]) || 1; const o = q.map((v) => v / n); return o[0] < 0 ? o.map((v) => -v) : o; };
+  const qToMat = ([w, x, y, z]) => [
     1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y),
     2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x),
     2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)];
+  const qDecay = (q, k) => qNorm([q[0] + (1 - q[0]) * k, q[1] * (1 - k), q[2] * (1 - k), q[3] * (1 - k)]);   // ease toward identity, short way
 
   const create = (canvas, urls, onReady) => {
     const gl = canvas.getContext('webgl2', { antialias: true, alpha: true, premultipliedAlpha: true });
@@ -109,19 +108,27 @@ window.Face = (() => {
     const F = {
       // screen-space pose (springs toward targets)
       x: 0, y: 0, r: 100, tx: 0, ty: 0, tr: 100, vx: 0, vy: 0, vr: 0,
-      yaw: 0, pitch: 0, q: qI(), moving: false, wy: 0, wp: 0,
-      setRoll(ax, ay, angle) { F.q = angle ? qAxis(ax, ay, 0, angle) : qI(); },
-      lookYaw: 0, lookPitch: 0, free: false, dizzy: false,
+      q: qI(), roll: qI(), moving: false,              // q = how you spun him, roll = the trip's planned turn
+      spinAxis: [0, 1, 0], spinSpeed: 0, free: false, dizzy: false, held: false, lastDrag: 0,
+      setRoll(ax, ay, angle) { F.roll = angle ? qAxis(ax, ay, 0, angle) : qI(); },
       squash: 0, squashV: 0,
       eyesShut: false, mouthOpen: false, ready: false,
       snap(x, y, r) { F.x = F.tx = x; F.y = F.ty = y; F.r = F.tr = r; F.vx = F.vy = F.vr = 0; },
       target(x, y, r) { F.tx = x; F.ty = y; F.tr = r; },
-      look(px, py) {                                   // turn toward a screen point
-        F.lookYaw = Math.max(-0.75, Math.min(0.75, (px - F.x) / Math.max(F.r * 2.2, 240)));
-        F.lookPitch = Math.max(-0.5, Math.min(0.5, (py - F.y) / Math.max(F.r * 2.2, 240)));
+      grab() { F.held = true; F.free = false; F.spinSpeed = 0; F.lastDrag = performance.now(); },
+      drag(dx, dy) {                                   // trackball: the surface follows the finger 1:1
+        const d = Math.hypot(dx, dy); if (d < 0.01) return;
+        const now = performance.now(), dt = Math.max(0.004, (now - F.lastDrag) / 1000); F.lastDrag = now;
+        const axis = [dy / d, dx / d, 0], angle = d / F.r;
+        F.q = qNorm(qMul(qAxis(axis[0], axis[1], 0, angle), F.q));
+        F.spinAxis = axis; F.spinSpeed = angle / dt;
       },
-      drag(dx, dy) { F.free = true; F.yaw += dx / F.r; F.pitch = Math.max(-1.3, Math.min(1.3, F.pitch + dy / F.r)); F.wy = dx / F.r; F.wp = dy / F.r; },
-      release(vx, vy) { F.wy = vx / F.r; F.wp = vy / F.r; if (Math.abs(F.wy) > 0.09) F.dizzy = true; },
+      release() {
+        F.held = false;
+        if (performance.now() - F.lastDrag > 80) F.spinSpeed = 0;   // stopped before letting go: no fling
+        F.free = F.spinSpeed > 0.4;
+        F.dizzy = F.spinSpeed > 9;
+      },
       poke() { F.squashV = -1.6; },
     };
 
@@ -133,15 +140,13 @@ window.Face = (() => {
       [F.y, F.vy] = spring(F.y, F.vy, F.ty, dt, 160, 22);
       [F.r, F.vr] = spring(F.r, F.vr, F.tr, dt, 160, 22);
       // the roll itself is planned by the page (setRoll): a whole turn across each trip
-      if (F.free) {                                     // spinning from a drag, momentum decays
-        F.yaw += F.wy * dt * 60 * 0.5; F.pitch = Math.max(-1.3, Math.min(1.3, F.pitch + F.wp * dt * 60 * 0.5));
-        F.wy *= Math.pow(0.94, dt * 60); F.wp *= Math.pow(0.9, dt * 60);
-        if (Math.abs(F.wy) < 0.02) F.dizzy = false;
-        if (Math.abs(F.wy) < 0.004 && Math.abs(F.wp) < 0.004) { F.free = false; F.yaw = ((F.yaw + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI; }
-      } else {                                          // settle toward where it is looking (straight ahead while rolling)
-        const ly = F.moving ? 0 : F.lookYaw, lp = F.moving ? 0 : F.lookPitch;
-        F.yaw += (ly - F.yaw) * Math.min(1, dt * 5);
-        F.pitch += (lp - F.pitch) * Math.min(1, dt * 5);
+      if (F.free) {                                     // flung: keeps spinning on that axis, slowing down
+        F.q = qNorm(qMul(qAxis(F.spinAxis[0], F.spinAxis[1], 0, F.spinSpeed * dt), F.q));
+        F.spinSpeed *= Math.pow(0.965, dt * 60);
+        if (F.spinSpeed < 2) F.dizzy = false;
+        if (F.spinSpeed < 0.4) { F.free = false; F.spinSpeed = 0; }
+      } else if (!F.held) {                             // at rest: slowly turns back to look at you
+        F.q = qDecay(F.q, Math.min(1, dt * 1.6));
       }
       [F.squash, F.squashV] = spring(F.squash, F.squashV, 0, dt, 300, 16);
 
@@ -153,7 +158,7 @@ window.Face = (() => {
         const key = `${F.eyesShut || F.dizzy ? 'shut' : 'open'}_${F.mouthOpen ? 'open' : 'closed'}`;
         gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[key]); gl.uniform1i(U.uAlbedo, 0);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tex.normal); gl.uniform1i(U.uNormal, 1);
-        gl.uniformMatrix3fv(U.uRot, false, new Float32Array(mul(qToMat(F.q), rot(F.yaw, F.pitch, 0))));
+        gl.uniformMatrix3fv(U.uRot, false, new Float32Array(mul(qToMat(F.roll), qToMat(F.q))));
         gl.uniform2f(U.uViewport, w, h); gl.uniform2f(U.uCenter, F.x, F.y); gl.uniform1f(U.uRadius, F.r); gl.uniform1f(U.uSquash, F.squash);
         gl.drawElements(gl.TRIANGLES, g.idx.length, gl.UNSIGNED_SHORT, 0);
       }
