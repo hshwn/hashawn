@@ -28,10 +28,11 @@
   let openPoster = null;
   const heroPose = () => {
     const w = innerWidth, h = hero.getBoundingClientRect().height;
-    const r = Math.min(w, h) * (phone() ? 0.30 : 0.29);
-    return { x: w * 0.5, y: h * (phone() ? 0.38 : 0.51), r };
+    const r = phone() ? Math.min(w * 0.40, h * 0.26) : Math.min(w, h) * 0.29;
+    const logoBottom = h * 0.16 + (w * 0.9) * (205 / 906) / 2;          // phone logo: top 16%, 90vw wide
+    return { x: w * 0.5, y: phone() ? logoBottom - 14 + r : h * 0.51, r };
   };
-  const cornerPose = () => { const r = phone() ? 40 : 56; return { x: innerWidth - r - (phone() ? 18 : 36), y: innerHeight - r - (phone() ? 18 : 36), r }; };
+  const cornerPose = () => { const r = phone() ? 44 : 56; return { x: innerWidth - r - (phone() ? 18 : 36), y: innerHeight - r - (phone() ? 18 : 36), r }; };
   const talkPose = (rect) => {
     const r = phone() ? 46 : 72;
     const clamp = (p) => ({ x: Math.max(r + 8, Math.min(innerWidth - r - 8, p.x)), y: Math.max(r + 8, Math.min(innerHeight - r - 8, p.y)), r });
