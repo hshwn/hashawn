@@ -123,13 +123,12 @@ window.Voice = (() => {
     stop(); unlock();
     const { events, seed } = plan(text);
     const base = CFG.base * st((seed - 0.5) * 1.5);            // each line sits a hair higher or lower
-    const timers = [];
-    let t = ctx.currentTime + 0.05; const t0 = t;
     const r = 1 / CFG.rate;
+    let t = ctx.currentTime + 0.06;
+    const cues = [];                                           // [audioTime, fn] fired by the audio clock
     events.forEach((ev) => {
-      const at = (t - t0) * 1000;
       if (!ev.f) {
-        timers.push(setTimeout(() => { onChar && onChar(ev.i); onMouth && onMouth(false); }, at));
+        cues.push([t, () => { onChar && onChar(ev.i); onMouth && onMouth(false); }]);
         t += ev.pause * r; return;
       }
       const f0 = base * st(ev.bend), loud = ev.loud;
@@ -139,15 +138,23 @@ window.Voice = (() => {
       else if (ev.f === 'f') { dur = 0.06 * r; fric(t, ev.c, loud, dur); }
       else { dur = 0.055 * r; nasal(t, ev.c, f0 * 0.5, loud, dur); }
       const open = ev.f === 'v' || ev.f === 'n';
-      timers.push(setTimeout(() => { onChar && onChar(ev.i); onMouth && onMouth(open); }, at));
-      if (open) timers.push(setTimeout(() => { onMouth && onMouth(false); }, at + dur * 1000 * 0.9));
+      cues.push([t, () => { onChar && onChar(ev.i); onMouth && onMouth(open); }]);
+      if (open) cues.push([t + dur * 0.9, () => { onMouth && onMouth(false); }]);
       t += dur + 0.008 * r;
     });
-    timers.push(setTimeout(() => { onMouth && onMouth(false); current = null; onEnd && onEnd(); }, (t - t0) * 1000 + 40));
-    current = { timers };
+    cues.push([t + 0.04, () => { onMouth && onMouth(false); current = null; onEnd && onEnd(); }]);
+    cues.sort((a, b) => a[0] - b[0]);
+    const me = { cues, i: 0, raf: 0 };
+    const tick = () => {
+      if (current !== me) return;
+      const now = ctx.currentTime;
+      while (me.i < me.cues.length && me.cues[me.i][0] <= now) me.cues[me.i++][1]();
+      if (current === me) me.raf = requestAnimationFrame(tick);
+    };
+    current = me; tick();
     return stop;
   };
-  const stop = () => { if (!current) return; current.timers.forEach(clearTimeout); current = null; };
+  const stop = () => { if (!current) return; cancelAnimationFrame(current.raf); current = null; };
 
   return { say, stop, unlock, setMuted, get muted() { return muted; }, config: CFG };
 })();
