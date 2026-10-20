@@ -67,23 +67,21 @@ window.Face = (() => {
     return mul(Rz, mul(Rx, Ry));
   };
   const mul = (A, B) => { const M = new Array(9); for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) M[c * 3 + r] = A[r] * B[c * 3] + A[3 + r] * B[c * 3 + 1] + A[6 + r] * B[c * 3 + 2]; return M; };
-  const I3 = () => [1, 0, 0, 0, 1, 0, 0, 0, 1];
-  const axisAngle = (ax, ay, az, a) => {                       // column-major
-    const c = Math.cos(a), s = Math.sin(a), t = 1 - c;
-    return [t * ax * ax + c, t * ax * ay + s * az, t * ax * az - s * ay,
-            t * ax * ay - s * az, t * ay * ay + c, t * ay * az + s * ax,
-            t * ax * az + s * ay, t * ay * az - s * ax, t * az * az + c];
-  };
-  // shrink a rotation toward identity along the shortest path
-  const decay = (R, k) => {
-    const tr = R[0] + R[4] + R[8];
-    const a = Math.acos(Math.max(-1, Math.min(1, (tr - 1) / 2)));
-    if (a < 1e-4) return I3();
-    let ax, ay, az;
-    if (Math.sin(a) > 1e-3) { const s2 = 2 * Math.sin(a); ax = (R[5] - R[7]) / s2; ay = (R[6] - R[2]) / s2; az = (R[1] - R[3]) / s2; }
-    else { ax = Math.sqrt(Math.max(0, (R[0] + 1) / 2)); ay = Math.sqrt(Math.max(0, (R[4] + 1) / 2)); az = Math.sqrt(Math.max(0, (R[8] + 1) / 2)); }
-    return axisAngle(ax, ay, az, a * (1 - k));
-  };
+  // quaternions [w, x, y, z] for the roll: always a pure rotation after normalising
+  const qI = () => [1, 0, 0, 0];
+  const qAxis = (ax, ay, az, a) => { const s = Math.sin(a / 2); return [Math.cos(a / 2), ax * s, ay * s, az * s]; };
+  const qMul = (a, b) => [
+    a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+    a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+    a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+    a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]];
+  const qNorm = (q) => { const n = Math.hypot(q[0], q[1], q[2], q[3]) || 1; const o = q.map((v) => v / n); return o[0] < 0 ? o.map((v) => -v) : o; };   // w ≥ 0: shortest path
+  const qToMat = ([w, x, y, z]) => [                        // column-major
+    1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y),
+    2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x),
+    2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)];
+  // blend toward identity by k (0..1), then renormalise
+  const qDecay = (q, k) => qNorm([q[0] + (1 - q[0]) * k, q[1] * (1 - k), q[2] * (1 - k), q[3] * (1 - k)]);
 
   const create = (canvas, urls, onReady) => {
     const gl = canvas.getContext('webgl2', { antialias: true, alpha: true, premultipliedAlpha: true });
@@ -119,7 +117,7 @@ window.Face = (() => {
     const F = {
       // screen-space pose (springs toward targets)
       x: 0, y: 0, r: 100, tx: 0, ty: 0, tr: 100, vx: 0, vy: 0, vr: 0,
-      yaw: 0, pitch: 0, R: I3(), moving: false, wy: 0, wp: 0,
+      yaw: 0, pitch: 0, q: qI(), moving: false, wy: 0, wp: 0,
       lookYaw: 0, lookPitch: 0, free: false, dizzy: false,
       squash: 0, squashV: 0,
       eyesShut: false, mouthOpen: false, ready: false,
@@ -146,8 +144,8 @@ window.Face = (() => {
       // so the face slides along the way it moves; at rest it rights itself the short way
       const dx = F.x - px, dy = F.y - py, d = Math.hypot(dx, dy);
       F.moving = Math.hypot(F.vx, F.vy) > 24;
-      if (d > 0.01) F.R = mul(axisAngle(dy / d, dx / d, 0, d / F.r), F.R);
-      if (!F.moving) F.R = decay(F.R, Math.min(1, dt * 4));
+      if (d > 0.01) F.q = qNorm(qMul(qAxis(dy / d, dx / d, 0, d / F.r), F.q));
+      if (!F.moving) F.q = qDecay(F.q, Math.min(1, dt * 4));
       if (F.free) {                                     // spinning from a drag, momentum decays
         F.yaw += F.wy * dt * 60 * 0.5; F.pitch = Math.max(-1.3, Math.min(1.3, F.pitch + F.wp * dt * 60 * 0.5));
         F.wy *= Math.pow(0.94, dt * 60); F.wp *= Math.pow(0.9, dt * 60);
@@ -168,7 +166,7 @@ window.Face = (() => {
         const key = `${F.eyesShut || F.dizzy ? 'shut' : 'open'}_${F.mouthOpen ? 'open' : 'closed'}`;
         gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[key]); gl.uniform1i(U.uAlbedo, 0);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tex.normal); gl.uniform1i(U.uNormal, 1);
-        gl.uniformMatrix3fv(U.uRot, false, new Float32Array(mul(F.R, rot(F.yaw, F.pitch, 0))));
+        gl.uniformMatrix3fv(U.uRot, false, new Float32Array(mul(qToMat(F.q), rot(F.yaw, F.pitch, 0))));
         gl.uniform2f(U.uViewport, w, h); gl.uniform2f(U.uCenter, F.x, F.y); gl.uniform1f(U.uRadius, F.r); gl.uniform1f(U.uSquash, F.squash);
         gl.drawElements(gl.TRIANGLES, g.idx.length, gl.UNSIGNED_SHORT, 0);
       }
