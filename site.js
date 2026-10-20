@@ -29,7 +29,7 @@
   const heroPose = () => {
     const w = innerWidth, h = hero.getBoundingClientRect().height;
     const r = Math.min(w, h) * (phone() ? 0.30 : 0.29);
-    return { x: w * 0.5, y: h * (phone() ? 0.40 : 0.54), r };
+    return { x: w * 0.5, y: h * (phone() ? 0.38 : 0.51), r };
   };
   const cornerPose = () => { const r = phone() ? 40 : 56; return { x: innerWidth - r - (phone() ? 18 : 36), y: innerHeight - r - (phone() ? 18 : 36), r }; };
   const talkPose = (rect) => {
