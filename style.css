@@ -227,3 +227,36 @@ body.locked { overflow: hidden; }
   .nardo-hero .meta { grid-column: 1 / -1; text-align: left; }
   .nardo-hero h1 { font-size: 34px; }
 }
+
+/* ---------- blog ---------- */
+body.blog #face { pointer-events: none; }
+.sheet {
+  background: #f3efe8; color: #141311; border-radius: var(--r); padding: 28px 28px 36px;
+  box-shadow: 0 0 0 var(--rim) #fff; margin: 8px;
+  font-weight: 600; font-size: 17px; line-height: 1.55;
+  max-width: 720px; justify-self: center; width: calc(100% - 16px);
+}
+.sheet h1 { font-size: 34px; font-weight: 900; letter-spacing: -0.02em; margin: 0 0 4px; line-height: 1.1; }
+.sheet .date, .sheet .muted { color: #7a766f; font-size: 14px; font-weight: 700; margin: 0 0 18px; }
+.sheet .back { display: inline-block; font-size: 14px; font-weight: 800; color: #009f4d; margin-bottom: 14px; }
+.sheet article h2 { font-size: 22px; font-weight: 900; margin: 28px 0 8px; }
+.sheet article h3 { font-size: 18px; font-weight: 900; margin: 22px 0 6px; }
+.sheet article p { margin: 0 0 14px; }
+.sheet article a { color: #009f4d; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
+.sheet article img { display: block; max-width: 100%; height: auto; border-radius: 10px; margin: 18px 0; }
+.sheet article code { font: 600 0.92em ui-monospace, "SF Mono", Menlo, monospace; background: rgba(0,0,0,0.06); padding: 2px 5px; border-radius: 5px; }
+.sheet article pre { background: #141311; color: #f1ede6; padding: 14px 16px; border-radius: 10px; overflow-x: auto; margin: 18px 0; }
+.sheet article pre code { background: none; padding: 0; color: inherit; }
+.sheet article blockquote { margin: 18px 0; padding: 4px 0 4px 16px; border-left: 4px solid #009f4d; color: #3d3a35; }
+.sheet article ul, .sheet article ol { padding-left: 22px; margin: 0 0 14px; }
+.sheet article hr { border: 0; border-top: 2px solid rgba(0,0,0,0.08); margin: 24px 0; }
+.posts { list-style: none; padding: 0; margin: 0; }
+.posts li + li { border-top: 2px solid rgba(0,0,0,0.07); }
+.posts a { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 14px 0; }
+.posts b { font-weight: 900; font-size: 20px; }
+.posts span { color: #7a766f; font-size: 14px; font-weight: 700; white-space: nowrap; }
+@media (max-width: 720px) {
+  .sheet { padding: 22px 18px 28px; font-size: 16px; }
+  .sheet h1 { font-size: 28px; }
+  .posts a { flex-direction: column; gap: 2px; }
+}
