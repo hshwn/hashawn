@@ -54,11 +54,14 @@
     return { x: w * 0.5, y: logoBottom - r * 0.14 + r, r };          // his crown tucks 14% of his radius under the logo
   };
   const cornerPose = () => { const r = phone() ? 44 : 58; return { x: innerWidth - r - (phone() ? 18 : 36), y: innerHeight - r - (phone() ? 18 : 36), r }; };
+  // beside the open poster (its box includes the caption and strip): to its left when there's
+  // room, else below it, else small in the bottom-right corner
   const talkPose = (rect) => {
-    const r = phone() ? 46 : 74;
+    let r = phone() ? 42 : 74;
     const clamp = (p) => ({ x: Math.max(r + 8, Math.min(innerWidth - r - 8, p.x)), y: Math.max(r + 8, Math.min(innerHeight - r - 8, p.y)), r });
     if (!phone() && rect.left > r * 2.6) return clamp({ x: rect.left - r * 1.4, y: rect.bottom - r * 0.9, r });
-    return clamp({ x: r + 22, y: innerHeight - r - 22, r });
+    if (innerHeight - rect.bottom > r * 2 + 16) return clamp({ x: r + 18, y: rect.bottom + r + 8, r });
+    r = 40; return clamp({ x: innerWidth - r - 12, y: innerHeight - r - 12, r });
   };
   const progress = () => {
     const p = Math.max(0, Math.min(1, scrollY / (hero.getBoundingClientRect().height * 0.55)));
@@ -186,6 +189,7 @@
     const slot = document.createElement('div'); slot.className = 'slot'; slot.style.height = `${r0.height}px`;
     el._slot = slot; el.after(slot);
     el.style.transform = ''; el.classList.remove('lifted'); el.classList.add('open');
+    const big = el.querySelector(':scope > img'); big.dataset.thumb = big.dataset.thumb || big.src; big.dataset.cur = el.getAttribute('href'); big.src = el.getAttribute('href');
     const r1 = el.getBoundingClientRect();
     el.animate([
       { transform: `translate(-50%, -50%) translate(${r0.left - r1.left}px, ${r0.top - r1.top}px) scale(${r0.width / r1.width})` },
@@ -208,7 +212,11 @@
       { transform: `translate(-50%, -50%) translate(${r0.left - r1.left}px, ${r0.top - r1.top}px) scale(${r0.width / r1.width})` },
     ], { duration: 340, easing: 'cubic-bezier(.3,.8,.3,1)' });
     shade.hidden = true; document.body.classList.remove('locked');
-    a.onfinish = () => { el.classList.remove('open'); slot.remove(); el._slot = null; };
+    a.onfinish = () => {
+      el.classList.remove('open'); slot.remove(); el._slot = null;
+      const big = el.querySelector(':scope > img'); if (big.dataset.thumb) { big.src = big.dataset.thumb; big.dataset.cur = ''; }
+      el.querySelectorAll('.strip button').forEach((o) => o.classList.toggle('cur', o.dataset.src === el.getAttribute('href')));
+    };
     openPoster = null; const from = { x: face.x, y: face.y }; mode = 'hero'; place();
     setTrip(from, { x: face.tx, y: face.ty });
     if (Math.random() < 0.4) setTimeout(() => quip(pick(LINES.bye)), 500);
@@ -244,7 +252,23 @@
     };
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
-    el.addEventListener('click', (e) => { e.preventDefault(); if (el.classList.contains('open') && !el._justOpened) closeIt(); });
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (e.target.closest('.meta')) return;                 // caption and strip are not the close target
+      if (el.classList.contains('open') && !el._justOpened) closeIt();
+    });
+    // process strip: tap a version to see it big; the current one is marked
+    el.querySelectorAll('.strip button').forEach((b) => {
+      b.addEventListener('pointerdown', (e) => e.stopPropagation());
+      b.addEventListener('pointerup', (e) => e.stopPropagation());
+      b.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const big = el.querySelector(':scope > img');
+        if (b.dataset.src !== big.dataset.cur) { big.dataset.cur = b.dataset.src; big.src = b.dataset.src; }
+        el.querySelectorAll('.strip button').forEach((o) => o.classList.toggle('cur', o === b));
+        if (b.dataset.say) say(b.dataset.say);
+      });
+    });
     el.addEventListener('dragstart', (e) => e.preventDefault());
   });
 

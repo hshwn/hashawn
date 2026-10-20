@@ -113,13 +113,39 @@ body.locked { overflow: hidden; }
 .poster img { display: block; width: 100%; height: auto; border-radius: 4px; pointer-events: none; }
 .poster.lifted { z-index: 30; cursor: grabbing; }
 .poster.lifted img { box-shadow: 0 30px 70px rgba(0,0,0,0.7); }
+.poster .meta { display: none; }
 .poster.open {
   position: fixed; z-index: 40; left: 50%; top: 50%;
   width: auto; max-width: min(92vw, 1100px);
   transform: translate(-50%, -50%);
   cursor: zoom-out;
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
 }
-.poster.open img { width: auto; max-width: min(92vw, 1100px); max-height: 86vh; border-radius: 6px; }
+.poster.open > img { width: auto; max-width: min(92vw, 1100px); max-height: 74vh; border-radius: 6px; }
+.poster.open .meta { display: flex; flex-direction: column; align-items: center; gap: 10px; cursor: default; }
+.cap {
+  margin: 0; display: inline-flex; align-items: center; gap: 0.6em;
+  background: #fff; color: #000; border-radius: 999px; padding: 0.35em 0.9em;
+  font-size: 14px; font-weight: 700; white-space: nowrap;
+}
+.cap b { font-weight: 900; }
+.cap span { opacity: 0.6; }
+.cap span::before { content: "·"; margin-right: 0.6em; opacity: 0.5; }
+.strip { display: flex; gap: 8px; }
+.strip button {
+  position: relative; border: 0; padding: 0; background: none; cursor: pointer;
+  width: 56px; border-radius: 6px; overflow: hidden;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
+  transition: transform 0.08s;
+  -webkit-tap-highlight-color: transparent;
+}
+.strip button:active { transform: scale(0.94) rotate(-2deg); }
+.strip button.cur { box-shadow: 0 0 0 3px #fff; }
+.strip img { display: block; width: 100%; height: auto; }
+.strip i {
+  position: absolute; left: 4px; bottom: 4px; font: 800 10px/1 ui-rounded, "SF Pro Rounded", "Nunito", system-ui, sans-serif; font-style: normal;
+  background: #fff; color: #000; padding: 3px 5px; border-radius: 999px;
+}
 .slot { border-radius: 4px; background: var(--paper); }
 
 .shade { position: fixed; inset: 0; z-index: 35; background: rgba(0,0,0,0.82); }
@@ -131,7 +157,9 @@ body.locked { overflow: hidden; }
   .pills { bottom: 18px; gap: 10px; }
   .pill { font-size: 15px; }
   .grid { grid-template-columns: 1fr; gap: 12px; }
-  .poster.open img { max-height: 70vh; }
+  .poster.open > img { max-height: 58vh; }
+  .cap { font-size: 12px; }
+  .strip button { width: 48px; }
   .bubble { font-size: 14px; }
 }
 
