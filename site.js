@@ -59,16 +59,30 @@
     bubble.style.setProperty('--tail', `${face.x - x}px`);            // tail stays on him
   };
   let speaking = false;
+  // mouth: open on a voiced sound, hold at least 120ms, shut only after a 110ms gap
+  let openedAt = 0, closedAt = 0, closeTimer = null, openTimer = null;
+  const mouth = (o) => {
+    if (o) {
+      clearTimeout(closeTimer); closeTimer = null;
+      if (face.mouthOpen || openTimer) return;
+      const wait = Math.max(0, 70 - (performance.now() - closedAt));        // stay shut at least 70ms
+      openTimer = setTimeout(() => { openTimer = null; face.mouthOpen = true; openedAt = performance.now(); }, wait);
+      return;
+    }
+    if (closeTimer || !face.mouthOpen && !openTimer) return;
+    const wait = Math.max(110, 120 - (performance.now() - openedAt));       // stay open at least 120ms, shut after a 110ms gap
+    closeTimer = setTimeout(() => { closeTimer = null; clearTimeout(openTimer); openTimer = null; face.mouthOpen = false; closedAt = performance.now(); }, wait);
+  };
   const say = (text) => {
     bubble.hidden = false; bubble.classList.remove('done'); bubbleTxt.textContent = '';
     speaking = true;
     Voice.say(text, {
       onChar: (i) => { bubbleTxt.textContent = text.slice(0, i + 1); },
-      onMouth: (o) => { face.mouthOpen = o; },
+      onMouth: mouth,
       onEnd: () => { speaking = false; bubble.classList.add('done'); setTimeout(() => { if (!speaking) bubble.hidden = true; }, 2200); },
     });
   };
-  const hush = () => { Voice.stop(); face.mouthOpen = false; speaking = false; bubble.hidden = true; };
+  const hush = () => { Voice.stop(); clearTimeout(closeTimer); clearTimeout(openTimer); closeTimer = openTimer = null; face.mouthOpen = false; speaking = false; bubble.hidden = true; };
 
   // ---------- pointer on the ball ----------
   const onBall = (px, py) => Math.hypot(px - face.x, py - face.y) <= face.r;
