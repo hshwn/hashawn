@@ -31,14 +31,14 @@ a { color: inherit; text-decoration: none; }
 /* ---------- the ball ---------- */
 #face {
   position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; height: 100lvh;   /* large viewport: never resizes when the phone toolbar collapses */
-  z-index: 5; pointer-events: none;           /* hit-testing is done in JS against the ball itself */
+  z-index: 45; pointer-events: none;          /* above the shade and an open poster; hit-testing is done in JS */
   touch-action: none;
 }
 #face.hot { pointer-events: auto; cursor: grab; }
 #face.hot.grabbing { cursor: grabbing; }
 
 .bubble {
-  position: fixed; z-index: 6;
+  position: fixed; z-index: 46;
   width: max-content; max-width: min(320px, 70vw);
   background: #fff; color: #000;
   border-radius: 18px; padding: 10px 14px;
