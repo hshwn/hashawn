@@ -71,9 +71,27 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 20px 80px; }
 body.locked { overflow: hidden; }
 .pills {
   position: absolute; left: 0; right: 0; bottom: 28px;
-  display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px 14px;
+  display: flex; justify-content: center; align-items: center; gap: 10px;
   z-index: 7;
 }
+/* the dock: round, translucent, icon only */
+.dk {
+  width: 48px; height: 48px; border-radius: 50%; border: 0; padding: 0;
+  display: grid; place-items: center; overflow: hidden;
+  background: rgba(255,255,255,0.16); color: var(--cream);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  cursor: pointer; transition: transform 0.15s, background 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.dk:hover { transform: scale(1.08); background: rgba(255,255,255,0.24); }
+.dk:active { transform: scale(0.94); }
+.dk svg { width: 22px; height: 22px; }
+.dk .pfp { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dk .off { display: none; }
+.dk[aria-pressed="true"] { background: rgba(0,0,0,0.35); }
+.dk[aria-pressed="true"] .on { display: none; }
+.dk[aria-pressed="true"] .off { display: block; }
+
 .pill {
   display: inline-flex; align-items: center; gap: 0.4em;
   padding: 0.36em 0.75em 0.36em 0.55em;
@@ -92,11 +110,6 @@ body.locked { overflow: hidden; }
 .pill.ig    { --role: var(--rose); }
 .pill.mail  { --role: var(--amber); }
 .pill.gh    { --role: var(--cream); }
-.pill.mute  { --role: #141311; padding: 0.36em 0.55em; color: #fff; }
-.pill.mute .off { display: none; }
-.pill.mute[aria-pressed="true"] { --role: #cfc9bf; color: #141311; }
-.pill.mute[aria-pressed="true"] .on { display: none; }
-.pill.mute[aria-pressed="true"] .off { display: block; }
 
 /* ---------- posters ---------- */
 .grid {
@@ -139,8 +152,7 @@ body.locked { overflow: hidden; }
 @media (max-width: 720px) {
   main { padding: 0 14px 60px; }
   .hero { height: 100svh; min-height: 520px; }
-  .pills { bottom: 18px; gap: 10px; }
-  .pill { font-size: 15px; }
+  .pills { bottom: 18px; }
   .grid { grid-template-columns: 1fr; gap: 12px; }
   .poster.open > img { max-height: 58vh; }
   .cap { font-size: 12px; }
