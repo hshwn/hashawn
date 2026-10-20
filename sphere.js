@@ -73,6 +73,8 @@ window.Face = (() => {
     2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x),
     2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)];
 
+  const LAMBDA = 2.3, VIS = 1.15;                          // friction (1/s); face within ~66° counts as visible
+
   const create = (canvas, urls, onReady) => {
     const gl = canvas.getContext('webgl2', { antialias: true, alpha: true, premultipliedAlpha: true });
     if (!gl) return null;
@@ -108,7 +110,7 @@ window.Face = (() => {
       // screen-space pose (springs toward targets)
       x: 0, y: 0, r: 100, tx: 0, ty: 0, tr: 100, vx: 0, vy: 0, vr: 0,
       q: qI(), roll: qI(), moving: false,              // q = how you spun him, roll = the trip's planned turn
-      w: [0, 0, 0], dizzy: false, held: false, lastDrag: 0,      // w = angular velocity, rad/s
+      w: [0, 0, 0], lambda: 0, dizzy: false, held: false, lastDrag: 0,   // w = angular velocity, rad/s
       setRoll(ax, ay, angle) { F.roll = angle ? qAxis(ax, ay, 0, angle) : qI(); },
       squash: 0, squashV: 0,
       eyesShut: false, mouthOpen: false, ready: false,
@@ -125,7 +127,29 @@ window.Face = (() => {
       release() {
         F.held = false;
         if (performance.now() - F.lastDrag > 80) F.w = [0, 0, 0];   // stopped before letting go: no fling
-        F.dizzy = Math.hypot(...F.w) > 9;
+        const sp = Math.hypot(F.w[0], F.w[1], F.w[2]);
+        F.dizzy = sp > 9;
+        // pick this fling's friction once: exponential friction turns him sp/λ radians in total,
+        // so choose λ (0.5x–1.7x normal) such that the face ends up in view
+        F.lambda = LAMBDA;
+        if (sp > 0.3) {
+          const M = qToMat(F.q), f0 = [M[6], M[7], M[8]];
+          const ax = [F.w[0] / sp, F.w[1] / sp, F.w[2] / sp];
+          const faceZ = (th) => {                                   // z of the face after turning th about ax (Rodrigues)
+            const c = Math.cos(th), si = Math.sin(th), k = ax[0] * f0[0] + ax[1] * f0[1] + ax[2] * f0[2];
+            return f0[2] * c + (ax[0] * f0[1] - ax[1] * f0[0]) * si + ax[2] * k * (1 - c);
+          };
+          const nat = sp / LAMBDA, lim = Math.cos(VIS - 0.12);
+          if (faceZ(nat) < lim) {
+            // prefer a slightly longer spin over a shorter one; allow up to 2x, down to 0.6x
+            let best = null;
+            for (let d = 0.02; d <= nat; d += 0.02) {
+              if (faceZ(nat + d) >= lim) { best = nat + d; break; }
+              if (d <= nat * 0.4 && faceZ(nat - d) >= lim) { best = nat - d; break; }
+            }
+            if (best) F.lambda = sp / best;
+          }
+        }
       },
       poke() { F.squashV = -1.6; },
     };
@@ -139,25 +163,10 @@ window.Face = (() => {
       [F.r, F.vr] = spring(F.r, F.vr, F.tr, dt, 160, 22);
       // the roll itself is planned by the page (setRoll): a whole turn across each trip
       if (!F.held) {
-        // a ball in space: spins freely, slows with friction, and just happens to stop
-        // with the face at least peeking out. no spring, no uprighting.
-        const M = qToMat(F.q);
-        const f = [M[6], M[7], M[8]];
-        const th = Math.acos(Math.max(-1, Math.min(1, f[2])));          // 0 = face dead on, π = hidden
-        const VIS = 1.15, CRAWL = 0.9;                                   // ~66° cone counts as visible
-        // one smooth friction curve, never a brake
-        const damp = Math.pow(0.962, dt * 60);
+        // a ball in space: spins on its axis and slows on one exponential curve
+        const damp = Math.exp(-(F.lambda || LAMBDA) * dt);
         F.w[0] *= damp; F.w[1] *= damp; F.w[2] *= damp;
-        let sp = Math.hypot(F.w[0], F.w[1], F.w[2]);
-        if (th > VIS && sp < CRAWL) {
-          // hidden: don't let him stall, keep drifting round at a crawl. same axis if that brings
-          // the face out; otherwise ease the axis toward the one that does
-          const n = Math.hypot(f[1], f[0]) || 1, tw = [f[1] / n, -f[0] / n, 0];
-          let ax = sp > 0.05 ? [F.w[0] / sp, F.w[1] / sp, F.w[2] / sp] : tw;
-          const dot = ax[0] * tw[0] + ax[1] * tw[1];
-          if (dot < 0.3) { ax = [ax[0] * 0.9 + tw[0] * 0.1, ax[1] * 0.9 + tw[1] * 0.1, ax[2] * 0.9]; const l = Math.hypot(...ax) || 1; ax = ax.map((v) => v / l); }
-          sp = Math.max(sp, CRAWL); F.w = [ax[0] * sp, ax[1] * sp, ax[2] * sp];
-        }
+        const sp = Math.hypot(F.w[0], F.w[1], F.w[2]);
         if (sp > 1e-4) F.q = qNorm(qMul(qAxis(F.w[0] / sp, F.w[1] / sp, F.w[2] / sp, sp * dt), F.q));
         if (sp < 2) F.dizzy = false;
       }
