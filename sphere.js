@@ -111,7 +111,11 @@ window.Face = (() => {
       x: 0, y: 0, r: 100, tx: 0, ty: 0, tr: 100, vx: 0, vy: 0, vr: 0,
       q: qI(), roll: qI(), moving: false,              // q = how you spun him, roll = the trip's planned turn
       w: [0, 0, 0], lambda: 0, dizzy: false, held: false, lastDrag: 0,   // w = angular velocity, rad/s
-      setRoll(ax, ay, angle) { F.roll = angle ? qAxis(ax, ay, 0, angle) : qI(); },
+      // planned part of the orientation: the trip's turn, then a lean toward whatever he should face
+      setRoll(ax, ay, angle, lax = 0, lay = 0, lean = 0) {
+        const turn = angle ? qAxis(ax, ay, 0, angle) : qI();
+        F.roll = lean ? qMul(qAxis(lax, lay, 0, lean), turn) : turn;
+      },
       squash: 0, squashV: 0,
       eyesShut: false, mouthOpen: false, ready: false,
       snap(x, y, r) { F.x = F.tx = x; F.y = F.ty = y; F.r = F.tr = r; F.vx = F.vy = F.vr = 0; },

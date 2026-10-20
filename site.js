@@ -40,16 +40,26 @@
     return clamp({ x: r + 22, y: innerHeight - r - 22, r });
   };
   // a trip is a straight path A→B; the roll is one full turn across it, read off his progress
-  let trip = null;                                     // { A:{x,y}, B:{x,y} }
-  const setTrip = (A, B) => { trip = { A, B }; };
+  let trip = null;                                     // { A:{x,y}, B:{x,y}, look:{x,y}|null }
+  const setTrip = (A, B, look = null) => { trip = { A, B, look }; };
   const roll = () => {
     if (!trip) { face.setRoll(0, 1, 0); face.moving = false; return; }
     const dx = trip.B.x - trip.A.x, dy = trip.B.y - trip.A.y, d = Math.hypot(dx, dy) || 1;
     const p = Math.max(0, Math.min(1, ((face.x - trip.A.x) * dx + (face.y - trip.A.y) * dy) / (d * d)));
     const turns = d < 80 ? 0 : 1;
-    face.setRoll(dy / d, dx / d, Math.PI * 2 * turns * p);
+    // lean: at the end of the trip he faces trip.look (a screen point), ramping in with progress
+    let lax = 0, lay = 0, lean = 0;
+    if (trip.look) {
+      const lx = trip.look.x - trip.B.x, ly = -(trip.look.y - trip.B.y);
+      const dz = Math.max(Math.hypot(lx, ly) * 1.1, 200), L = Math.hypot(lx, ly, dz);
+      const dir = [lx / L, ly / L, dz / L], n = Math.hypot(dir[0], dir[1]) || 1;
+      lax = -dir[1] / n; lay = dir[0] / n;
+      lean = Math.min(0.95, Math.acos(dir[2])) * p;
+    }
+    face.setRoll(dy / d, dx / d, Math.PI * 2 * turns * p, lax, lay, lean);
     face.moving = p > 0.03 && p < 0.97;
   };
+  const pageLook = () => ({ x: innerWidth * 0.42, y: innerHeight * 0.4 });
   const place = () => {
     if (mode === 'talking' && openPoster) { const t = talkPose(openPoster.getBoundingClientRect()); face.target(t.x, t.y, t.r); return; }
     const hp = heroPose(), cp = cornerPose();
@@ -57,7 +67,7 @@
     const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
     const hy = hp.y - scrollY;
     face.target(hp.x + (cp.x - hp.x) * e, hy + (cp.y - hy) * e, hp.r + (cp.r - hp.r) * e);
-    setTrip({ x: hp.x, y: hy }, { x: cp.x, y: cp.y });
+    setTrip({ x: hp.x, y: hy }, { x: cp.x, y: cp.y }, pageLook());
     mode = e > 0.98 ? 'corner' : 'hero';
   };
   { const hp = heroPose(); face.snap(hp.x, hp.y, hp.r); }
@@ -145,7 +155,7 @@
     ], { duration: 420, easing: 'cubic-bezier(.2,.9,.25,1.1)' });
     shade.hidden = false;
     mode = 'talking'; place();
-    setTrip({ x: face.x, y: face.y }, { x: face.tx, y: face.ty });
+    { const r = el.getBoundingClientRect(); setTrip({ x: face.x, y: face.y }, { x: face.tx, y: face.ty }, { x: r.left + r.width / 2, y: r.top + r.height / 2 }); }
     el._justOpened = true; setTimeout(() => { el._justOpened = false; }, 400);
     sayTimer = setTimeout(() => say(el.dataset.line), 350);
   };
@@ -208,7 +218,7 @@
 
   // bubble follows him every frame
   const tick = () => {
-    if (mode === 'talking') { place(); if (trip) trip.B = { x: face.tx, y: face.ty }; }
+    if (mode === 'talking' && openPoster) { place(); if (trip) { trip.B = { x: face.tx, y: face.ty }; const r = openPoster.getBoundingClientRect(); trip.look = { x: r.left + r.width / 2, y: r.top + r.height / 2 }; } }
     roll();
     if (!bubble.hidden) placeBubble();
     requestAnimationFrame(tick);
