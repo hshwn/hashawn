@@ -4,56 +4,50 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>hashawn!</title>
-<meta name="description" content="hashawn — posters, stickers, and Nardo.">
+<meta name="description" content="hashawn — a face on a ball, some posters, and Nardo.">
 <meta name="theme-color" content="#000000">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@800;900&display=swap">
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preload" as="image" href="assets/face/open_closed.webp">
+<link rel="preload" as="image" href="assets/face/normal.webp">
 </head>
 <body>
 
-<main class="home">
+<canvas id="face" aria-label="Hassan's face, on a ball. Drag to spin, tap to poke."></canvas>
+<div class="bubble" id="bubble" hidden><span class="txt"></span></div>
 
-  <header class="top">
-    <svg class="logo" viewBox="0 0 906 205" aria-label="hashawn!"><use href="#logo"/></svg>
+<main>
+  <header class="hero" id="hero">
+    <svg class="logo" id="lockup" viewBox="0 0 906 205" aria-label="hashawn!"><use href="#logo"/></svg>
+    <nav class="pills" aria-label="Links">
+      <a class="pill ig" href="https://instagram.com/hashawnnn" target="_blank" rel="noopener"><img class="pfp" src="assets/pfp.png" alt="" width="160" height="160"><span>@hashawnnn</span></a>
+      <a class="pill nardo" href="nardo/"><svg class="ic"><use href="#i-rays"/></svg><span>nardo</span></a>
+      <a class="pill mail" href="mailto:hi@hashawn.com"><svg class="ic"><use href="#i-mail"/></svg><span>mail</span></a>
+      <a class="pill gh" href="https://github.com/hshwn" target="_blank" rel="noopener"><svg class="ic"><use href="#i-github"/></svg><span>github</span></a>
+      <button class="pill mute" id="mute" aria-pressed="false" aria-label="Mute him"><svg class="ic on"><use href="#i-speaker"/></svg><svg class="ic off"><use href="#i-speaker-x"/></svg></button>
+    </nav>
   </header>
 
-  <nav class="pills" id="sheet" aria-label="Links">
-    <a class="sticker pill ig" data-id="ig" href="https://instagram.com/hashawnnn" target="_blank" rel="noopener" style="--rot:-4deg; --i:0">
-      <img class="pfp" src="assets/pfp.png" alt="" width="160" height="160"><span>@hashawnnn</span>
-    </a>
-    <a class="sticker pill nardo" data-id="nardo" href="nardo/" style="--rot:3deg; --i:1">
-      <svg class="ic"><use href="#i-rays"/></svg><span>nardo</span>
-    </a>
-    <a class="sticker pill mail" data-id="mail" href="mailto:hi@hashawn.com" style="--rot:-2deg; --i:2">
-      <svg class="ic"><use href="#i-mail"/></svg><span>mail</span>
-    </a>
-    <a class="sticker pill gh" data-id="gh" href="https://github.com/hshwn" target="_blank" rel="noopener" style="--rot:5deg; --i:3">
-      <svg class="ic"><use href="#i-github"/></svg><span>github</span>
-    </a>
-  </nav>
-
-  <section class="grid" aria-label="Posters">
-    <a class="poster" href="assets/poupees.webp" data-title="Les Poupées de Paris">
+  <section class="grid" id="grid" aria-label="Posters">
+    <a class="poster" href="assets/poupees.webp" data-id="poupees" data-title="Les Poupées de Paris" data-line="twelve badges. one afternoon. five colors and a lot of liberace.">
       <img src="assets/poupees-thumb.jpg" alt="Les Poupées de Paris, a sheet of twelve showbiz badges" width="848" height="1200" loading="lazy">
     </a>
-    <a class="poster" href="assets/harvest.jpg" data-title="Harvest Everything!">
+    <a class="poster" href="assets/harvest.jpg" data-id="harvest" data-title="Harvest Everything!" data-line="every single doodle drawn on a trackpad. the phone has a cord because it's a nice phone.">
       <img src="assets/harvest-thumb.jpg" alt="Harvest Everything, a doodle poster" width="848" height="1200" loading="lazy">
     </a>
-    <a class="poster" href="assets/ram.webp" data-title="RAM!">
+    <a class="poster" href="assets/ram.webp" data-id="ram" data-title="RAM!" data-line="the sheep are real. the threat is real. come get me chad gippity.">
       <img src="assets/ram-thumb.jpg" alt="RAM!, a sticker poster of a pile of rams" width="899" height="1200" loading="lazy">
     </a>
   </section>
-
 </main>
 
-<div class="lightbox" id="lightbox" hidden>
-  <img alt="">
-  <p class="cap"></p>
-</div>
+<div class="shade" id="shade" hidden></div>
 
 <script src="sprite.js"></script>
+<script src="voice.js"></script>
+<script src="sphere.js"></script>
 <script src="site.js"></script>
 </body>
 </html>
