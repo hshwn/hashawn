@@ -70,18 +70,10 @@ window.Face = (() => {
   // quaternions [w, x, y, z] for the roll: always a pure rotation after normalising
   const qI = () => [1, 0, 0, 0];
   const qAxis = (ax, ay, az, a) => { const s = Math.sin(a / 2); return [Math.cos(a / 2), ax * s, ay * s, az * s]; };
-  const qMul = (a, b) => [
-    a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
-    a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
-    a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
-    a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]];
-  const qNorm = (q) => { const n = Math.hypot(q[0], q[1], q[2], q[3]) || 1; const o = q.map((v) => v / n); return o[0] < 0 ? o.map((v) => -v) : o; };   // w ≥ 0: shortest path
   const qToMat = ([w, x, y, z]) => [                        // column-major
     1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y),
     2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x),
     2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)];
-  // blend toward identity by k (0..1), then renormalise
-  const qDecay = (q, k) => qNorm([q[0] + (1 - q[0]) * k, q[1] * (1 - k), q[2] * (1 - k), q[3] * (1 - k)]);
 
   const create = (canvas, urls, onReady) => {
     const gl = canvas.getContext('webgl2', { antialias: true, alpha: true, premultipliedAlpha: true });
@@ -118,6 +110,7 @@ window.Face = (() => {
       // screen-space pose (springs toward targets)
       x: 0, y: 0, r: 100, tx: 0, ty: 0, tr: 100, vx: 0, vy: 0, vr: 0,
       yaw: 0, pitch: 0, q: qI(), moving: false, wy: 0, wp: 0,
+      setRoll(ax, ay, angle) { F.q = angle ? qAxis(ax, ay, 0, angle) : qI(); },
       lookYaw: 0, lookPitch: 0, free: false, dizzy: false,
       squash: 0, squashV: 0,
       eyesShut: false, mouthOpen: false, ready: false,
@@ -136,16 +129,10 @@ window.Face = (() => {
     const spring = (p, v, t, dt, k = 220, c = 26) => { const a = (t - p) * k - v * c; v += a * dt; p += v * dt; return [p, v]; };
     const step = (now) => {
       const dt = Math.min(0.05, (now - last) / 1000); last = now;
-      const px = F.x, py = F.y;
       [F.x, F.vx] = spring(F.x, F.vx, F.tx, dt, 160, 22);
       [F.y, F.vy] = spring(F.y, F.vy, F.ty, dt, 160, 22);
       [F.r, F.vr] = spring(F.r, F.vr, F.tr, dt, 160, 22);
-      // rolling on the page: travel turns the ball about the axis across its path,
-      // so the face slides along the way it moves; at rest it rights itself the short way
-      const dx = F.x - px, dy = F.y - py, d = Math.hypot(dx, dy);
-      F.moving = Math.hypot(F.vx, F.vy) > 24;
-      if (d > 0.01) F.q = qNorm(qMul(qAxis(dy / d, dx / d, 0, d / F.r), F.q));
-      if (!F.moving) F.q = qDecay(F.q, Math.min(1, dt * 4));
+      // the roll itself is planned by the page (setRoll): a whole turn across each trip
       if (F.free) {                                     // spinning from a drag, momentum decays
         F.yaw += F.wy * dt * 60 * 0.5; F.pitch = Math.max(-1.3, Math.min(1.3, F.pitch + F.wp * dt * 60 * 0.5));
         F.wy *= Math.pow(0.94, dt * 60); F.wp *= Math.pow(0.9, dt * 60);

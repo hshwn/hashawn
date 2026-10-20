@@ -39,12 +39,25 @@
     if (!phone() && rect.left > r * 2.6) return clamp({ x: rect.left - r * 1.4, y: rect.bottom - r * 0.9, r });
     return clamp({ x: r + 22, y: innerHeight - r - 22, r });
   };
+  // a trip is a straight path A→B; the roll is one full turn across it, read off his progress
+  let trip = null;                                     // { A:{x,y}, B:{x,y} }
+  const setTrip = (A, B) => { trip = { A, B }; };
+  const roll = () => {
+    if (!trip) { face.setRoll(0, 1, 0); face.moving = false; return; }
+    const dx = trip.B.x - trip.A.x, dy = trip.B.y - trip.A.y, d = Math.hypot(dx, dy) || 1;
+    const p = Math.max(0, Math.min(1, ((face.x - trip.A.x) * dx + (face.y - trip.A.y) * dy) / (d * d)));
+    const turns = d < 80 ? 0 : 1;
+    face.setRoll(dy / d, dx / d, Math.PI * 2 * turns * p);
+    face.moving = p > 0.03 && p < 0.97;
+  };
   const place = () => {
     if (mode === 'talking' && openPoster) { const t = talkPose(openPoster.getBoundingClientRect()); face.target(t.x, t.y, t.r); return; }
     const hp = heroPose(), cp = cornerPose();
     const p = Math.max(0, Math.min(1, scrollY / (hero.getBoundingClientRect().height * 0.55)));
     const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
-    face.target(hp.x + (cp.x - hp.x) * e, (hp.y - scrollY) + (cp.y - (hp.y - scrollY)) * e, hp.r + (cp.r - hp.r) * e);
+    const hy = hp.y - scrollY;
+    face.target(hp.x + (cp.x - hp.x) * e, hy + (cp.y - hy) * e, hp.r + (cp.r - hp.r) * e);
+    setTrip({ x: hp.x, y: hy }, { x: cp.x, y: cp.y });
     mode = e > 0.98 ? 'corner' : 'hero';
   };
   { const hp = heroPose(); face.snap(hp.x, hp.y, hp.r); }
@@ -137,6 +150,7 @@
     ], { duration: 420, easing: 'cubic-bezier(.2,.9,.25,1.1)' });
     shade.hidden = false;
     mode = 'talking'; place();
+    setTrip({ x: face.x, y: face.y }, { x: face.tx, y: face.ty });
     el._justOpened = true; setTimeout(() => { el._justOpened = false; }, 400);
     sayTimer = setTimeout(() => say(el.dataset.line), 350);
   };
@@ -152,7 +166,8 @@
     ], { duration: 340, easing: 'cubic-bezier(.3,.8,.3,1)' });
     shade.hidden = true;
     a.onfinish = () => { el.classList.remove('open'); slot.remove(); el._slot = null; };
-    openPoster = null; mode = 'hero'; place();
+    openPoster = null; const from = { x: face.x, y: face.y }; mode = 'hero'; place();
+    setTrip(from, { x: face.tx, y: face.ty });
   };
   shade.addEventListener('click', closeIt);
   addEventListener('keydown', (e) => { if (e.key === 'Escape') closeIt(); });
@@ -197,6 +212,11 @@
   });
 
   // bubble follows him every frame
-  const tick = () => { if (mode === 'talking') place(); if (!bubble.hidden) placeBubble(); requestAnimationFrame(tick); };
+  const tick = () => {
+    if (mode === 'talking') { place(); if (trip) trip.B = { x: face.tx, y: face.ty }; }
+    roll();
+    if (!bubble.hidden) placeBubble();
+    requestAnimationFrame(tick);
+  };
   tick();
 })();
