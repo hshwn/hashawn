@@ -5,6 +5,7 @@ fn main() {
     let a: Vec<String> = env::args().collect();
     if a.len() >= 3 && a[1] == "img-bench" {
         // nczcli img-bench <k> <a.ppm> [b.ppm ...]: compress, decompress, verify, report bits per pixel
+        // IMG_FLAGS: 1 green plane first, 2 learned colour (implies 1), 4 learned green; 7 = everything
         let k: u8 = a[2].parse().expect("k");
         if std::env::var("IMG_STATS").is_ok() { ncz::img::enable_stats(); }
         let (mut tot_bits, mut tot_px, mut tot_s) = (0f64, 0f64, 0f64);
@@ -12,7 +13,8 @@ fn main() {
             let (rgb, w, h) = ncz::img::read_ppm(&fs::read(f).expect("read")).expect("not a P6 PPM");
             let t0 = std::time::Instant::now();
             ncz::img::take_stats();
-            let c = ncz::img::compress_rgb(&rgb, w, h, k);
+            let flags = std::env::var("IMG_FLAGS").ok().and_then(|v| v.parse().ok()).unwrap_or(0u8);
+            let c = ncz::img::compress_rgb_flags(&rgb, w, h, k, flags);
             let t1 = t0.elapsed().as_secs_f64();
             if std::env::var("IMG_STATS").is_ok() { let s = ncz::img::take_stats(); let n = (w * h) as f64; for (ci, cn) in ["R", "G", "B"].iter().enumerate() { eprintln!("   {cn}: zero {:.3} size {:.3} mant {:.3} sign {:.3}  = {:.3} bpp", s[ci*4]/n, s[ci*4+1]/n, s[ci*4+2]/n, s[ci*4+3]/n, (s[ci*4]+s[ci*4+1]+s[ci*4+2]+s[ci*4+3])/n); } }
             let (back, w2, h2, _) = ncz::img::decompress_rgb(&c).expect("decode");

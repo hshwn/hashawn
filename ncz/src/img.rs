@@ -15,13 +15,15 @@
 use crate::tables::{SQUASH, STRETCH};
 
 pub const MAGIC: &[u8; 4] = b"NCZI";
-pub const VERSION: u8 = 1;
-const HEADER: usize = 4 + 1 + 1 + 4 + 4;
+pub const VERSION: u8 = 2;
+const HEADER: usize = 4 + 1 + 1 + 1 + 4 + 4;
+/// Header flags: how the stream was coded (the decoder must do the same).
+pub const F_PLANAR: u8 = 1; pub const F_LEARNED_COLOUR: u8 = 2; pub const F_LEARNED_GREEN: u8 = 4;
 
-const NP: usize = 12;        // predictors
+const NP: usize = 15;        // predictors
 const ND: usize = 74;        // binary decisions per sample: 0 zero?, 1..=7 size, 8..71 mantissa, 72 sign, 73 spare
 const D_SIGN: usize = 72;
-const NSETS: usize = 13;     // context sets feeding the mixer
+const NSETS: usize = 15;     // context sets feeding the mixer
 const TBITS: u32 = 22;       // one shared hashed table of adaptive probabilities, 2^22 cells
 const N_IN: usize = NSETS + 1;
 const LIMIT: u32 = 255;
@@ -94,7 +96,7 @@ impl Apm {
 }
 
 struct Model {
-    w: usize, h: usize, k: i32,
+    w: usize, h: usize, k: i32, planar: bool,
     rec: [Vec<u8>; 3],                 // reconstructed samples per channel (R, G, B)
     res: [Vec<i16>; 3],                // quantised residual per sample
     err: [Vec<u16>; 3],                // per predictor abs error (x8) at each pixel: [pos * NP + i]
@@ -105,8 +107,42 @@ struct Model {
     eqc: usize, mixbase2: usize, pmix2: i32,
     apm: Apm, apm2: Apm,
     // per-sample context state
+    nets: Option<[Mlp; 2]>, gnet: Option<Mlp>,
     ch: usize, ctx: [u32; NSETS], act: usize, st: [i32; N_IN], sidx: [usize; NSETS], mixbase: usize, pmix: i32, apm_ctx: usize, apm2_ctx: usize,
 }
+
+// ---------------------------------------------------------------------------
+// learned colour from brightness (bench/img/colorfit.py): a tiny MLP, f32 in a fixed order, no fused
+// multiply-add (Rust never fuses), ReLU only, so every machine computes the same bits
+// ---------------------------------------------------------------------------
+struct Mlp { layers: Vec<(usize, usize, Vec<f32>, Vec<f32>)> }
+impl Mlp {
+    fn load(b: &[u8]) -> Mlp {
+        let mut layers = Vec::new(); let mut i = 0;
+        let rd = |b: &[u8], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        let f = |b: &[u8], i: usize, n: usize| -> Vec<f32> { b[i..i + 4 * n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect() };
+        while i < b.len() {
+            let (o, n) = (rd(b, i) as usize, rd(b, i + 4) as usize); i += 8;
+            let w = f(b, i, o * n); i += 4 * o * n; let bias = f(b, i, o); i += 4 * o;
+            layers.push((o, n, w, bias));
+        }
+        Mlp { layers }
+    }
+    fn run(&self, x: &[f32]) -> [f32; 2] {
+        let mut cur: Vec<f32> = x.to_vec();
+        for (li, (o, n, w, b)) in self.layers.iter().enumerate() {
+            let mut nx = vec![0f32; *o];
+            for r in 0..*o { let mut acc = b[r]; let row = &w[r * n..(r + 1) * n]; for j in 0..*n { acc += row[j] * cur[j]; } nx[r] = if li + 1 < self.layers.len() { acc.max(0.0) } else { acc }; }
+            cur = nx;
+        }
+        [cur[0] * 64.0, cur[1]]
+    }
+}
+static NET_RED: &[u8] = include_bytes!("../assets/color_red.bin");
+static NET_BLUE: &[u8] = include_bytes!("../assets/color_blue.bin");
+static NET_GREEN: &[u8] = include_bytes!("../assets/net_green_h64.bin");
+/// Causal neighbours the green network reads (dy, dx), relative to the anchor (W + N) / 2.
+const GREEN_NB: [(isize, isize); 12] = [(0, -1), (0, -2), (-1, -2), (-1, -1), (-1, 0), (-1, 1), (-1, 2), (-2, -2), (-2, -1), (-2, 0), (-2, 1), (-2, 2)];
 
 thread_local! { pub static STATS: std::cell::Cell<[f64; 12]> = const { std::cell::Cell::new([0.0; 12]) }; }
 static STATS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -118,13 +154,16 @@ pub fn take_stats() -> [f64; 12] { STATS.with(|s| s.replace([0.0; 12])) }
 const CODE_ORDER: [usize; 3] = [1, 0, 2];   // green first, then red, then blue (each can lean on the ones before)
 
 impl Model {
-    fn new(w: usize, h: usize, k: i32) -> Model {
+    fn new(w: usize, h: usize, k: i32, flags: u8) -> Model {
+        let planar = flags & F_PLANAR != 0;
         let n = w * h;
         let mut mix = vec![0i32; 3 * ND * 4 * N_IN];
         for s in 0..3 * ND * 4 { for i in 0..NSETS { mix[s * N_IN + i] = 65536 / 4; } }
         let mut mix2 = vec![0i32; 3 * ND * 16 * N_IN];
         for s in 0..3 * ND * 16 { for i in 0..NSETS { mix2[s * N_IN + i] = 65536 / 4; } }
-        Model { w, h, k, mix2, eqc: 0, mixbase2: 0, pmix2: 2048,
+        let nets = if flags & F_LEARNED_COLOUR != 0 && planar { Some([Mlp::load(NET_RED), Mlp::load(NET_BLUE)]) } else { None };
+        let gnet = if flags & F_LEARNED_GREEN != 0 { Some(Mlp::load(NET_GREEN)) } else { None };
+        Model { w, h, k, planar, mix2, eqc: 0, mixbase2: 0, pmix2: 2048, nets, gnet,
             rec: [vec![0; n], vec![0; n], vec![0; n]], res: [vec![0; n], vec![0; n], vec![0; n]],
             err: [vec![0; n * NP], vec![0; n * NP], vec![0; n * NP]],
             bias_sum: vec![0; 3 * 16 * 27], bias_n: vec![0; 3 * 16 * 27],
@@ -190,6 +229,54 @@ impl Model {
             let gc = gi(pos);
             (true, wv + gc - gw, nv + gc - gn, (wv + nv - nw) + (gc - (gw + gn - gnw)))
         } else { (false, 0, 0, 0) };
+        // nearby (green, this channel) pairs: copy the colour offset of the neighbour closest in brightness,
+        // and fit colour = a * green + b over them (chroma from luma)
+        let (bilat, cfl) = if c != 1 {
+            let gc = g[pos] as i32; let rc = &self.rec[c];
+            let mut cand: [(i32, i32); 6] = [(0, 0); 6]; let mut n = 0usize;
+            let mut add = |p: Option<usize>| if let Some(p) = p { cand[n] = (g[p] as i32, rc[p] as i32); n += 1; };
+            add(if x > 0 { Some(pos - 1) } else { None }); add(if y > 0 { Some(pos - w) } else { None });
+            add(if x > 0 && y > 0 { Some(pos - w - 1) } else { None }); add(if y > 0 && x + 1 < w { Some(pos - w + 1) } else { None });
+            add(if x > 1 { Some(pos - 2) } else { None }); add(if y > 1 { Some(pos - 2 * w) } else { None });
+            if n == 0 { (gc, gc) } else {
+                let mut best = 0; for i in 1..n { if (cand[i].0 - gc).abs() < (cand[best].0 - gc).abs() { best = i; } }
+                let bil = gc + cand[best].1 - cand[best].0;
+                let (mut sg, mut sr, mut sgg, mut sgr) = (0i64, 0i64, 0i64, 0i64);
+                for &(gg, rr) in &cand[..n] { sg += gg as i64; sr += rr as i64; sgg += (gg * gg) as i64; sgr += (gg * rr) as i64; }
+                let nn = n as i64; let den = nn * sgg - sg * sg;
+                let fit = if n >= 3 && den > nn * nn * 16 {
+                    let a = ((nn * sgr - sg * sr) * 256 / den).clamp(-512, 1024);
+                    let b = (sr * 256 - a * sg) / nn;
+                    ((a * gc as i64 + b + 128) >> 8) as i32
+                } else { gc + ((sr - sg) / nn) as i32 };
+                (bil, fit)
+            }
+        } else { (wv, nv) };
+        // learned: colour offset from the 5x5 brightness window (whole green plane known) + nearby offsets
+        let (lpred, lsig) = match (&self.nets, c) {
+            (Some(nets), 0) | (Some(nets), 2) if x >= 2 && y >= 2 && x + 2 < w && y + 2 < self.h => {
+                let gc = g[pos] as i32; let rc = &self.rec[c];
+                let mut f = [0f32; 33]; let mut n = 0;
+                for dy in -2isize..=2 { for dx in -2isize..=2 { if dy == 0 && dx == 0 { continue; }
+                    let p = (y as isize + dy) as usize * w + (x as isize + dx) as usize; f[n] = (g[p] as i32 - gc) as f32 / 64.0; n += 1; } }
+                for (dy, dx) in [(0isize, -1isize), (-1, 0), (-1, -1), (-1, 1), (0, -2), (-2, 0)] {
+                    let p = (y as isize + dy) as usize * w + (x as isize + dx) as usize; f[n] = (rc[p] as i32 - g[p] as i32) as f32 / 64.0; n += 1; }
+                if c == 2 { let ro = &self.rec[0]; for p in [pos, pos - 1, pos - w] { f[n] = (ro[p] as i32 - g[p] as i32) as f32 / 64.0; n += 1; } }
+                let o = nets[if c == 0 { 0 } else { 1 }].run(&f[..n]);
+                (gc + o[0].round() as i32, (((o[1] + 1.0) * 4.0).floor() as i32).clamp(0, 15) as u32 + 1)
+            }
+            _ => match &self.gnet {
+                Some(net) if c == 1 && x >= 2 && y >= 2 && x + 2 < w => {
+                    // learned brightness: the 12 coded neighbours relative to the anchor (W + N) / 2
+                    let anchor = (wv + nv) >> 1; let mut f = [0f32; 12];
+                    for (i, (dy, dx)) in GREEN_NB.iter().enumerate() {
+                        let p = (y as isize + dy) as usize * w + (x as isize + dx) as usize; f[i] = (r[p] as i32 - anchor) as f32 / 64.0; }
+                    let o = net.run(&f);
+                    (anchor + o[0].round() as i32, (((o[1] + 0.5) * 3.0).floor() as i32).clamp(0, 15) as u32 + 1)
+                }
+                _ => (cfl, 0),
+            },
+        };
         let med = { let (a, b, cc) = (wv, nv, nw); if cc >= a.max(b) { a.min(b) } else if cc <= a.min(b) { a.max(b) } else { a + b - cc } };
         let preds: [i32; NP] = [
             wv, nv, wv + nv - nw, med, (wv + ne + 1) >> 1, wv + ne - nv, (wv + nv + ne + nw + 2) >> 2, ne,
@@ -199,6 +286,7 @@ impl Model {
             if c == 2 { // blue may also lean on red's change
                 let rr = &self.rec[0]; let rw = if x > 0 { rr[pos - 1] as i32 } else if y > 0 { rr[pos - w] as i32 } else { 128 };
                 wv + rr[pos] as i32 - rw } else { nw + ((ne - nw) >> 1) },
+            bilat, cfl, lpred,
         ];
         // weights from each predictor's recent error around this pixel
         let e = &self.err[c];
@@ -246,6 +334,10 @@ impl Model {
             off(3) * 17 + off(4),
             off(5) * 17 + off(6),
             off(10) * 17 + off(11),
+            off(12) * 17 + off(13) + 289 * if c != 1 && self.planar {
+                let gc = g[pos] as i32; let ge = if x + 1 < w { g[pos + 1] as i32 } else { gc }; let gs = if y + 1 < self.h { g[pos + w] as i32 } else { gc };
+                q16((ge - gc).abs() + (gs - gc).abs()) as u32 + 1 } else { 0 },
+            off(14) * 17 + lsig * 289,
         ];
         self.apm_ctx = c * 16 + aq;
         self.apm2_ctx = c * 27 + sgn(rw) * 9 + sgn(rn) * 3 + sgn(xres);
@@ -285,26 +377,37 @@ impl Model {
     fn run<I: BitIo>(&mut self, io: &mut I, rgb: Option<&[u8]>) -> Vec<u8> {
         let (w, h) = (self.w, self.h);
         let mut out = vec![0u8; w * h * 3];
-        for y in 0..h { for x in 0..w {
-            let pos = y * w + x;
-            for &c in &CODE_ORDER {
-                let v = rgb.map_or(0, |a| a[pos * 3 + c]);
+        if self.planar {
+            // whole green plane first: red and blue then see brightness everywhere, ahead of them too
+            for &c in &CODE_ORDER { for y in 0..h { for x in 0..w {
+                let pos = y * w + x; let v = rgb.map_or(0, |a| a[pos * 3 + c]);
                 out[pos * 3 + c] = self.sample(io, c, x, y, v);
-            }
-        } }
+            } } }
+        } else {
+            for y in 0..h { for x in 0..w {
+                let pos = y * w + x;
+                for &c in &CODE_ORDER {
+                    let v = rgb.map_or(0, |a| a[pos * 3 + c]);
+                    out[pos * 3 + c] = self.sample(io, c, x, y, v);
+                }
+            } }
+        }
         out
     }
 }
 
 /// Compress 8-bit RGB pixels (row-major, 3 bytes per pixel). `k` = 0 lossless, else max abs error per sample.
-pub fn compress_rgb(rgb: &[u8], w: usize, h: usize, k: u8) -> Vec<u8> {
+/// `flags`: F_PLANAR (green plane first), F_LEARNED_COLOUR (needs planar), F_LEARNED_GREEN. 0 = fastest.
+pub fn compress_rgb(rgb: &[u8], w: usize, h: usize, k: u8) -> Vec<u8> { compress_rgb_flags(rgb, w, h, k, 0) }
+pub fn compress_rgb_flags(rgb: &[u8], w: usize, h: usize, k: u8, flags: u8) -> Vec<u8> {
     assert_eq!(rgb.len(), w * h * 3);
-    let mut m = Model::new(w, h, k as i32);
+    let flags = if flags & F_LEARNED_COLOUR != 0 { flags | F_PLANAR } else { flags };
+    let mut m = Model::new(w, h, k as i32, flags);
     let mut e = Enc { x1: 0, x2: 0xFFFF_FFFF, out: Vec::new() };
     m.run(&mut e, Some(rgb));
     e.out.extend_from_slice(&e.x1.to_be_bytes());
     let mut v = Vec::with_capacity(HEADER + e.out.len());
-    v.extend_from_slice(MAGIC); v.push(VERSION); v.push(k);
+    v.extend_from_slice(MAGIC); v.push(VERSION); v.push(k); v.push(flags);
     v.extend_from_slice(&(w as u32).to_le_bytes()); v.extend_from_slice(&(h as u32).to_le_bytes());
     v.extend_from_slice(&e.out);
     v
@@ -313,12 +416,13 @@ pub fn compress_rgb(rgb: &[u8], w: usize, h: usize, k: u8) -> Vec<u8> {
 /// Returns (rgb, w, h, k), or None if this is not an NCZI stream.
 pub fn decompress_rgb(blob: &[u8]) -> Option<(Vec<u8>, usize, usize, u8)> {
     if blob.len() < HEADER || &blob[..4] != MAGIC || blob[4] != VERSION { return None; }
-    let k = blob[5];
-    let w = u32::from_le_bytes(blob[6..10].try_into().ok()?) as usize; let h = u32::from_le_bytes(blob[10..14].try_into().ok()?) as usize;
+    let (k, flags) = (blob[5], blob[6]);
+    if flags & !(F_PLANAR | F_LEARNED_COLOUR | F_LEARNED_GREEN) != 0 { return None; }
+    let w = u32::from_le_bytes(blob[7..11].try_into().ok()?) as usize; let h = u32::from_le_bytes(blob[11..15].try_into().ok()?) as usize;
     if w == 0 || h == 0 || w.checked_mul(h)? > 1 << 28 { return None; }
     let mut d = Dec { x1: 0, x2: 0xFFFF_FFFF, x: 0, buf: &blob[HEADER..], pos: 0 };
     for _ in 0..4 { d.x = (d.x << 8) | d.next_in(); }
-    let mut m = Model::new(w, h, k as i32);
+    let mut m = Model::new(w, h, k as i32, flags);
     Some((m.run(&mut d, None), w, h, k))
 }
 

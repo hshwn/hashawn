@@ -300,3 +300,30 @@ predictor points" contexts and decoded-prefix keys 8.486 -> remaining predictor 
 expected error 8.145 -> mixer step /2 8.101 -> table limit 255 8.097. No gain: predictor-disagreement and
 blend-position contexts, far neighbours (NN, WW, NNE), scale-aware offset pairs. Bits split (kodim01): green
 5.1 bpp, red 2.5, blue 2.4.
+
+### Pixel mode v2: colour from brightness, hand-made and learned (2026-10-21, NCZI v2)
+
+Header gains a flags byte: 1 = green plane first (red/blue then see all of brightness), 2 = learned colour
+(needs 1), 4 = learned brightness. `IMG_FLAGS` selects in `nczcli img-bench`.
+
+- Hand-made, always on: two more colour predictors per pixel. Copy the colour offset of the neighbour whose
+  brightness is closest to this pixel's, and fit colour = a*brightness + b over six neighbours (a local version of
+  AV1's chroma-from-luma). kodim01-04: 8.097 -> 7.904.
+- Green plane first plus an "edge ahead in brightness" context: no gain on its own (7.907).
+- Learned (`bench/img/colorfit.py`, trained on the rig's 3090 on 1,083 COCO photos downsampled 2x, ~10M pixels
+  each; Kodak never seen): tiny MLPs, 2 hidden layers, predicting the value and its own uncertainty (Laplace NLL).
+  Colour: 5x5 brightness window + nearby colour offsets, mean error on Kodak 1.21 vs 1.56 for the a*brightness+b
+  fit. Brightness: 12 coded neighbours, mean error 5.05 vs 5.85 for the median edge predictor. In the coder each is
+  one more predictor plus an uncertainty context. Inference is f32 in a fixed order (no fused multiply-add, ReLU
+  only), so encoder and decoder agree everywhere. Bigger nets (64 hidden) no better for colour.
+- Global hint (a 16x16-block colour thumbnail the encoder would send): estimated -0.4% for red, worse for blue,
+  while sending it would cost ~0.03 bits per sample. Not worth it in this form; not built into the coder.
+
+| set (bpp) | v1 | + hand-made colour | + learned (flags 7) | JPEG XL e9 |
+|---|---:|---:|---:|---:|
+| 4 photos tuned on | 8.097 | 7.906 | 7.842 | 8.148 |
+| 20 photos held out | 8.560 | 8.402 | 8.332 | 8.551 |
+| 3 posters | 3.823 | 3.768 | 3.730 | 4.116 |
+
+Held out: hand-made -1.8%, learned another -0.8%; overall 2.6% under JPEG XL e9 on photos, 9.4% on posters.
+Speed: ~2.7-3.2 MB/s without the nets, ~1 MB/s with them (each net runs for every sample).
