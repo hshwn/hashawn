@@ -167,3 +167,22 @@ are free in total and ncz only has to beat the model's byte bits (it does: 1.643
 Decodable end to end: every quantity depends on past bytes and past flags. Measured at ~45 KB/s (3 threads).
 Flags are coded by the model alone; a mixed flag predictor (model + byte contexts) is the obvious next cut.
 The earlier "1.558" number was this hybrid's byte bits without the flags.
+
+### NCZL: the real codec (2026-10-21)
+
+`slmcli compress|decompress|roundtrip` (slm crate, ncz as a dependency). Stream: "NCZL" | version | mode
+(stored / ncz / ncz+model) | model id | length | payload. Text (UTF-8) takes the model path: token-end
+flags straight through the range coder at the model's probability, bytes through ncz's mixer with the
+bridge's predictions. The tokenizer is ours (Digits + GPT-2 regex + byte-level BPE), 100% identical to
+Hugging Face's ids on Nardo docs and enwik8. Binary falls back to ncz alone or stored (18-byte header).
+
+| file | NCZL bytes | bpb | ncz alone | enc KB/s (M4 Pro, 3 threads) |
+|---|---:|---:|---:|---:|
+| Nardo docs 100 KB | 22292 | 1.7833 | 2.3218 | 46 |
+| code-js-py 74 KB | 17456 | 1.8814 | 2.229 | 32 |
+| site html 15 KB | 3128 | 1.6462 | 2.336 | 35 |
+| pfp.png 53 KB | 52965 (ncz mode) | 8.0027 | 8.019 | 1400 |
+
+Browser (tools/compress, nczl.wasm 199 KB + model pack 3.3 MB fetched once): byte-identical output to
+the native build (same SHA-256 on a 30 KB slice: NEON/3 threads vs simd128/1 thread), 12.6 KB/s each way
+with the simd128 int8 kernel (5.6 with the scalar one). Native single thread ~32 KB/s.

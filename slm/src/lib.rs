@@ -97,7 +97,36 @@ impl QVec {
     {
         if neon_dotprod() { unsafe { qmatvec_neon(m, x, r0, r1, out) }; return; }
     }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "scalar")))]
+    { qmatvec_wasm(m, x, r0, r1, out); return; }
+    #[allow(unreachable_code)]
     qmatvec_scalar(m, x, r0, r1, out)
+}
+/// wasm simd128: int8 widened to int16 lanes, `i32x4.dot_i16x8_s` pairs them into exact i32 sums. Four rows in flight.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "scalar")))]
+fn qmatvec_wasm(m: &QMat, x: &QVec, r0: usize, r1: usize, out: &mut [f32]) {
+    use std::arch::wasm32::*;
+    let n = m.n_in; let nv = n / 16;
+    let mut xw = [i16x8_splat(0); FF / 8];
+    for c in 0..nv { let v = unsafe { v128_load(x.q.as_ptr().add(c * 16) as *const v128) }; xw[2 * c] = i16x8_extend_low_i8x16(v); xw[2 * c + 1] = i16x8_extend_high_i8x16(v); }
+    let w = m.w.as_ptr();
+    #[inline(always)] fn row(w: *const i8, xw: &[v128], nv: usize) -> i32 {
+        let mut acc = i32x4_splat(0);
+        for c in 0..nv {
+            let v = unsafe { v128_load(w.add(c * 16) as *const v128) };
+            acc = i32x4_add(acc, i32x4_dot_i16x8(i16x8_extend_low_i8x16(v), xw[2 * c]));
+            acc = i32x4_add(acc, i32x4_dot_i16x8(i16x8_extend_high_i8x16(v), xw[2 * c + 1]));
+        }
+        (i32x4_extract_lane::<0>(acc) + i32x4_extract_lane::<1>(acc)) + (i32x4_extract_lane::<2>(acc) + i32x4_extract_lane::<3>(acc))
+    }
+    let mut r = r0;
+    while r + 4 <= r1 {
+        let (a0, a1, a2, a3) = unsafe { (row(w.add(r * n), &xw, nv), row(w.add((r + 1) * n), &xw, nv), row(w.add((r + 2) * n), &xw, nv), row(w.add((r + 3) * n), &xw, nv)) };
+        out[r - r0] = a0 as f32 * (x.scale * m.scale[r]); out[r + 1 - r0] = a1 as f32 * (x.scale * m.scale[r + 1]);
+        out[r + 2 - r0] = a2 as f32 * (x.scale * m.scale[r + 2]); out[r + 3 - r0] = a3 as f32 * (x.scale * m.scale[r + 3]);
+        r += 4;
+    }
+    while r < r1 { let a = unsafe { row(w.add(r * n), &xw, nv) }; out[r - r0] = a as f32 * (x.scale * m.scale[r]); r += 1; }
 }
 fn qmatvec_scalar(m: &QMat, x: &QVec, r0: usize, r1: usize, out: &mut [f32]) {
     let n = m.n_in;

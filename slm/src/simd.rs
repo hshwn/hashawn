@@ -261,6 +261,23 @@ const LN2: f32 = 0.693_147_18_f32;
     let d = q.len(); debug_assert!(d % 16 == 0);
     #[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
     { unsafe { qdots_neon(q, sq, keys, ks, scale, out) }; return; }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "scalar")))]
+    {
+        use std::arch::wasm32::*;
+        let nv = d / 16; let mut qw = [i16x8_splat(0); 8];
+        for c in 0..nv { let v = unsafe { v128_load(q.as_ptr().add(c * 16) as *const v128) }; qw[2 * c] = i16x8_extend_low_i8x16(v); qw[2 * c + 1] = i16x8_extend_high_i8x16(v); }
+        for (j, k) in keys.chunks_exact(d).enumerate().take(out.len()) {
+            let mut acc = i32x4_splat(0);
+            for c in 0..nv {
+                let v = unsafe { v128_load(k.as_ptr().add(c * 16) as *const v128) };
+                acc = i32x4_add(acc, i32x4_dot_i16x8(i16x8_extend_low_i8x16(v), qw[2 * c]));
+                acc = i32x4_add(acc, i32x4_dot_i16x8(i16x8_extend_high_i8x16(v), qw[2 * c + 1]));
+            }
+            let s = (i32x4_extract_lane::<0>(acc) + i32x4_extract_lane::<1>(acc)) + (i32x4_extract_lane::<2>(acc) + i32x4_extract_lane::<3>(acc));
+            out[j] = s as f32 * (sq * ks[j]) * scale;
+        }
+        return;
+    }
     #[allow(unreachable_code)]
     for (j, k) in keys.chunks_exact(d).enumerate().take(out.len()) {
         let mut acc = [0i32; 4];

@@ -50,6 +50,20 @@ flags are free in total. `slmcli side <file> <nbytes> <ids.bin> <out.side>` writ
 Fair hybrid: Nardo docs 100 KB 1.7827 bpb (ncz 2.3218, model 1.8701, xz 2.765); enwik8 1 MB 1.4159
 (ncz 1.9071, model 1.5404, xz 2.326).
 
+## The codec (`src/codec.rs`, `slmcli compress | decompress | roundtrip`)
+
+NCZL = ncz with this model as a side input, one stream: `"NCZL" | version | mode | model id | length |
+payload`. UTF-8 text takes the model path (token-end flags at the model's probability straight through
+the coder, bytes through ncz's mixer with the bridge's predictions); anything else is ncz alone or
+stored. `src/bpe.rs` is the model's tokenizer (identical to Hugging Face on 1.1 MB of text).
+`slmcli pack model/model.slmq` writes the quantised weights + tokenizer for the browser; the model id in
+every header is the hash of that pack, so native and wasm streams interoperate (verified by SHA-256).
+`src/wasm.rs` is the C ABI the site's `tools/compress/worker.js` drives: `nczl_load`, streaming
+`nczl_enc_*` / `nczl_dec_*`. Build: `RUSTFLAGS="-C target-feature=+simd128 -C strip=debuginfo" cargo build
+--release --target wasm32-unknown-unknown`, copy `slm.wasm` to `tools/compress/nczl.wasm`.
+
+Nardo docs 100 KB: 1.7833 bpb (ncz 2.3218, xz 2.765), 46 KB/s native, 12.6 KB/s in the browser.
+
 ## Layout
 
 - `src/simd.rs` — `F8`, exp8/ln8/sigmoid8, dot/dots/axpy, quantize, int8 key scores (`sdot` via inline asm).
@@ -57,4 +71,5 @@ Fair hybrid: Nardo docs 100 KB 1.7827 bpb (ncz 2.3218, model 1.8701, xz 2.765); 
 - `src/lib.rs` — weights (int8 `QMat`, head-major projection rows), `Model::step`, the per-head GDN and
   attention kernels, `log_prob`.
 - `src/bridge.rs` — vocab trie in DFS order, prefix-sum masses, the transmitted-flag byte bridge.
+- `src/bpe.rs` — the tokenizer. `src/codec.rs` — NCZL streams. `src/pack.rs` — model pack + id. `src/wasm.rs` — browser ABI.
 - `src/main.rs` — `slmcli`.
