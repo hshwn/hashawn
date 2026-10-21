@@ -1,0 +1,296 @@
+# ncz — neural lossless compressor
+
+A small, self-contained **context-mixing** compressor (PAQ/lpaq lineage) with
+**bit-exact, full-quality retrieval**. No GPU, no dependencies, stdlib only.
+
+## What it actually is (no hype)
+
+- **Neural:** a logistic *mixer* — a single-layer neural net trained online by
+  gradient descent, **one step per bit** — combines predictions from several
+  byte-context models. No pretrained weights; the net adapts to *your* data as
+  it streams.
+- **Lossless ("full quality retrieval"):** the predictor → **binary range
+  coder** pipeline is all integer / fixed-point, so encoder and decoder compute
+  byte-identical probabilities. The decoder replays the exact same model updates
+  in the same order ⇒ reconstruction is bit-exact. Verified by round-trip on
+  every run (`ncz test`).
+- **The catch nobody markets:** neural lossless compression is **slow**. This
+  pure-Python reference runs at **~70 kB/s**. That is fine for files, *not* for
+  "compress my whole disk in the background." Ratio-for-time is the whole trade.
+
+## How it works
+
+```
+bytes ─▶ context models (order 0,1,2,3,4,6 + partial byte)
+            │  each outputs P(next bit = 1), 12-bit fixed point
+            ▼
+        stretch()  (logit space)
+            │
+            ▼
+        logistic mixer  ◀── online gradient update (the neuron)
+            │  squash() back to a probability p
+            ▼
+        binary range coder ─▶ compressed bits
+```
+
+Decoding runs the identical model; each decoded bit feeds the *same* update, so
+the two sides never diverge. That mirror-update property is what makes it
+lossless without storing any model.
+
+## Usage
+
+```bash
+# single file
+python3 ncz.py compress   bigfile      bigfile.ncz
+python3 ncz.py decompress bigfile.ncz  bigfile.out
+
+# a directory / "disk" — pipe through tar (stdin/stdout = "-")
+tar cf - mydir | python3 ncz.py compress - mydir.tar.ncz
+python3 ncz.py decompress mydir.tar.ncz - | tar xf -
+
+# self-check: round-trip + ratio vs gzip/bz2/lzma
+python3 ncz.py test [file]
+```
+
+## Measured (this machine)
+
+Best ratio per row in **bold**. ncz v2 wins every corpus here.
+
+| corpus                | **ncz v2** | gzip -9 | bz2 -9 | lzma   | lossless |
+|-----------------------|-----------|---------|--------|--------|----------|
+| dict words (30 KB)    | **4.14x** | 3.27x   | 3.14x  | 3.61x  | ✅       |
+| mixed text (60 KB)    | **4.02x** | 3.15x   | 2.97x  | 3.57x  | ✅       |
+| source code (15 KB)   | **3.41x** | 3.04x   | 3.10x  | 3.11x  | ✅       |
+
+v2 added the match model (LZP), adaptive-rate StateMaps, a context-gated mixer,
+and two SSE/APM stages — which is what moved it ahead of lzma. Cost: ~27 kB/s
+(down from ~70 in v1) because there's more model to run per bit.
+
+## Upgrade path (remaining wins, in order)
+
+1. **Word / sparse / indirect contexts:** model whole words and skip-gram
+   contexts, not just byte n-grams. Big on natural-language text.
+2. **2-layer mixer:** a second mixing layer with context-selected weight sets.
+3. **Bit-history states + run map:** replace the direct StateMap counter with a
+   nonstationary bit-history state machine (full PAQ). A few % more.
+4. **Speed:** bit-serial Python is the bottleneck. Real usability = port the hot
+   loop (predict + update + coder) to Rust/C via ctypes/cffi. 100–1000× feasible.
+   Vectorizing in numpy does *not* help — the loop is inherently serial.
+
+## Why integer math, not a float net
+
+Floating-point results can differ across builds/platforms. A single different
+bit in the predicted probability desyncs the range coder and corrupts everything
+downstream. Integer fixed-point is deterministic ⇒ the lossless guarantee holds
+regardless of where you decompress.
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>hashawn!</title>
+<meta name="description" content="hashawn — a face on a ball, some posters, and Nardo.">
+<meta name="theme-color" content="#009f4d">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@800;900&display=swap">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preload" as="image" href="assets/face/open_closed.webp">
+<link rel="preload" as="image" href="assets/face/normal.webp">
+</head>
+<body>
+
+<canvas id="face" aria-label="Hassan's face, on a ball. Drag to spin, tap to poke."></canvas>
+<div class="bubble" id="bubble" hidden><span class="txt"></span></div>
+
+<main>
+  <header class="hero" id="hero">
+    <svg class="logo" id="lockup" viewBox="0 0 906 205" aria-label="hashawn!"><use href="#logo"/></svg>
+    <nav class="dock pills" aria-label="Links">
+      <a class="dk" href="https://instagram.com/hashawnnn" target="_blank" rel="noopener" aria-label="Instagram, @hashawnnn" title="@hashawnnn"><img class="pfp" src="assets/pfp.png" alt="" width="160" height="160"></a>
+      <a class="dk" href="nardo/" aria-label="Nardo" title="nardo"><svg><use href="#nardo"/></svg></a>
+      <a class="dk" href="blog/" aria-label="Blog" title="blog"><svg><use href="#i-pen"/></svg></a>
+      <a class="dk" href="tools/" aria-label="Tools" title="tools"><svg><use href="#i-wrench"/></svg></a>
+      <a class="dk" href="mailto:hi@hashawn.com" aria-label="Email" title="mail"><svg><use href="#i-mail"/></svg></a>
+      <a class="dk" href="https://github.com/hshwn" target="_blank" rel="noopener" aria-label="GitHub" title="github"><svg><use href="#i-github"/></svg></a>
+      <button class="dk" id="mute" aria-pressed="false" aria-label="Mute him" title="sound"><svg class="on"><use href="#i-speaker"/></svg><svg class="off"><use href="#i-speaker-x"/></svg></button>
+    </nav>
+  </header>
+
+  <section class="grid" id="grid" aria-label="Posters">
+    <a class="poster" href="assets/poupees.webp" data-id="poupees" data-title="Les Poupées de Paris" data-line="twelve badges. one afternoon. five colors and a lot of liberace.">
+      <img src="assets/poupees-thumb.jpg" alt="Les Poupées de Paris, a sheet of twelve showbiz badges" width="1131" height="1600" loading="lazy">
+      <div class="meta">
+        <p class="cap"><b>Les Poupées de Paris</b><span>2026</span><span>lettering, badges</span></p>
+      </div>
+    </a>
+    <a class="poster" href="assets/harvest.jpg" data-id="harvest" data-title="Harvest Everything!" data-line="every single doodle drawn on a trackpad. the phone has a cord because it's a nice phone.">
+      <img src="assets/harvest-thumb.jpg" alt="Harvest Everything, a doodle poster" width="905" height="1280" loading="lazy">
+      <div class="meta">
+        <p class="cap"><b>Harvest Everything!</b><span>2026</span><span>type, trackpad doodles</span></p>
+      </div>
+    </a>
+    <a class="poster" href="assets/ram.webp" data-id="ram" data-title="RAM!" data-line="the sheep are real. the threat is real. come get me chad gippity.">
+      <img src="assets/ram-thumb.jpg" alt="RAM!, a sticker poster of a pile of rams" width="1131" height="1600" loading="lazy">
+      <div class="meta">
+        <p class="cap"><b>RAM!</b><span>2026</span><span>collage, type</span></p>
+      </div>
+    </a>
+  </section>
+</main>
+
+<div class="shade" id="shade" hidden></div>
+
+<script src="sprite.js"></script>
+<script src="voice.js"></script>
+<script src="sphere.js"></script>
+<script src="site.js"></script>
+</body>
+</html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nardo</title>
+<meta name="description" content="Nardo — a desktop layer for macOS. Hold Caps Lock and the whole Mac answers.">
+<meta name="theme-color" content="#009f4d">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&display=swap">
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+
+<main class="study">
+
+  <nav class="topbar" aria-label="Home">
+    <a class="sticker mark" href="../" aria-label="hashawn! home">
+      <svg viewBox="0 0 217 200" aria-hidden="true"><use href="#hmark"/></svg>
+    </a>
+    <a class="sticker pill ig" href="https://instagram.com/hashawnnn" target="_blank" rel="noopener"><img class="pfp" src="../assets/pfp.png" alt="" width="160" height="160"><span>@hashawnnn</span></a>
+  </nav>
+
+  <header class="nardo-hero" style="--role:var(--nardo)">
+    <span class="chip big"><svg><use href="#nardo"/></svg></span>
+    <div>
+      <h1>Nardo</h1>
+      <p class="sub">A desktop layer for macOS. Hold Caps Lock, the whole Mac answers.</p>
+    </div>
+    <div class="meta">macOS 26 · Swift<br>Solo, 2026</div>
+  </header>
+
+  <section class="sec" id="layer" style="--role:var(--nardo)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#nardo"/></svg></span>
+        <h2 class="name" style="margin-top:12px">The layer</h2>
+        <p>Not a feature pile. One key, Caps Lock, and everything composes as layers on the same stacked surface: bar, cards, strip, sheet. A card tears off into a window. The mini browser grows into the full browser on Enter. Glance, card, window, app, without switching.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ hold</span><span class="tag">⇪ + 1…9 workspaces</span><span class="tag">tear-off cards</span><span class="tag">progressive commitment</span></div>
+    </div>
+    <div class="media">screen recording · the layer</div>
+  </section>
+
+  <section class="sec flip" id="held" style="--role:var(--amber)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-hand"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Held items</h2>
+        <p>Hold the noun, type the verb. Find a file, lift it above the bar, then type at it: <em>under 100mb</em>, <em>mail susan</em>, <em>done</em>. The thing stays held across every step. Modules add verbs, so there is nothing to open and no app to switch to.</p>
+      </div>
+      <div class="tags"><span class="tag">noun → verb</span><span class="tag">verbs typed by noun</span><span class="tag">modules = verbs</span></div>
+    </div>
+    <div class="media">screen recording · held items</div>
+  </section>
+
+  <section class="sec" id="tiling" style="--role:var(--sky)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-grid"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Animated tiling</h2>
+        <p>Other apps' real windows move on a spring, every frame, through the Accessibility API. No snapshots, no stand-ins, no SIP tricks. Auto-tile per display, split and master layouts, workspaces that carry windows with them.</p>
+      </div>
+      <div class="tags"><span class="tag">120 Hz</span><span class="tag">AX, off main</span><span class="tag">no SIP off</span></div>
+    </div>
+    <div class="media">screen recording · tiling</div>
+  </section>
+
+  <section class="sec flip" id="terminal" style="--role:var(--coal)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-term"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Terminal</h2>
+        <p>libghostty under a bare grid. Shells live in a small daemon, so they survive rebuilds and quits. Prompt marks turn output into blocks you can jump, copy and drag out. A card taps you when a long command finishes out of sight.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ T</span><span class="tag">pty daemon</span><span class="tag">OSC 133 blocks</span><span class="tag">⌘ x-ray</span></div>
+    </div>
+    <div class="media">screenshot · terminal</div>
+  </section>
+
+  <section class="sec" id="canvas" style="--role:var(--rose)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-pen"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Surface</h2>
+        <p>An infinite canvas on its own engine: nodes and props, reversible ops, branching history, incremental SQLite saves. Boards, ink, notebooks, PDFs. Everything draws from the document, so undo is a jump, not a replay.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ N</span><span class="tag">branching history</span><span class="tag">own engine</span></div>
+    </div>
+    <div class="media">screenshot · canvas</div>
+  </section>
+
+  <section class="sec flip" id="browser" style="--role:var(--mint)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-globe"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Browser</h2>
+        <p>WebKit with Chrome and Firefox extensions. Spaces with their own sign-ins, tab trees grouped by site, containers. It starts as a result in the bar and becomes the whole window when you commit.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ B</span><span class="tag">extensions</span><span class="tag">spaces</span></div>
+    </div>
+    <div class="media">screenshot · browser</div>
+  </section>
+
+  <section class="sec" id="cards" style="--role:var(--amber)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-stack"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Cards</h2>
+        <p>Clipboard, calendar, mail, media, calculator, answers. Each is a card in the sheet under the bar, ranked by what you typed. Any card tears off into a window and stays live.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ C</span><span class="tag">⇪ E</span><span class="tag">ranked</span><span class="tag">tear-off</span></div>
+    </div>
+    <div class="media">screenshot · cards</div>
+  </section>
+
+  <section class="sec flip" id="dictation" style="--role:var(--sky)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-mic"/></svg></span>
+        <h2 class="name" style="margin-top:12px">Dictation</h2>
+        <p>A live strip that types as you speak, on device. A swipe keyboard for the trackpad. Both are layers in the same stack, so they sit above whatever you are doing.</p>
+      </div>
+      <div class="tags"><span class="tag">⇪ D</span><span class="tag">⇪ K</span><span class="tag">on device</span></div>
+    </div>
+    <div class="media">screen recording · dictation</div>
+  </section>
+
+  <section class="sec" id="brain" style="--role:var(--nardo)">
+    <div class="text">
+      <div>
+        <span class="chip"><svg><use href="#i-chip"/></svg></span>
+        <h2 class="name" style="margin-top:12px">One brain</h2>
+        <p>One small on-device model behind every layer: ranking results, tagging words by meaning, hearing, reading what is on screen. Any language. Nothing leaves the Mac.</p>
+      </div>
+      <div class="tags"><span class="tag">multimodal</span><span class="tag">multilingual</span><span class="tag">on device</span></div>
+    </div>
+    <div class="media">diagram · one brain</div>
+  </section>
+
+</main>
+
+
+<script src="../sprite.js"></script>
+</body>
+</html>

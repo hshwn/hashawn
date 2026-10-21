@@ -1,0 +1,1301 @@
+// blog.js — every post is its own page at /blog/<slug>/. Posts are Markdown files in
+// /posts/<slug>.md, listed newest first in /posts.json. No build step: Cloudflare Pages
+// rewrites /blog/* to blog/index.html (see _redirects) and this script fills the page.
+(() => {
+  const page = document.getElementById('page');
+  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  // ---------- tiny markdown ----------
+  const inline = (s) => esc(s)
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" loading="lazy">')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<i>$2</i>');
+  const md = (src) => {
+    const lines = src.replace(/\r/g, '').split('\n'), out = [];
+    let i = 0, para = [], list = null;
+    const flush = () => { if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; } if (list) { out.push(`</${list}>`); list = null; } };
+    while (i < lines.length) {
+      const l = lines[i];
+      if (/^```/.test(l)) { flush(); const buf = []; i++; while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]); out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`); i++; continue; }
+      const h = l.match(/^(#{1,3})\s+(.*)/);
+      if (h) { flush(); const lv = Math.min(3, Math.max(2, h[1].length)); out.push(`<h${lv}>${inline(h[2])}</h${lv}>`); i++; continue; }   // # and ## are sections, ### a sub
+      if (/^---+\s*$/.test(l)) { flush(); out.push('<hr>'); i++; continue; }
+      if (/^>/.test(l)) { flush(); const buf = []; while (i < lines.length && /^>/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, '')); out.push(`<blockquote>${inline(buf.join(' '))}</blockquote>`); continue; }
+      const li = l.match(/^(\s*)([-*]|\d+\.)\s+(.*)/);
+      if (li) { const kind = /\d/.test(li[2]) ? 'ol' : 'ul'; if (list !== kind) { if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; } if (list) out.push(`</${list}>`); out.push(`<${kind}>`); list = kind; } out.push(`<li>${inline(li[3])}</li>`); i++; continue; }
+      if (!l.trim()) { flush(); i++; continue; }
+      if (list) flush();
+      para.push(l.trim()); i++;
+    }
+    flush();
+    return out.join('\n');
+  };
+  const front = (src) => {
+    const m = src.match(/^---\n([\s\S]*?)\n---\n?/);
+    const meta = {};
+    if (m) for (const line of m[1].split('\n')) { const k = line.match(/^(\w+):\s*(.*)$/); if (k) meta[k[1]] = k[2].trim(); }
+    return { meta, body: m ? src.slice(m[0].length) : src };
+  };
+  const firstLine = (body) => { const p = body.split('\n').map((l) => l.trim()).find((l) => l && !/^[#>\-*`!\d]/.test(l)); return p ? p.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[*_`]/g, '').slice(0, 160) : ''; };
+  const nice = (d) => { const t = new Date(d + 'T12:00:00'); return isNaN(t) ? d : t.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }); };
+
+  // ---------- him, small, in the corner ----------
+  const canvas = document.getElementById('face');
+  const bubble = document.getElementById('bubble'), bubbleTxt = bubble.querySelector('.txt');
+  const phone = () => matchMedia('(max-width: 720px)').matches;
+  const face = Face.create(canvas, {
+    open_closed: '/assets/face/open_closed.webp', open_open: '/assets/face/open_open.webp',
+    shut_closed: '/assets/face/shut_closed.webp', shut_open: '/assets/face/shut_open.webp',
+    normal: '/assets/face/normal.webp',
+  });
+  const corner = () => { const r = phone() ? 34 : 48; return { x: innerWidth - r - (phone() ? 14 : 28), y: innerHeight - r - (phone() ? 14 : 28), r }; };
+  if (face) {
+    const c = corner(); face.snap(c.x, c.y, c.r);
+    addEventListener('resize', () => { const c = corner(); face.target(c.x, c.y, c.r); });
+    const tick = () => { face.setFace(-0.45, 0.35, 1); if (!bubble.hidden) { const half = bubble.offsetWidth / 2, x = Math.max(half + 8, Math.min(innerWidth - half - 8, face.x)); bubble.style.left = `${x}px`; bubble.style.top = `${face.y - face.r - 14}px`; bubble.style.setProperty('--tail', `${face.x - x}px`); } requestAnimationFrame(tick); };
+    tick();
+  }
+  try { if (localStorage.getItem('mute') === '1') Voice.setMuted(true); } catch {}
+  let hideTimer = null;
+  const say = (text) => {
+    if (!face || !text) return;
+    clearTimeout(hideTimer); bubble.hidden = false; bubble.classList.remove('done'); bubbleTxt.textContent = '';
+    Voice.say(text, {
+      onChar: (i) => { bubbleTxt.textContent = text.slice(0, i + 1); },
+      onMouth: (o) => { face.mouthOpen = o; },
+      onEnd: () => { bubble.classList.add('done'); hideTimer = setTimeout(() => { bubble.hidden = true; }, 2600); },
+    });
+  };
+  addEventListener('pointerdown', () => Voice.unlock(), { once: true });
+
+  // ---------- routing: /blog/<slug>/ (or ?p=slug as a fallback) ----------
+  const m = location.pathname.match(/^\/blog\/([^/]+)\/?$/);
+  const slug = (m && m[1] !== 'index.html') ? decodeURIComponent(m[1]) : new URLSearchParams(location.search).get('p');
+  const load = async (s) => { const r = await fetch(`/posts/${s}.md`, { cache: 'no-cache' }); if (!r.ok) throw new Error(s); return front(await r.text()); };
+
+  (async () => {
+    let slugs = [];
+    try { slugs = await (await fetch('/posts.json', { cache: 'no-cache' })).json(); } catch {}
+    slugs = slugs.filter((s) => !s.startsWith('_'));
+
+    if (slug) {
+      try {
+        const { meta, body } = await load(slug);
+        document.title = `${meta.title || slug} — hashawn!`;
+        page.innerHTML = `<article class="post"><header><h1>${esc(meta.title || slug)}</h1><p class="date">${nice(meta.date || '')}</p></header>${md(body)}</article>`;
+        if (meta.say) setTimeout(() => say(meta.say), 700);
+      } catch { page.innerHTML = `<article class="post"><header><h1>not here</h1></header><p>no post called <code>${esc(slug)}</code>. <a href="/blog/">all posts</a></p></article>`; }
+      return;
+    }
+
+    if (!slugs.length) {
+      page.innerHTML = `<section class="index"><h1>blog</h1><p class="muted">nothing written yet.</p></section>`;
+      setTimeout(() => say("i haven't written anything yet. soon."), 900);
+      return;
+    }
+    const items = await Promise.all(slugs.map(async (s) => { try { const { meta, body } = await load(s); return { s, meta, line: firstLine(body) }; } catch { return null; } }));
+    page.innerHTML = `<section class="index"><h1>blog</h1>` + items.filter(Boolean).map(({ s, meta, line }) =>
+      `<a class="entry" href="/blog/${encodeURIComponent(s)}/"><h2>${esc(meta.title || s)}</h2><p class="date">${nice(meta.date || '')}</p>${line ? `<p class="line">${esc(line)}</p>` : ''}</a>`).join('') + `</section>`;
+  })();
+})();
+// site.js — choreography: the ball on the hero, rolling to the corner on scroll,
+// the logo shrinking into the top, posters you pull out of the grid, and him
+// rolling over to talk about them.
+(() => {
+  const canvas = document.getElementById('face');
+  const hero = document.getElementById('hero');
+  const logo = document.getElementById('lockup');
+  const bubble = document.getElementById('bubble');
+  const bubbleTxt = bubble.querySelector('.txt');
+  const shade = document.getElementById('shade');
+  const muteBtn = document.getElementById('mute');
+  const pills = document.querySelector('.pills');
+  const phone = () => matchMedia('(max-width: 720px)').matches;
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+
+  // ---------- lines (drafts, rewrite in your voice) ----------
+  const LINES = {
+    hello: ["hi! i'm hassan. well, my face.", "hello. yes, it's a ball. keep scrolling.", "oh, hi. don't mind me."],
+    poke: ["ow.", "stop that.", "hey!", "my face.", "rude.", "boop yourself."],
+    dizzy: ["ok that's enough spinning", "i'm gonna be sick", "where am i", "the room is spinning. or i am."],
+    corner: ["i'm down here.", "those are mine, by the way.", "go on, pull one out."],
+    idle: ["psst.", "spin me.", "still here.", "you can drag the posters out, you know.", "i'm a ball. deal with it."],
+    unmute: ["oh hi.", "can you hear me now?"],
+    bye: ["ok bye.", "that one's good right?", "next."],
+  };
+
+  const face = Face.create(canvas, {
+    open_closed: 'assets/face/open_closed.webp', open_open: 'assets/face/open_open.webp',
+    shut_closed: 'assets/face/shut_closed.webp', shut_open: 'assets/face/shut_open.webp',
+    normal: 'assets/face/normal.webp',
+  }, () => { setTimeout(() => say(pick(LINES.hello)), 600); });
+  if (!face) { canvas.remove(); return; }
+  window.__face = face;
+
+  // ---------- geometry ----------
+  // the logo lives on top of him in the hero, then shrinks into the top bar on scroll
+  // desktop: the lockup runs wall to wall like a poster title; phone: 90% of the width
+  const logoHero = () => { const w = innerWidth, h = hero.getBoundingClientRect().height; const lw = phone() ? w * 0.9 : Math.min(w * 0.7, h * 1.4); return { x: w / 2, y: h * (phone() ? 0.16 : 0.2), w: lw }; };
+  const logoTop = () => ({ x: innerWidth / 2, y: phone() ? 30 : 38, w: phone() ? 118 : 170 });
+  const LOGO_RATIO = 205 / 906;
+  const placeLogo = (e) => {
+    const a = logoHero(), b = logoTop();
+    const w = a.w + (b.w - a.w) * e, x = a.x + (b.x - a.x) * e, y = (a.y - scrollY) + (b.y - (a.y - scrollY)) * e;
+    logo.style.width = `${w}px`;
+    logo.style.transform = `translate(${x - w / 2}px, ${y - w * LOGO_RATIO / 2}px)`;
+    logo.classList.toggle('small', e > 0.9);
+    // don't sit on the pills while they scroll past
+    const lh = w * LOGO_RATIO, pr = pills.getBoundingClientRect();
+    logo.style.opacity = (e > 0.2 && pr.bottom > y - lh / 2 - 6 && pr.top < y + lh / 2 + 6) ? '0' : '1';
+  };
+  const heroPose = () => {
+    const w = innerWidth, h = hero.getBoundingClientRect().height, lg = logoHero();
+    const logoBottom = lg.y + lg.w * LOGO_RATIO / 2;
+    // desktop: as big as fits between the logo and the dock, overlapping the letters by a third of his radius
+    const tuck = phone() ? 0.14 : 0.34;
+    const r = phone() ? Math.min(w * 0.40, h * 0.26) : Math.min(w * 0.3, h * 0.55 / 2, (h - 96 - logoBottom) / (2 - tuck));
+    return { x: w * 0.5, y: logoBottom - r * tuck + r, r };
+  };
+  const cornerPose = () => { const r = phone() ? 44 : 58; return { x: innerWidth - r - (phone() ? 18 : 36), y: innerHeight - r - (phone() ? 18 : 36), r }; };
+  // beside the open poster (its box includes the caption): to its left when there's
+  // room, else below it, else small in the bottom-right corner
+  const talkPose = (rect) => {
+    let r = phone() ? 42 : 74;
+    const clamp = (p) => ({ x: Math.max(r + 8, Math.min(innerWidth - r - 8, p.x)), y: Math.max(r + 8, Math.min(innerHeight - r - 8, p.y)), r });
+    if (!phone() && rect.left > r * 2.6) return clamp({ x: rect.left - r * 1.4, y: rect.bottom - r * 0.9, r });
+    if (innerHeight - rect.bottom > r * 2 + 16) return clamp({ x: r + 18, y: rect.bottom + r + 8, r });
+    r = 40; return clamp({ x: innerWidth - r - 12, y: innerHeight - r - 12, r });
+  };
+  const progress = () => {
+    const p = Math.max(0, Math.min(1, scrollY / (hero.getBoundingClientRect().height * 0.55)));
+    return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+  };
+
+  // ---------- where he stands, and what he should face ----------
+  let mode = 'hero';                 // hero | corner | talking
+  let openPoster = null;
+  let trip = null;                   // { A:{x,y}, B:{x,y} } — one planned revolution across it
+  const setTrip = (A, B) => { trip = { A, B }; };
+  const roll = () => {
+    if (!trip) { face.setRoll(0, 1, 0); face.moving = false; return; }
+    const dx = trip.B.x - trip.A.x, dy = trip.B.y - trip.A.y, d = Math.hypot(dx, dy) || 1;
+    const p = Math.max(0, Math.min(1, ((face.x - trip.A.x) * dx + (face.y - trip.A.y) * dy) / (d * d)));
+    face.setRoll(dy / d, dx / d, Math.PI * 2 * (d < 80 ? 0 : 1) * p);
+    face.moving = p > 0.03 && p < 0.97;
+  };
+  // face a screen point: direction from him to it, with some depth so it's a lean, not a stare
+  const faceToward = (px, py) => {
+    const lx = px - face.x, ly = -(py - face.y);
+    const dz = Math.max(Math.hypot(lx, ly) * 1.1, 200);
+    face.setFace(lx, ly, dz);
+  };
+  const facing = () => {
+    if (mode === 'talking' && openPoster) { const r = openPoster.getBoundingClientRect(); faceToward(r.left + r.width / 2, r.top + r.height / 2); }
+    else if (mode === 'corner') faceToward(innerWidth * 0.42, innerHeight * 0.4);
+    else face.setFace(0, 0, 1);
+  };
+  let said = { corner: false };
+  const place = () => {
+    const e = progress();
+    placeLogo(e);
+    if (mode === 'talking' && openPoster) { const t = talkPose(openPoster.getBoundingClientRect()); face.target(t.x, t.y, t.r); return; }
+    const hp = heroPose(), cp = cornerPose(), hy = hp.y - scrollY;
+    face.target(hp.x + (cp.x - hp.x) * e, hy + (cp.y - hy) * e, hp.r + (cp.r - hp.r) * e);
+    setTrip({ x: hp.x, y: hy }, { x: cp.x, y: cp.y });
+    const was = mode;
+    mode = e > 0.98 ? 'corner' : 'hero';
+    if (mode === 'corner' && was !== 'corner' && !said.corner) { said.corner = true; setTimeout(() => say(pick(LINES.corner)), 700); }
+  };
+  { const hp = heroPose(); face.snap(hp.x, hp.y, hp.r); }
+  addEventListener('scroll', place, { passive: true });
+  addEventListener('resize', place);
+  place();
+  logo.addEventListener('click', () => scrollTo({ top: 0, behavior: 'smooth' }));
+
+  // ---------- one voice ----------
+  const placeBubble = () => {
+    const half = bubble.offsetWidth / 2, x = Math.max(half + 8, Math.min(innerWidth - half - 8, face.x));
+    bubble.style.left = `${x}px`; bubble.style.top = `${face.y - face.r - 14}px`;
+    bubble.style.setProperty('--tail', `${face.x - x}px`);
+  };
+  let speaking = false, hideTimer = null;
+  let openedAt = 0, closedAt = 0, closeTimer = null, openTimer = null;
+  const mouth = (o) => {
+    if (o) {
+      clearTimeout(closeTimer); closeTimer = null;
+      if (face.mouthOpen || openTimer) return;
+      const wait = Math.max(0, 70 - (performance.now() - closedAt));
+      openTimer = setTimeout(() => { openTimer = null; face.mouthOpen = true; openedAt = performance.now(); }, wait);
+      return;
+    }
+    if (closeTimer || !face.mouthOpen && !openTimer) return;
+    const wait = Math.max(110, 120 - (performance.now() - openedAt));
+    closeTimer = setTimeout(() => { closeTimer = null; clearTimeout(openTimer); openTimer = null; face.mouthOpen = false; closedAt = performance.now(); }, wait);
+  };
+  // say(): a new line always replaces the old one cleanly. quip(): only when he's quiet.
+  const say = (text) => {
+    hush();
+    bubble.hidden = false; bubble.classList.remove('done'); bubbleTxt.textContent = '';
+    speaking = true;
+    Voice.say(text, {
+      onChar: (i) => { bubbleTxt.textContent = text.slice(0, i + 1); },
+      onMouth: mouth,
+      onEnd: () => { speaking = false; bubble.classList.add('done'); hideTimer = setTimeout(() => { if (!speaking) bubble.hidden = true; }, 2200); },
+    });
+  };
+  const quip = (text) => { if (!speaking) say(text); };
+  const hush = () => {
+    Voice.stop(); clearTimeout(hideTimer); clearTimeout(closeTimer); clearTimeout(openTimer); closeTimer = openTimer = null;
+    face.mouthOpen = false; speaking = false; bubble.hidden = true;
+  };
+  // idle quips, rarely, only when nothing is open
+  let lastTouch = performance.now();
+  setInterval(() => { if (mode !== 'talking' && performance.now() - lastTouch > 30000 && Math.random() < 0.5) { quip(pick(LINES.idle)); lastTouch = performance.now(); } }, 12000);
+
+  // ---------- pointer on the ball ----------
+  const onBall = (px, py) => Math.hypot(px - face.x, py - face.y) <= face.r;
+  let drag = null;
+  addEventListener('pointermove', (e) => {
+    if (drag) {
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      drag.dist += Math.hypot(dx, dy);
+      face.drag(dx, dy); drag.x = e.clientX; drag.y = e.clientY;
+      return;
+    }
+    canvas.classList.toggle('hot', onBall(e.clientX, e.clientY));
+  }, { passive: true });
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!onBall(e.clientX, e.clientY)) return;
+    Voice.unlock(); lastTouch = performance.now();
+    drag = { x: e.clientX, y: e.clientY, dist: 0 };
+    face.grab();
+    canvas.classList.add('grabbing'); try { canvas.setPointerCapture(e.pointerId); } catch {}
+  });
+  const endDrag = () => {
+    if (!drag) return;
+    canvas.classList.remove('grabbing');
+    face.release();
+    if (drag.dist < 6) { face.poke(); quip(pick(LINES.poke)); }
+    else if (face.dizzy) setTimeout(() => quip(pick(LINES.dizzy)), 900);
+    drag = null;
+  };
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+
+  // ---------- posters: pull one out ----------
+  const posters = [...document.querySelectorAll('.poster')];
+  let sayTimer = null;
+  const openIt = (el) => {
+    if (openPoster) return;
+    openPoster = el; lastTouch = performance.now();
+    const r0 = el.getBoundingClientRect();
+    const slot = document.createElement('div'); slot.className = 'slot'; slot.style.height = `${r0.height}px`;
+    el._slot = slot; el.after(slot);
+    el.style.transform = ''; el.classList.remove('lifted'); el.classList.add('open');
+    const big = el.querySelector(':scope > img'); big.dataset.thumb = big.dataset.thumb || big.src; big.dataset.cur = el.getAttribute('href'); big.src = el.getAttribute('href');
+    const r1 = el.getBoundingClientRect();
+    el.animate([
+      { transform: `translate(-50%, -50%) translate(${r0.left - r1.left}px, ${r0.top - r1.top}px) scale(${r0.width / r1.width})` },
+      { transform: 'translate(-50%, -50%)' },
+    ], { duration: 420, easing: 'cubic-bezier(.2,.9,.25,1.1)' });
+    shade.hidden = false; document.body.classList.add('locked');
+    hush();
+    mode = 'talking'; place();
+    setTrip({ x: face.x, y: face.y }, { x: face.tx, y: face.ty });
+    el._justOpened = true; setTimeout(() => { el._justOpened = false; }, 400);
+    sayTimer = setTimeout(() => say(el.dataset.line), 350);
+  };
+  const closeIt = () => {
+    const el = openPoster; if (!el) return;
+    clearTimeout(sayTimer); hush();
+    const r1 = el.getBoundingClientRect();
+    const slot = el._slot, r0 = slot.getBoundingClientRect();
+    const a = el.animate([
+      { transform: 'translate(-50%, -50%)' },
+      { transform: `translate(-50%, -50%) translate(${r0.left - r1.left}px, ${r0.top - r1.top}px) scale(${r0.width / r1.width})` },
+    ], { duration: 340, easing: 'cubic-bezier(.3,.8,.3,1)' });
+    shade.hidden = true; document.body.classList.remove('locked');
+    a.onfinish = () => {
+      el.classList.remove('open'); slot.remove(); el._slot = null;
+      const big = el.querySelector(':scope > img'); if (big.dataset.thumb) { big.src = big.dataset.thumb; big.dataset.cur = ''; }
+    };
+    openPoster = null; const from = { x: face.x, y: face.y }; mode = 'hero'; place();
+    setTrip(from, { x: face.tx, y: face.ty });
+    if (Math.random() < 0.4) setTimeout(() => quip(pick(LINES.bye)), 500);
+  };
+  shade.addEventListener('click', closeIt);
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') closeIt(); });
+
+  posters.forEach((el) => {
+    let p = null;
+    el.addEventListener('pointerdown', (e) => {
+      if (el.classList.contains('open') || e.button !== 0) return;
+      Voice.unlock();
+      p = { x: e.clientX, y: e.clientY, dx: 0, dy: 0, lifted: false, id: e.pointerId };
+    });
+    el.addEventListener('pointermove', (e) => {
+      if (!p) return;
+      p.dx = e.clientX - p.x; p.dy = e.clientY - p.y;
+      const d = Math.hypot(p.dx, p.dy);
+      if (!p.lifted && d > 8 && (!phone() || Math.abs(p.dx) > Math.abs(p.dy) * 1.4)) {
+        p.lifted = true; el.classList.add('lifted'); try { el.setPointerCapture(p.id); } catch {}
+      }
+      if (p.lifted) el.style.transform = `translate(${p.dx}px, ${p.dy}px) scale(1.04) rotate(${p.dx * 0.01}deg)`;
+    });
+    const up = () => {
+      if (!p) return;
+      const d = Math.hypot(p.dx, p.dy);
+      if (p.lifted && d > 36) openIt(el);
+      else if (p.lifted) {
+        el.animate([{ transform: el.style.transform }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.2,.9,.3,1.2)' });
+        el.style.transform = ''; el.classList.remove('lifted');
+      } else if (d < 6) openIt(el);
+      p = null;
+    };
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (e.target.closest('.meta')) return;                 // the caption is not the close target
+      if (el.classList.contains('open') && !el._justOpened) closeIt();
+    });
+    el.addEventListener('dragstart', (e) => e.preventDefault());
+  });
+
+  // ---------- mute ----------
+  try { if (localStorage.getItem('mute') === '1') { Voice.setMuted(true); muteBtn.setAttribute('aria-pressed', 'true'); } } catch {}
+  muteBtn.addEventListener('click', () => {
+    const m = !Voice.muted; Voice.setMuted(m); muteBtn.setAttribute('aria-pressed', String(m));
+    try { localStorage.setItem('mute', m ? '1' : '0'); } catch {}
+    if (!m) quip(pick(LINES.unmute));
+  });
+
+  // ---------- every frame ----------
+  const tick = () => {
+    if (mode === 'talking' && openPoster) { place(); if (trip) trip.B = { x: face.tx, y: face.ty }; }
+    roll(); facing();
+    if (!bubble.hidden) placeBubble();
+    requestAnimationFrame(tick);
+  };
+  tick();
+})();
+// sphere.js — his face on a ball. Raw WebGL2, one sphere, five 2k textures.
+// Screen-space API: the ball lives at (x, y) px with radius r px on a fixed full-window canvas.
+window.Face = (() => {
+  const VS = `#version 300 es
+  precision highp float;
+  in vec3 aPos; in vec2 aUV;
+  uniform mat3 uRot; uniform vec2 uViewport; uniform vec2 uCenter; uniform float uRadius; uniform float uSquash;
+  out vec3 vN; out vec3 vT; out vec3 vB; out vec2 vUV;
+  void main() {
+    float lon = (aUV.x - 0.5) * 6.28318530718;
+    float lat = (0.5 - aUV.y) * 3.14159265359;
+    vec3 T = vec3(cos(lon), 0.0, -sin(lon));
+    vec3 B = vec3(-sin(lon) * sin(lat), cos(lat), -cos(lon) * sin(lat));
+    vec3 p = uRot * aPos;
+    vN = uRot * aPos; vT = uRot * T; vB = uRot * B; vUV = aUV;
+    p.x *= 1.0 + uSquash; p.y *= 1.0 - uSquash;
+    vec2 px = uCenter + vec2(p.x, -p.y) * uRadius;
+    gl_Position = vec4(px.x / uViewport.x * 2.0 - 1.0, 1.0 - px.y / uViewport.y * 2.0, -p.z * 0.5, 1.0);
+  }`;
+  const FS = `#version 300 es
+  precision highp float;
+  in vec3 vN; in vec3 vT; in vec3 vB; in vec2 vUV;
+  uniform sampler2D uAlbedo; uniform sampler2D uNormal;
+  out vec4 o;
+  vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+  void main() {
+    vec3 alb = texture(uAlbedo, vUV).rgb;
+    vec3 nm = texture(uNormal, vUV).rgb * 2.0 - 1.0; nm.xy *= 0.7;
+    vec3 N = normalize(normalize(vT) * nm.x + normalize(vB) * nm.y + normalize(vN) * nm.z);
+    vec3 V = vec3(0.0, 0.0, 1.0);
+    vec3 L1 = normalize(vec3(-2.5, 3.0, 4.0)); vec3 C1 = vec3(1.0, 0.957, 0.918) * 0.78;
+    vec3 L2 = normalize(vec3(3.0, 1.0, -3.0)); vec3 C2 = vec3(1.0, 0.706, 0.541) * 0.45;
+    vec3 sky = vec3(1.0, 0.945, 0.902), ground = vec3(0.165, 0.094, 0.063);
+    vec3 hemi = mix(ground, sky, N.y * 0.5 + 0.5) * 0.3;
+    float d1 = max(dot(N, L1), 0.0), d2 = max(dot(N, L2), 0.0);
+    vec3 H = normalize(L1 + V);
+    float spec = pow(max(dot(N, H), 0.0), 28.0) * 0.14 * d1;
+    float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+    vec3 sheen = vec3(1.0, 0.76, 0.66) * fres * 0.22;
+    vec3 col = alb * (hemi + C1 * d1 + C2 * d2) + spec + sheen * (hemi + C1 * d1);
+    col = aces(col * 1.15);
+    col = pow(col, vec3(1.0 / 2.2));
+    o = vec4(col, 1.0);
+  }`;
+
+  const sphere = (su, sv) => {
+    const pos = [], uv = [], idx = [];
+    for (let j = 0; j <= sv; j++) for (let i = 0; i <= su; i++) {
+      const u = i / su, v = j / sv, lon = (u - 0.5) * Math.PI * 2, lat = (0.5 - v) * Math.PI;
+      pos.push(Math.sin(lon) * Math.cos(lat), Math.sin(lat), Math.cos(lon) * Math.cos(lat)); uv.push(u, v);
+    }
+    const at = (i, j) => j * (su + 1) + i;
+    for (let j = 0; j < sv; j++) for (let i = 0; i < su; i++) {
+      const a = at(i, j), b = at(i + 1, j), c = at(i + 1, j + 1), d = at(i, j + 1);
+      if (j !== 0) idx.push(a, c, b);
+      if (j !== sv - 1) idx.push(a, d, c);
+    }
+    return { pos: new Float32Array(pos), uv: new Float32Array(uv), idx: new Uint16Array(idx) };
+  };
+
+  const mul = (A, B) => { const M = new Array(9); for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) M[c * 3 + r] = A[r] * B[c * 3] + A[3 + r] * B[c * 3 + 1] + A[6 + r] * B[c * 3 + 2]; return M; };
+  // quaternions [w, x, y, z]: always a pure rotation after normalising
+  const qI = () => [1, 0, 0, 0];
+  const qAxis = (ax, ay, az, a) => { const s = Math.sin(a / 2); return [Math.cos(a / 2), ax * s, ay * s, az * s]; };
+  const qMul = (a, b) => [
+    a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+    a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+    a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+    a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]];
+  const qNorm = (q) => { const n = Math.hypot(q[0], q[1], q[2], q[3]) || 1; const o = q.map((v) => v / n); return o[0] < 0 ? o.map((v) => -v) : o; };
+  const qToMat = ([w, x, y, z]) => [
+    1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y),
+    2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x),
+    2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)];
+
+  const LAMBDA = 2.3, VIS = 1.15;                          // friction (1/s); face within ~66° counts as visible
+
+  const create = (canvas, urls, onReady) => {
+    const gl = canvas.getContext('webgl2', { antialias: true, alpha: true, premultipliedAlpha: true });
+    if (!gl) return null;
+    const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+    const prog = gl.createProgram(); gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+    const U = {}; for (const n of ['uRot', 'uViewport', 'uCenter', 'uRadius', 'uSquash', 'uAlbedo', 'uNormal']) U[n] = gl.getUniformLocation(prog, n);
+
+    const g = sphere(144, 72);
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const buf = (data, loc, size) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0); };
+    buf(g.pos, gl.getAttribLocation(prog, 'aPos'), 3); buf(g.uv, gl.getAttribLocation(prog, 'aUV'), 2);
+    const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, g.idx, gl.STATIC_DRAW);
+    gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
+
+    const aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    const tex = {};
+    const load = (key, url, srgb) => new Promise((res) => {
+      const im = new Image(); im.onload = () => {
+        const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+        gl.texImage2D(gl.TEXTURE_2D, 0, srgb ? gl.SRGB8_ALPHA8 : gl.RGB8, srgb ? gl.RGBA : gl.RGB, gl.UNSIGNED_BYTE, im);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        if (aniso) gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+        tex[key] = t; res();
+      }; im.src = url;
+    });
+
+    const F = {
+      // screen-space pose (springs toward targets)
+      x: 0, y: 0, r: 100, tx: 0, ty: 0, tr: 100, vx: 0, vy: 0, vr: 0,
+      q: qI(), roll: qI(), moving: false,              // q = how you spun him, roll = the trip's planned turn
+      w: [0, 0, 0], lambda: 0, dizzy: false, held: false, lastDrag: 0,   // w = angular velocity, rad/s
+      // planned part of the orientation: the trip's one revolution
+      setRoll(ax, ay, angle) { F.roll = angle ? qAxis(ax, ay, 0, angle) : qI(); },
+      // where he should roughly face once everything has settled (unit vector, +z = at you)
+      face: [0, 0, 1],
+      setFace(x, y, z) { const L = Math.hypot(x, y, z) || 1; F.face = [x / L, y / L, z / L]; },
+      squash: 0, squashV: 0,
+      eyesShut: false, mouthOpen: false, ready: false,
+      snap(x, y, r) { F.x = F.tx = x; F.y = F.ty = y; F.r = F.tr = r; F.vx = F.vy = F.vr = 0; },
+      target(x, y, r) { F.tx = x; F.ty = y; F.tr = r; },
+      grab() { F.held = true; F.w = [0, 0, 0]; F.lastDrag = performance.now(); },
+      drag(dx, dy) {                                   // trackball: the surface follows the finger 1:1
+        const d = Math.hypot(dx, dy); if (d < 0.01) return;
+        const now = performance.now(), dt = Math.max(0.004, (now - F.lastDrag) / 1000); F.lastDrag = now;
+        const angle = d / F.r;
+        F.q = qNorm(qMul(qAxis(dy / d, dx / d, 0, angle), F.q));
+        const sp = angle / dt; F.w = [dy / d * sp, dx / d * sp, 0];
+      },
+      release() {
+        F.held = false;
+        if (performance.now() - F.lastDrag > 80) F.w = [0, 0, 0];   // stopped before letting go: no fling
+        const sp = Math.hypot(F.w[0], F.w[1], F.w[2]);
+        F.dizzy = sp > 9;
+        // pick this fling's friction once: exponential friction turns him sp/λ radians in total,
+        // so choose λ (0.5x–1.7x normal) such that the face ends up in view
+        F.lambda = LAMBDA;
+        if (sp > 0.3) {
+          const M = qToMat(F.q), f0 = [M[6], M[7], M[8]];
+          const ax = [F.w[0] / sp, F.w[1] / sp, F.w[2] / sp];
+          const faceZ = (th) => {                                   // z of the face after turning th about ax (Rodrigues)
+            const c = Math.cos(th), si = Math.sin(th), k = ax[0] * f0[0] + ax[1] * f0[1] + ax[2] * f0[2];
+            return f0[2] * c + (ax[0] * f0[1] - ax[1] * f0[0]) * si + ax[2] * k * (1 - c);
+          };
+          const nat = sp / LAMBDA, lim = Math.cos(VIS - 0.12);
+          if (faceZ(nat) < lim) {
+            // prefer a slightly longer spin over a shorter one; allow up to 2x, down to 0.6x
+            let best = null;
+            for (let d = 0.02; d <= nat; d += 0.02) {
+              if (faceZ(nat + d) >= lim) { best = nat + d; break; }
+              if (d <= nat * 0.4 && faceZ(nat - d) >= lim) { best = nat - d; break; }
+            }
+            if (best) F.lambda = sp / best;
+          }
+        }
+      },
+      poke() { F.squashV = -1.6; },
+    };
+
+    let last = performance.now();
+    const spring = (p, v, t, dt, k = 220, c = 26) => { const a = (t - p) * k - v * c; v += a * dt; p += v * dt; return [p, v]; };
+    const step = (now) => {
+      try { frame(now); } catch (e) { F.error = String(e && e.stack || e); }
+      requestAnimationFrame(step);
+    };
+    const frame = (now) => {
+      const dt = Math.min(0.05, (now - last) / 1000); last = now;
+      [F.x, F.vx] = spring(F.x, F.vx, F.tx, dt, 160, 22);
+      [F.y, F.vy] = spring(F.y, F.vy, F.ty, dt, 160, 22);
+      [F.r, F.vr] = spring(F.r, F.vr, F.tr, dt, 160, 22);
+      // the roll itself is planned by the page (setRoll): a whole turn across each trip
+      if (!F.held) {
+        // a ball in space: spins on its axis and slows on one exponential curve
+        const damp = Math.exp(-(F.lambda || LAMBDA) * dt);
+        F.w[0] *= damp; F.w[1] *= damp; F.w[2] *= damp;
+        const sp = Math.hypot(F.w[0], F.w[1], F.w[2]);
+        if (sp > 1e-4) F.q = qNorm(qMul(qAxis(F.w[0] / sp, F.w[1] / sp, F.w[2] / sp, sp * dt), F.q));
+        if (sp < 2) F.dizzy = false;
+        // settled: a slow, gentle push toward roughly the right direction. stops inside a loose cone.
+        if (sp < 0.15 && !F.moving) {
+          const M = qToMat(F.q), f = [M[6], M[7], M[8]], T = F.face;
+          const c = Math.max(-1, Math.min(1, f[0] * T[0] + f[1] * T[1] + f[2] * T[2]));
+          const ang = Math.acos(c);
+          if (ang > 0.26) {
+            const ax = [f[1] * T[2] - f[2] * T[1], f[2] * T[0] - f[0] * T[2], f[0] * T[1] - f[1] * T[0]];
+            const n = Math.hypot(ax[0], ax[1], ax[2]) || 1;
+            const step = Math.min(0.55, 1.1 * (ang - 0.26)) * dt;        // eases out as it reaches the cone
+            F.q = qNorm(qMul(qAxis(ax[0] / n, ax[1] / n, ax[2] / n, step), F.q));
+          }
+        }
+      }
+      [F.squash, F.squashV] = spring(F.squash, F.squashV, 0, dt, 300, 16);
+
+      const w = canvas.clientWidth, h = canvas.clientHeight, dpr = Math.min(devicePixelRatio || 1, 3);
+      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      if (F.ready) {
+        const key = `${F.eyesShut || F.dizzy ? 'shut' : 'open'}_${F.mouthOpen ? 'open' : 'closed'}`;
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[key]); gl.uniform1i(U.uAlbedo, 0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tex.normal); gl.uniform1i(U.uNormal, 1);
+        gl.uniformMatrix3fv(U.uRot, false, new Float32Array(mul(qToMat(F.roll), qToMat(F.q))));
+        gl.uniform2f(U.uViewport, w, h); gl.uniform2f(U.uCenter, F.x, F.y); gl.uniform1f(U.uRadius, F.r); gl.uniform1f(U.uSquash, F.squash);
+        gl.drawElements(gl.TRIANGLES, g.idx.length, gl.UNSIGNED_SHORT, 0);
+      }
+    };
+    requestAnimationFrame(step);
+
+    // blink, with the odd double blink
+    const blink = () => setTimeout(() => {
+      F.eyesShut = true;
+      setTimeout(() => {
+        F.eyesShut = false;
+        if (Math.random() < 0.18) setTimeout(() => { F.eyesShut = true; setTimeout(() => { F.eyesShut = false; }, 110); }, 160);
+        blink();
+      }, 120 + Math.random() * 60);
+    }, 1800 + Math.random() * 4200);
+    blink();
+
+    Promise.all([
+      load('open_closed', urls.open_closed, true), load('open_open', urls.open_open, true),
+      load('shut_closed', urls.shut_closed, true), load('shut_open', urls.shut_open, true),
+      load('normal', urls.normal, false),
+    ]).then(() => { F.ready = true; onReady && onReady(); });
+    return F;
+  };
+  return { create };
+})();
+// icon + logo sprite, injected once so every page shares it
+document.body.insertAdjacentHTML("afterbegin", `<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="logo" viewBox="0 0 906 205" overflow="visible" fill-rule="evenodd" stroke-linejoin="round"><g transform="matrix(1.622611,0,0,1.622611,-5.010455,-3.669987)">
+<path d="M268.454,44.641C270.302,45.998 277.089,55.465 277.189,55.655C280.086,61.178 284.615,54.656 293.453,53.23C308.774,50.758 308.697,50.422 312.456,50.167C318.193,49.776 306.979,38.328 293.332,48.23C292.22,49.037 279.274,57.37 270.441,44.497C259.111,27.983 300.188,15.76 308.507,16.478C314.88,17.028 322.326,22.364 329.233,29.072C332.052,31.81 333.271,23.254 344.538,24.478C355.806,25.701 356.469,40.782 360.523,54.728C361.972,59.713 364.103,68.345 367.537,61.711C367.666,61.462 377.295,35.724 379.465,33.222C381.288,31.12 383.723,29.187 386.492,29.095C397.166,28.741 403.439,39.345 404.195,40.889C407.699,48.045 411.753,64.188 414.548,64.46C421.502,65.136 420.94,16.764 442.666,24.247C444.862,25.003 444.575,25.437 446.647,26.488C446.851,26.591 457.116,23.473 465.19,29.094C466.106,29.731 465.793,29.944 466.623,30.591C468.461,32.022 472.494,28.872 475.435,28.403C484.955,26.883 504.854,28.242 512.612,45.679C522.326,67.511 517.227,84.842 514.753,113.774C513.637,126.833 507.786,127.087 506.532,127.142C482.409,128.192 487.378,115.786 489.929,84.719C491.432,66.428 487.286,62.121 484.691,61.481C475.737,59.273 471.861,64.266 465.566,93.78C464.976,96.541 462.893,111.287 462.557,112.804C459.564,126.342 434.745,123.937 435.116,110.76C435.126,110.405 433.664,101.178 432.431,106.678C430.362,115.906 420.745,128.125 408.8,120.38C399.433,114.306 396.412,87.305 390.277,87.63C385.334,87.892 376.427,108.062 375.198,110.584C374.625,111.758 369.983,121.281 363.552,122.024C349.138,123.689 350.08,112.456 348.5,112.347C348.062,112.317 347.883,114.577 347.653,115.798C347.141,118.516 342.306,122.532 339.549,123.002C331.165,124.433 326.574,118.202 325.797,117.426C321.983,113.62 313.078,124.373 288.492,123.896C279.294,123.717 278.841,118.953 276.508,122.744C274.577,125.882 270.559,127.041 266.151,126.915C262.68,126.815 258.343,126.273 255.216,122.844C254.318,121.859 253.334,120.625 252.699,119.231C252.176,118.082 251.677,116.824 251.411,115.508C250.904,113.005 250.201,111.597 250.253,106.599C250.297,102.4 251.057,94.383 251.108,93.678C251.615,86.794 253.259,69.949 246.028,71.686C241.295,72.822 238.348,76.773 236.449,84.565C235.326,89.178 235.685,96.434 233.8,106.557C231.371,119.604 220.947,122.946 216.047,121.404C208.401,118.997 206.298,121.928 202.543,122.313C182.782,124.338 179.309,123.225 160.291,112.432C156.283,110.157 153.574,105.482 153.522,105.46C150.627,104.257 152.736,108.82 152.791,109.489C153.901,122.816 141.885,125.852 137.493,124.519C131.032,122.559 131.81,121.321 128.135,115.733C127.46,114.707 126.571,114.808 117.514,117.541C111.498,119.356 94.56,119.116 92.492,118.523C86.413,116.779 88.473,122.46 82.513,124.531C58.027,133.038 59.094,98.429 57.778,93.408C56.634,89.046 55.37,69.013 47.096,75.103C38.048,81.761 41.204,98.915 41.106,109.503C40.918,129.747 22.903,131.109 13.539,121.648C8.022,116.075 7.705,79.487 6.037,68.441C3.972,54.763 2.976,27.242 3.098,24.502C3.976,4.741 33.896,2.6 34.985,28.468C35.3,35.96 35.256,44.932 40.248,42.491C54.455,35.542 67.944,42.303 71.554,45.743C79.028,52.866 79.12,53.652 81.138,57.256C84.328,62.954 85.615,55.355 102.478,50.348C105.319,49.505 124.486,49.972 126.506,50.482C133.828,52.33 130.477,46.455 126.472,44.557C116.918,40.03 109.533,45.886 107.506,46.516C86.812,52.95 83.628,25.921 99.489,20.475C131.248,9.571 137.6,19.97 144.733,24.12C152.482,28.629 152.049,35.744 154.752,32.877C168.808,17.959 202.65,19.891 204.515,20.459C209.296,21.913 208.832,19.451 209.237,14.463C210.087,3.995 225.309,-3.28 236.19,7.804C242.082,13.806 238.229,37.444 238.149,38.46C237.628,45.129 247.535,29.974 268.454,44.641L103.496,92.996C120.092,93.412 129.778,79.078 125.435,76.832C114.941,71.405 90.214,73.961 95.91,89.454C97.718,94.371 102.828,92.947 103.496,92.996L268.454,44.641L314.996,80.577C316.08,77.241 316.951,73.89 314.849,73.727C301.535,72.694 272.449,82.757 288.888,96.23C297.178,103.024 309.303,98.159 314.996,80.577L268.454,44.641L188.432,96.097C188.678,96.113 193.304,96.712 194.812,96.152C198.321,94.85 200.091,91.407 198.971,89.32C197.021,85.687 167.459,79.595 158.659,73.221C155.459,70.903 155.517,73.506 155.026,77.435C154.553,81.22 153.059,83.9 156.51,82.536C164.158,79.512 174.924,92.06 188.432,96.097L268.454,44.641L178.275,51.486C178.275,51.486 178.443,52.109 178.578,52.401C182.46,60.783 204.677,64.029 204.992,61.808C206.449,51.552 206.251,49.589 206.144,48.528C205.848,45.591 199.091,47.728 196.509,47.806C195.059,47.85 187.867,48.068 178.61,50.654C177.86,50.864 178.035,50.756 178.275,51.486L268.454,44.641Z"/>
+<path d="M 552.34,106.58 C 552.20,105.77 551.40,100.99 547.89,97.19 C 531.32,79.17 517.64,102.34 520.26,111.69 C 527.81,138.71 557.26,126.52 552.34,106.58Z" stroke="currentColor" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 559.96,30.68 C 560.60,20.49 561.08,9.38 547.26,6.38 C 540.84,4.99 527.47,9.61 526.42,28.33 C 526.26,31.17 525.03,41.69 524.27,60.33 C 524.25,60.74 522.95,77.69 535.30,83.82 C 541.48,86.90 554.19,83.14 557.11,61.22 C 559.40,43.96 559.22,42.64 559.96,30.68Z" stroke="currentColor" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round"/>
+</g></symbol>
+<symbol id="hmark" viewBox="0 0 217 200" overflow="visible" fill-rule="evenodd" stroke-linejoin="round"><g transform="matrix(1.622611,0,0,1.622611,-5.010455,-8.423403)">
+<path d="M81.138,57.256C81.7,58.461 83.027,61.347 83.782,65.203C85.818,75.601 87.555,93.053 88.138,103.615C89.087,120.786 85.747,123.407 82.513,124.531C58.027,133.038 59.094,98.429 57.778,93.408C56.634,89.046 55.37,69.013 47.096,75.103C38.048,81.761 41.204,98.915 41.106,109.503C40.918,129.747 22.903,131.109 13.539,121.648C8.022,116.075 7.705,79.487 6.037,68.441C3.972,54.763 2.976,27.242 3.098,24.502C3.976,4.741 33.896,2.6 34.985,28.468C35.3,35.96 35.256,44.932 40.248,42.491C54.455,35.542 67.944,42.303 71.554,45.743C79.028,52.866 79.394,53.512 81.138,57.256Z"/>
+<path d="M 127.71,106.58 C 127.58,105.77 126.77,100.99 123.27,97.19 C 106.69,79.17 93.02,102.34 95.63,111.69 C 103.19,138.71 132.64,126.52 127.71,106.58Z" stroke="currentColor" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 135.34,30.68 C 135.97,20.49 136.46,9.38 122.63,6.38 C 116.21,4.99 102.85,9.61 101.80,28.33 C 101.64,31.17 100.40,41.69 99.65,60.33 C 99.63,60.74 98.33,77.69 110.67,83.82 C 116.86,86.90 129.56,83.14 132.48,61.22 C 134.78,43.96 134.60,42.64 135.34,30.68Z" stroke="currentColor" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round"/>
+</g></symbol>
+    <!-- heroicons (outline, 24) -->
+    <symbol id="i-rays" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672ZM12 2.25V4.5m5.834.166-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243-1.59-1.59"/></symbol>
+    <symbol id="i-hand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.05 4.575a1.575 1.575 0 1 0-3.15 0v3m3.15-3v-1.5a1.575 1.575 0 0 1 3.15 0v1.5m-3.15 0 .075 5.925m3.075.75V4.575m0 0a1.575 1.575 0 0 1 3.15 0V15M6.9 7.575a1.575 1.575 0 1 0-3.15 0v8.175a6.75 6.75 0 0 0 6.75 6.75h2.018a5.25 5.25 0 0 0 3.712-1.538l1.732-1.732a5.25 5.25 0 0 0 1.538-3.712l.003-2.024a.668.668 0 0 1 .198-.471 1.575 1.575 0 1 0-2.228-2.228 3.818 3.818 0 0 0-1.12 2.687M6.9 7.575V12m6.27 4.318A4.49 4.49 0 0 1 16.35 15m.002 0h-.002"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"/></symbol>
+    <symbol id="i-term" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 0 0 2.25-2.25V6.75a2.25 2.25 0 0 0-2.25-2.25H6.75A2.25 2.25 0 0 0 4.5 6.75v10.5a2.25 2.25 0 0 0 2.25 2.25Zm.75-12h9v9h-9v-9Z"/></symbol>
+    <symbol id="i-stack" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6.878V6a2.25 2.25 0 0 1 2.25-2.25h7.5A2.25 2.25 0 0 1 18 6v.878m-12 0c.235-.083.487-.128.75-.128h10.5c.263 0 .515.045.75.128m-12 0A2.25 2.25 0 0 0 4.5 9v.878m13.5-3A2.25 2.25 0 0 1 19.5 9v.878m0 0a2.246 2.246 0 0 0-.75-.128H5.25c-.263 0-.515.045-.75.128m15 0A2.25 2.25 0 0 1 21 12v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6c0-.98.626-1.813 1.5-2.122"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 19.5 15-15m0 0H8.25m11.25 0v11.25"/></symbol>
+    <symbol id="i-ig" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.3" cy="6.7" r="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/></symbol>
+    <symbol id="i-speaker-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/></symbol>
+    <symbol id="nardo" viewBox="0 0 107 119" fill="currentColor" fill-rule="evenodd"><g transform="matrix(1,0,0,1,-1448.114559,-2325)">        <g transform="matrix(1.20202,0,0,1.20202,108.959596,-218.474747)">            <path d="M1158.5,2116C1172.054,2116 1174.485,2137.813 1174.141,2138.408C1174.485,2137.813 1194.591,2129.012 1201.368,2140.75C1208.145,2152.488 1190.47,2165.5 1189.783,2165.5C1190.47,2165.5 1208.145,2178.512 1201.368,2190.25C1194.591,2201.988 1174.485,2193.187 1174.141,2192.592C1174.485,2193.187 1172.054,2215 1158.5,2215C1144.946,2215 1142.515,2193.187 1142.859,2192.592C1142.515,2193.187 1122.409,2201.988 1115.632,2190.25C1108.855,2178.512 1126.53,2165.5 1127.217,2165.5C1126.53,2165.5 1108.855,2152.488 1115.632,2140.75C1122.409,2129.012 1142.515,2137.813 1142.859,2138.408C1142.515,2137.813 1144.946,2116 1158.5,2116Z"/>        </g>    </g></symbol>
+    <symbol id="i-arrow-down-tray" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437 1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008Z"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></symbol>
+  </defs>
+</svg>
+`);
+// voice.js — Animal-Crossing-style babble, one sound per letter.
+// Vowels are little formant vowels (each has its own shape), consonants are clicks,
+// hisses or hums by family, and punctuation bends the melody. Deterministic: the
+// same text always sings the same tune.
+// API: Voice.say(text, {onChar, onMouth, onEnd}) → stop; Voice.stop(); Voice.unlock(); Voice.setMuted(b); Voice.muted
+window.Voice = (() => {
+  let ctx = null, master = null, muted = false;
+  const CFG = { base: 196, rate: 1.0, gain: 0.4 };          // base pitch (Hz), speed, loudness
+
+  const unlock = () => {
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = muted ? 0 : CFG.gain;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 4200; lp.Q.value = 0.6;
+      const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 4; comp.attack.value = 0.003; comp.release.value = 0.08;
+      master.connect(lp).connect(comp).connect(ctx.destination);
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  };
+  const setMuted = (m) => { muted = m; if (master) master.gain.setTargetAtTime(m ? 0 : CFG.gain, ctx.currentTime, 0.02); };
+
+  // ---------- letter families ----------
+  // vowel formants (F1, F2) in Hz, roughly: a=ah, e=eh, i=ee, o=oh, u=oo, y=ih
+  const VOWEL = { a: [730, 1090], e: [530, 1840], i: [270, 2290], o: [570, 840], u: [300, 870], y: [390, 1990] };
+  const PLOSIVE = 'pbtdkgq', FRIC = 'sfhzxcvj', NASAL = 'mnlrw';
+  const fam = (c) => VOWEL[c] ? 'v' : PLOSIVE.includes(c) ? 'p' : FRIC.includes(c) ? 'f' : NASAL.includes(c) ? 'n' : null;
+
+  const hash = (s) => { let h = 2166136261; for (const ch of s) h = Math.imul(h ^ ch.charCodeAt(0), 16777619); return (h >>> 0) / 4294967296; };
+  const st = (n) => Math.pow(2, n / 12);                     // semitones → ratio
+
+  let noiseBuf = null;
+  const noise = () => {
+    if (!noiseBuf) { noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+    const s = ctx.createBufferSource(); s.buffer = noiseBuf; return s;
+  };
+  const env = (g, t, a, peak, dur) => { g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + dur); };
+
+  // one vowel: pulse-ish source → two formant bandpasses in parallel
+  const vowel = (t, c, f0, dur, loud) => {
+    const [F1, F2] = VOWEL[c];
+    const osc = ctx.createOscillator(); osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(f0 * 1.04, t);
+    osc.frequency.exponentialRampToValueAtTime(f0, t + dur * 0.35);
+    osc.frequency.exponentialRampToValueAtTime(f0 * 0.965, t + dur);
+    const mix = ctx.createGain(); mix.gain.value = 1;
+    for (const [F, q, w] of [[F1, 7, 1.0], [F2, 9, 0.55]]) {
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = F; bp.Q.value = q;
+      const g = ctx.createGain(); g.gain.value = w;
+      osc.connect(bp).connect(g).connect(mix);
+    }
+    const g = ctx.createGain(); env(g, t, 0.012, loud, dur);
+    mix.connect(g).connect(line);
+    osc.start(t); osc.stop(t + dur + 0.02);
+  };
+  // plosive: a click of noise plus a tiny low thump
+  const plosive = (t, c, f0, loud) => {
+    const n = noise(); const hp = ctx.createBiquadFilter(); hp.type = 'bandpass'; hp.frequency.value = 'ptk'.includes(c) ? 2600 : 1200; hp.Q.value = 1.2;
+    const g = ctx.createGain(); env(g, t, 0.002, loud * 0.5, 0.028);
+    n.connect(hp).connect(g).connect(line); n.start(t); n.stop(t + 0.04);
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(f0 * 0.9, t); o.frequency.exponentialRampToValueAtTime(f0 * 0.5, t + 0.04);
+    const g2 = ctx.createGain(); env(g2, t, 0.003, loud * 0.5, 0.045);
+    o.connect(g2).connect(line); o.start(t); o.stop(t + 0.06);
+  };
+  // fricative: a hiss, brighter for s/z/c/x, softer for f/h/v/j
+  const fric = (t, c, loud, dur) => {
+    const n = noise(); const bp = ctx.createBiquadFilter(); bp.type = 'bandpass';
+    bp.frequency.value = 'szcx'.includes(c) ? 5200 : 'h' === c ? 1500 : 3000; bp.Q.value = 0.8;
+    const g = ctx.createGain(); env(g, t, 0.008, loud * ('h' === c ? 0.25 : 0.4), dur);
+    n.connect(bp).connect(g).connect(line); n.start(t); n.stop(t + dur + 0.02);
+  };
+  // nasal / liquid: a soft hum an octave down, slightly closed
+  const nasal = (t, c, f0, loud, dur) => {
+    const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f0 * 1.03, t + dur);
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 'mn'.includes(c) ? 700 : 1400;
+    const g = ctx.createGain(); env(g, t, 0.01, loud * 0.7, dur);
+    o.connect(lp).connect(g).connect(line); o.start(t); o.stop(t + dur + 0.02);
+  };
+
+  // ---------- prosody ----------
+  // split into sentences, each ending in . ! ? … or the end; a comma is a dip + pause inside one
+  const plan = (text) => {
+    const chars = [...text], out = [];
+    const seed = hash(text);
+    let sentenceStart = 0;
+    const flush = (end, ender) => {
+      const slice = out.slice(sentenceStart, end);
+      const n = slice.length || 1;
+      slice.forEach((ev, k) => {
+        const p = k / Math.max(1, n - 1);                      // 0..1 through the sentence
+        let bend = -1.2 * p;                                   // statements drift down
+        let loud = 1;
+        if (ender === '?') bend = p > 0.6 ? (p - 0.6) / 0.4 * 5.5 : -0.5 * p;
+        if (ender === '!') { bend = 2 + (p > 0.75 ? (p - 0.75) / 0.25 * 2.5 : 0) - (p > 0.95 ? 3 : 0); loud = 1.18; }
+        if (ender === '…') bend = -3 * p;
+        ev.bend += bend; ev.loud *= loud;
+      });
+      sentenceStart = out.length;
+    };
+    let wordStart = true, prevComma = false;
+    for (let i = 0; i < chars.length; i++) {
+      const raw = chars[i], c = raw.toLowerCase();
+      const f = fam(c);
+      if (f) {
+        const wob = (hash(text + i) - 0.5) * 1.6;                 // seeded wobble, ±0.8 semitone
+        let bend = wob + (wordStart ? 1.2 : 0) + (prevComma ? -0.8 : 0);
+        out.push({ i, c, f, bend, loud: wordStart ? 1.08 : 1 });
+        wordStart = false; prevComma = false;
+      } else {
+        out.push({ i, c, f: null, pause: c === ' ' ? 0.055 : c === ',' ? 0.16 : c === '.' || c === '!' || c === '?' ? 0.26 : c === '…' ? 0.4 : 0.02 });
+        if (c === ' ') wordStart = true;
+        if (c === ',') { prevComma = true; wordStart = true; }
+        if (c === '.' || c === '!' || c === '?' || c === '…') { flush(out.length - 1, c); wordStart = true; }
+        if (c === '.' && chars[i + 1] === '.' ) { /* "..." handled as periods with pauses */ }
+      }
+    }
+    flush(out.length, null);
+    return { events: out, seed };
+  };
+
+  let current = null, line = null;                             // line = this utterance's gain node
+  const say = (text, { onChar, onMouth, onEnd } = {}) => {
+    stop(); unlock();
+    line = ctx.createGain(); line.connect(master);
+    const { events, seed } = plan(text);
+    const base = CFG.base * st((seed - 0.5) * 1.5);            // each line sits a hair higher or lower
+    const r = 1 / CFG.rate;
+    let t = ctx.currentTime + 0.06;
+    const cues = [];                                           // [audioTime, fn] fired by the audio clock
+    events.forEach((ev) => {
+      if (!ev.f) {
+        cues.push([t, () => { onChar && onChar(ev.i); onMouth && onMouth(false); }]);
+        t += ev.pause * r; return;
+      }
+      const f0 = base * st(ev.bend), loud = ev.loud;
+      let dur;
+      if (ev.f === 'v') { dur = 0.082 * r; vowel(t, ev.c, f0, dur, loud); }
+      else if (ev.f === 'p') { dur = 0.05 * r; plosive(t, ev.c, f0, loud); }
+      else if (ev.f === 'f') { dur = 0.06 * r; fric(t, ev.c, loud, dur); }
+      else { dur = 0.055 * r; nasal(t, ev.c, f0 * 0.5, loud, dur); }
+      const open = ev.f === 'v' || ev.f === 'n';
+      cues.push([t, () => { onChar && onChar(ev.i); onMouth && onMouth(open); }]);
+      if (open) cues.push([t + dur * 0.9, () => { onMouth && onMouth(false); }]);
+      t += dur + 0.008 * r;
+    });
+    cues.push([t + 0.04, () => { onMouth && onMouth(false); current = null; onEnd && onEnd(); }]);
+    cues.sort((a, b) => a[0] - b[0]);
+    const me = { cues, i: 0, raf: 0 };
+    const tick = () => {
+      if (current !== me) return;
+      const now = ctx.currentTime;
+      while (me.i < me.cues.length && me.cues[me.i][0] <= now) me.cues[me.i++][1]();
+      if (current === me) me.raf = requestAnimationFrame(tick);
+    };
+    current = me; tick();
+    return stop;
+  };
+  const stop = () => {
+    if (line) { const l = line; line = null; l.gain.setTargetAtTime(0, ctx.currentTime, 0.008); setTimeout(() => l.disconnect(), 80); }
+    if (!current) return; cancelAnimationFrame(current.raf); current = null;
+  };
+  const speaking = () => !!current;
+
+  return { say, stop, unlock, setMuted, speaking, get muted() { return muted; }, config: CFG };
+})();
+#!/usr/bin/env python3
+"""
+ncz - neural lossless compressor (v2).
+
+A context-mixing compressor in the PAQ/lpaq lineage. v2 adds the pieces that
+separate a toy from a real CM coder:
+
+  * Context models are adaptive-rate StateMaps (per-context learning rate that
+    starts fast and slows as evidence accumulates) instead of a fixed shift.
+  * A match model (LZP): finds the longest previous occurrence of the current
+    context and predicts the byte that followed it -- this is what lets a CM
+    coder exploit long repeats the way LZ does.
+  * A context-gated logistic mixer (a single-layer neural net, trained one
+    gradient step per bit) with a separate weight set selected per context.
+  * Two chained SSE / APM stages that refine the mixed probability.
+  * A binary range coder.
+
+Everything is integer / fixed-point, so encoder and decoder compute byte-
+identical probabilities and the decoder replays the exact same model updates.
+Reconstruction is bit-exact: lossless, "full quality retrieval". No pretrained
+weights -- the net adapts to your data and the decoder adapts identically.
+
+Reference implementation: correct and self-contained, not fast. See README.
+"""
+
+import sys
+import math
+import struct
+import time
+from array import array
+
+# ---------------------------------------------------------------------------
+# stretch / squash: the logit transform and its inverse, 12-bit fixed point.
+# Probabilities are integers in [1, 4095] meaning P(bit==1) = p/4096.
+# The mixer works in stretched (logit) space where combining is linear.
+# ---------------------------------------------------------------------------
+
+SLIMIT = 2047
+
+
+def _build_tables():
+    squash = [0] * 4096
+    for i in range(4096):
+        d = i - 2048
+        v = int(round(4096.0 / (1.0 + math.exp(-d / 256.0))))
+        squash[i] = 1 if v < 1 else (4095 if v > 4095 else v)
+    stretch = [0] * 4096
+    for p in range(4096):
+        pp = 1 if p < 1 else (4095 if p > 4095 else p)
+        d = int(round(256.0 * math.log(pp / float(4096 - pp))))
+        stretch[p] = -SLIMIT if d < -SLIMIT else (SLIMIT if d > SLIMIT else d)
+    return squash, stretch
+
+
+SQUASH, STRETCH = _build_tables()
+
+# ---------------------------------------------------------------------------
+# Configuration.
+# ---------------------------------------------------------------------------
+
+ORDERS = (0, 1, 2, 3, 4, 6)        # byte-history orders -> one StateMap each
+NCTXM = len(ORDERS)
+TBITS = 21
+TMASK = (1 << TBITS) - 1
+HISTMASK = (1 << 48) - 1
+PRIMES = {0: 1, 1: 0x85EBCA77, 2: 0xC2B2AE3D, 3: 0x27D4EB2F,
+          4: 0x165667B1, 6: 0xD3A2646C}
+C0_PRIME = 2654435761
+
+# StateMap adaptive learning rate: rate = 65536/(count+2), capped fast, floored
+# so it never fully freezes (handles nonstationary data).
+SM_LIMIT = 255
+RECIP = [min(32768, 65536 // (c + 2)) for c in range(SM_LIMIT + 1)]
+SM_INIT = (32768 << 16) | 0        # p = 0.5 (16-bit), count = 0
+
+# Match model
+MIN_MATCH = 6
+MTBITS = 22
+MMASK = (1 << MTBITS) - 1
+MHASH = 0x9E3779B97F4A7C15
+MLEN_CAP = 31
+
+# Mixer
+N_IN = NCTXM + 2                    # context models + match + bias
+NMIXCTX = 16
+MIX_LR = 4
+W_INIT = 65536 >> 3
+
+MAGIC = b"NCZ2"
+
+
+def _base_hashes(hist):
+    bases = [0] * NCTXM
+    for i, order in enumerate(ORDERS):
+        if order == 0:
+            bases[i] = 0
+            continue
+        cxt = hist & ((1 << (8 * order)) - 1)
+        h = (cxt * PRIMES[order]) & 0xFFFFFFFF
+        h ^= h >> 15
+        bases[i] = h & TMASK
+    return bases
+
+
+class Apm:
+    """SSE stage: refines a probability conditioned on a small context."""
+
+    __slots__ = ("n", "t", "idx")
+
+    def __init__(self, n):
+        self.n = n
+        self.t = array("i", [0] * (n * 33))
+        for j in range(33):
+            self.t[j] = SQUASH[max(1, min(4095, (j - 16) * 128 + 2048))] * 16
+        for i in range(1, n):
+            base = i * 33
+            for j in range(33):
+                self.t[base + j] = self.t[j]
+        self.idx = 0
+
+    def refine(self, pr, cxt):
+        s = STRETCH[pr] + 2048           # 1..4095
+        w = s & 127
+        i = (s >> 7) + cxt * 33
+        self.idx = i
+        t = self.t
+        return (t[i] * (128 - w) + t[i + 1] * w) >> 11
+
+    def update(self, y, rate=7):
+        g = 65535 if y else 0
+        t = self.t
+        i = self.idx
+        t[i] += (g - t[i]) >> rate
+        t[i + 1] += (g - t[i + 1]) >> rate
+
+
+class Model:
+    """The full predictor. predict() -> 12-bit p; update(bit) trains + advances."""
+
+    __slots__ = (
+        "sm", "msm", "mt", "buf", "weights", "apm1", "apm2",
+        "c0", "kbits", "cur_byte", "hist", "bases",
+        "idxs", "st", "pmix", "mxctx", "m_active", "midx",
+        "match_ptr", "match_len", "match_byte",
+    )
+
+    def __init__(self):
+        self.sm = [array("I", [SM_INIT]) * (TMASK + 1) for _ in range(NCTXM)]
+        self.msm = array("I", [SM_INIT]) * ((MLEN_CAP + 1) * 2)
+        self.mt = array("I", [0]) * (MMASK + 1)
+        self.buf = bytearray()
+        self.weights = array("i", [W_INIT]) * (NMIXCTX * N_IN)
+        self.apm1 = Apm(256)
+        self.apm2 = Apm(256)
+
+        self.c0 = 1
+        self.kbits = 0
+        self.cur_byte = 0
+        self.hist = 0
+        self.bases = _base_hashes(0)
+
+        self.idxs = [0] * NCTXM
+        self.st = [0] * N_IN
+        self.pmix = 2048
+        self.mxctx = 0
+        self.m_active = 0
+        self.midx = 0
+
+        self.match_ptr = 0
+        self.match_len = 0
+        self.match_byte = -1
+
+    def predict(self):
+        c0 = self.c0
+        hashc0 = (c0 * C0_PRIME) & 0xFFFFFFFF
+        sm = self.sm
+        bases = self.bases
+        idxs = self.idxs
+        st = self.st
+        stretch = STRETCH
+
+        for i in range(NCTXM):
+            ix = (bases[i] ^ hashc0) & TMASK
+            idxs[i] = ix
+            p12 = (sm[i][ix] >> 16) >> 4
+            st[i] = stretch[p12 if p12 else 1]
+
+        # match model input
+        m_active = 0
+        mb = self.match_byte
+        if mb >= 0:
+            k = self.kbits
+            if c0 == ((1 << k) | (mb >> (8 - k))):
+                exp_bit = (mb >> (7 - k)) & 1
+                mlen = self.match_len
+                midx = (mlen if mlen <= MLEN_CAP else MLEN_CAP) * 2 + exp_bit
+                self.midx = midx
+                p12 = (self.msm[midx] >> 16) >> 4
+                st[NCTXM] = stretch[p12 if p12 else 1]
+                m_active = 1
+        if not m_active:
+            st[NCTXM] = 0
+        self.m_active = m_active
+        st[NCTXM + 1] = 256          # bias
+
+        mxctx = (m_active << 3) | ((c0 >> 5) & 7)
+        self.mxctx = mxctx
+        base = mxctx * N_IN
+        w = self.weights
+        dot = 0
+        for i in range(N_IN):
+            dot += w[base + i] * st[i]
+        dot >>= 16
+        if dot < -SLIMIT:
+            dot = -SLIMIT
+        elif dot > SLIMIT:
+            dot = SLIMIT
+        pmix = SQUASH[dot + 2048]
+        self.pmix = pmix
+
+        prev = self.hist & 0xFF
+        pr = (pmix + self.apm1.refine(pmix, prev) * 3) >> 2
+        pr = (pr + self.apm2.refine(pr, c0) * 3) >> 2
+        return 1 if pr < 1 else (4095 if pr > 4095 else pr)
+
+    def update(self, y):
+        # mixer gradient step
+        err = ((y << 12) - self.pmix) * MIX_LR
+        w = self.weights
+        st = self.st
+        base = self.mxctx * N_IN
+        for i in range(N_IN):
+            w[base + i] += (st[i] * err) >> 16
+
+        # context StateMaps
+        target = 65535 if y else 0
+        sm = self.sm
+        idxs = self.idxs
+        for i in range(NCTXM):
+            ix = idxs[i]
+            v = sm[i][ix]
+            p = v >> 16
+            n = v & 0xFFFF
+            p += ((target - p) * RECIP[n]) >> 16
+            if p < 1:
+                p = 1
+            elif p > 65534:
+                p = 65534
+            if n < SM_LIMIT:
+                n += 1
+            sm[i][ix] = (p << 16) | n
+
+        # match StateMap
+        if self.m_active:
+            mi = self.midx
+            v = self.msm[mi]
+            p = v >> 16
+            n = v & 0xFFFF
+            p += ((target - p) * RECIP[n]) >> 16
+            if p < 1:
+                p = 1
+            elif p > 65534:
+                p = 65534
+            if n < SM_LIMIT:
+                n += 1
+            self.msm[mi] = (p << 16) | n
+
+        self.apm1.update(y)
+        self.apm2.update(y)
+
+        # advance bit state
+        self.cur_byte = (self.cur_byte << 1) | y
+        self.c0 = (self.c0 << 1) | y
+        self.kbits += 1
+        if self.kbits == 8:
+            self._byte_boundary(self.cur_byte & 0xFF)
+
+    def _byte_boundary(self, byte):
+        buf = self.buf
+        buf.append(byte)
+
+        # extend or reset the active match
+        if self.match_len > 0 and self.match_byte == byte:
+            self.match_ptr += 1
+            self.match_len += 1
+        else:
+            self.match_len = 0
+
+        self.hist = ((self.hist << 8) | byte) & HISTMASK
+        self.bases = _base_hashes(self.hist)
+
+        # look up the current context, predict next byte
+        if len(buf) >= MIN_MATCH:
+            cxt = self.hist & ((1 << (8 * MIN_MATCH)) - 1)
+            hm = ((cxt * MHASH) & 0xFFFFFFFFFFFFFFFF) >> (64 - MTBITS)
+            hm &= MMASK
+            cand = self.mt[hm]
+            self.mt[hm] = len(buf)
+            if self.match_len == 0 and cand > 0:
+                self.match_ptr = cand
+                self.match_len = 1
+
+        mp = self.match_ptr
+        self.match_byte = buf[mp] if (self.match_len > 0 and mp < len(buf)) else -1
+
+        self.c0 = 1
+        self.kbits = 0
+        self.cur_byte = 0
+
+
+# ---------------------------------------------------------------------------
+# Range coder + drivers.
+# ---------------------------------------------------------------------------
+
+def compress(data):
+    m = Model()
+    out = bytearray()
+    x1 = 0
+    x2 = 0xFFFFFFFF
+    for byte in data:
+        for shift in (7, 6, 5, 4, 3, 2, 1, 0):
+            y = (byte >> shift) & 1
+            p = m.predict()
+            xmid = x1 + (((x2 - x1) >> 12) * p)
+            if y:
+                x2 = xmid
+            else:
+                x1 = xmid + 1
+            while ((x1 ^ x2) & 0xFF000000) == 0:
+                out.append((x2 >> 24) & 0xFF)
+                x1 = (x1 << 8) & 0xFFFFFFFF
+                x2 = ((x2 << 8) | 0xFF) & 0xFFFFFFFF
+            m.update(y)
+    out.append((x1 >> 24) & 0xFF)
+    out.append((x1 >> 16) & 0xFF)
+    out.append((x1 >> 8) & 0xFF)
+    out.append(x1 & 0xFF)
+    return MAGIC + struct.pack("<Q", len(data)) + bytes(out)
+
+
+def decompress(blob):
+    if blob[:4] != MAGIC:
+        raise ValueError("not an ncz v2 stream")
+    (orig_len,) = struct.unpack("<Q", blob[4:12])
+    payload = blob[12:]
+    plen = len(payload)
+
+    m = Model()
+    out = bytearray()
+    x1 = 0
+    x2 = 0xFFFFFFFF
+    pos = 0
+    x = 0
+    for _ in range(4):
+        x = ((x << 8) | (payload[pos] if pos < plen else 0)) & 0xFFFFFFFF
+        pos += 1
+
+    while len(out) < orig_len:
+        byte = 0
+        for _ in range(8):
+            p = m.predict()
+            xmid = x1 + (((x2 - x1) >> 12) * p)
+            if x <= xmid:
+                y = 1
+                x2 = xmid
+            else:
+                y = 0
+                x1 = xmid + 1
+            while ((x1 ^ x2) & 0xFF000000) == 0:
+                x1 = (x1 << 8) & 0xFFFFFFFF
+                x2 = ((x2 << 8) | 0xFF) & 0xFFFFFFFF
+                x = ((x << 8) | (payload[pos] if pos < plen else 0)) & 0xFFFFFFFF
+                pos += 1
+            m.update(y)
+            byte = (byte << 1) | y
+        out.append(byte)
+    return bytes(out)
+
+
+# ---------------------------------------------------------------------------
+# CLI.
+# ---------------------------------------------------------------------------
+
+def _read_input(path):
+    if path == "-":
+        return sys.stdin.buffer.read()
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _write_output(path, data):
+    if path == "-":
+        sys.stdout.buffer.write(data)
+        return
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+def _cmd_test(args):
+    import gzip
+    import bz2
+    import lzma
+
+    if args:
+        data = _read_input(args[0])
+        label = args[0]
+    else:
+        for cand in ("/usr/share/dict/words", __file__):
+            try:
+                with open(cand, "rb") as f:
+                    data = f.read(30000)
+                label = "%s[:%d]" % (cand, len(data))
+                break
+            except OSError:
+                continue
+        else:
+            data = b"the quick brown fox " * 2000
+            label = "synthetic"
+
+    print("corpus: %s  (%d bytes)" % (label, len(data)))
+    t0 = time.time()
+    comp = compress(data)
+    t1 = time.time()
+    back = decompress(comp)
+    t2 = time.time()
+
+    ok = back == data
+    print("round-trip lossless: %s" % ("PASS" if ok else "FAIL"))
+    if not ok:
+        n = min(len(back), len(data))
+        first = next((i for i in range(n) if back[i] != data[i]), n)
+        print("  len in=%d out=%d  first diff @%d" % (len(data), len(back), first))
+        return 1
+
+    def ratio(name, blob):
+        r = len(data) / len(blob) if blob else 0.0
+        bpb = 8.0 * len(blob) / len(data) if data else 0.0
+        print("  %-10s %8d bytes  %5.2fx  %4.2f bits/byte" % (name, len(blob), r, bpb))
+
+    print("sizes:")
+    ratio("ncz", comp)
+    ratio("gzip -9", gzip.compress(data, 9))
+    ratio("bz2 -9", bz2.compress(data, 9))
+    ratio("lzma", lzma.compress(data))
+    enc = len(data) / 1024.0 / (t1 - t0) if t1 > t0 else 0
+    dec = len(data) / 1024.0 / (t2 - t1) if t2 > t1 else 0
+    print("speed: encode %.1f kB/s  decode %.1f kB/s" % (enc, dec))
+    return 0
+
+
+USAGE = """ncz - neural lossless compressor
+
+usage:
+  ncz compress    <in|-> <out|->     compress (lossless, full-quality)
+  ncz decompress  <in|-> <out|->     restore exact bytes
+  ncz test        [file]             round-trip + ratio vs gzip/bz2/lzma
+
+directory / "disk":
+  tar cf - mydir | ncz compress - mydir.tar.ncz
+  ncz decompress mydir.tar.ncz - | tar xf -
+"""
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        sys.stdout.write(USAGE)
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "compress":
+        if len(rest) != 2:
+            sys.stderr.write("compress needs <in> <out>\n")
+            return 2
+        _write_output(rest[1], compress(_read_input(rest[0])))
+        return 0
+    if cmd == "decompress":
+        if len(rest) != 2:
+            sys.stderr.write("decompress needs <in> <out>\n")
+            return 2
+        _write_output(rest[1], decompress(_read_input(rest[0])))
+        return 0
+    if cmd == "test":
+        return _cmd_test(rest)
+    sys.stderr.write("unknown command: %s\n" % cmd)
+    sys.stderr.write(USAGE)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
