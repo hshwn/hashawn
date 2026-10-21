@@ -48,28 +48,18 @@ static RECIP: [i32; SM_LIMIT as usize + 1] = { let mut t = [0i32; SM_LIMIT as us
     ((n0 << 4) | n1) as u8
 }
 
-/// Learns P(bit=1 | state) per order. value = p(16 bit) << 16 | count.
-struct StateMap { t: Vec<u32>, idx: usize }
-impl StateMap {
-    fn new() -> StateMap {
-        let mut t = vec![0u32; 256];
-        for s in 0..256u32 {
-            let (n0, n1) = (s >> 4, s & 15);
-            let p = ((n1 * 2 + 1) * 65536 / ((n0 + n1) * 2 + 2)).clamp(1, 65534);   // prior from the counts
-            t[s as usize] = p << 16;
-        }
-        StateMap { t, idx: 0 }
-    }
-    #[inline] fn p(&mut self, s: u8) -> i32 { self.idx = s as usize; (self.t[self.idx] >> 16) as i32 >> 4 }
-    #[inline] fn update(&mut self, y: u32) {
-        let v = self.t[self.idx];
-        let (mut p, mut n) = ((v >> 16) as i64, v & 0xFFFF);
-        let target: i64 = if y != 0 { 65535 } else { 0 };
-        p += ((target - p) * recip(n)) >> 16;
-        p = p.clamp(1, 65534);
-        if n < SM_LIMIT { n += 1; }
-        self.t[self.idx] = ((p as u32) << 16) | n;
-    }
+/// Learns P(bit=1 | state) per order. value = p(16 bit) << 16 | count. Flat: NORD * 256 entries.
+#[inline] fn sm_prior(s: u32) -> u32 {
+    let (n0, n1) = (s >> 4, s & 15);
+    (((n1 * 2 + 1) * 65536 / ((n0 + n1) * 2 + 2)).clamp(1, 65534)) << 16
+}
+#[inline] fn sm_update(v: u32, y: u32) -> u32 {
+    let (mut p, mut n) = ((v >> 16) as i64, v & 0xFFFF);
+    let target: i64 = if y != 0 { 65535 } else { 0 };
+    p += ((target - p) * recip(n)) >> 16;
+    p = p.clamp(1, 65534);
+    if n < SM_LIMIT { n += 1; }
+    ((p as u32) << 16) | n
 }
 
 struct Apm { t: Vec<i32>, idx: usize }
@@ -80,45 +70,50 @@ impl Apm {
         for i in 1..n { for j in 0..33 { t[i * 33 + j] = t[j]; } }
         Apm { t, idx: 0 }
     }
-    #[inline] fn refine(&mut self, pr: i32, cxt: usize) -> i32 {
+    #[inline(always)] fn refine(&mut self, pr: i32, cxt: usize) -> i32 {
         let s = STRETCH[pr as usize] + 2048;
         let w = s & 127;
         let i = (s >> 7) as usize + cxt * 33;
         self.idx = i;
-        (self.t[i] * (128 - w) + self.t[i + 1] * w) >> 11
+        unsafe { (*self.t.get_unchecked(i) * (128 - w) + *self.t.get_unchecked(i + 1) * w) >> 11 }
     }
-    #[inline] fn update(&mut self, y: u32) {
+    #[inline(always)] fn update(&mut self, y: u32) {
         let g = if y != 0 { 65535 } else { 0 };
         let i = self.idx;
-        self.t[i] += (g - self.t[i]) >> 7;
-        self.t[i + 1] += (g - self.t[i + 1]) >> 7;
+        unsafe {
+            let a = self.t.get_unchecked_mut(i); *a += (g - *a) >> 7;
+            let b = self.t.get_unchecked_mut(i + 1); *b += (g - *b) >> 7;
+        }
     }
 }
 
 pub struct Model {
-    table: Vec<[u8; 16]>,                   // shared buckets: [chk, states for nibble nodes 1..15]
-    bucket: [usize; NORD],                  // current bucket per order (this nibble)
+    table: Vec<u8>,                         // shared buckets, 16 bytes each: [chk, states for nibble nodes 1..15]
+    bucket: [usize; NORD],                  // byte offset of the current bucket per order (this nibble)
     ctxh: [u32; NORD],                      // context hash per order (this byte)
-    sm: Vec<StateMap>,
-    msm: Vec<u32>, mt: Vec<u32>, buf: Vec<u8>,
+    sm: Vec<u32>,                           // NORD * 256 state maps
+    smi: [usize; NORD],                     // state-map index used by the last predict, per order
+    msm: [u32; (MLEN_CAP as usize + 1) * 2], mt: Vec<u32>, buf: Vec<u8>,
     weights: Vec<i32>, apm1: Apm, apm2: Apm,
     c0: u32, nc0: u32, kbits: u32, cur_byte: u32, hist: u64,
-    word: u32, prev_word: u32,
+    word: u32, prev_word: u32, a2base: u32,
     st: [i32; N_IN], pmix: i32, mxctx: usize, m_active: bool, midx: usize,
     match_ptr: usize, match_len: u32, match_byte: i32,
 }
 
 impl Model {
     pub fn new() -> Model {
+        let mut sm = vec![0u32; NORD * 256];
+        for i in 0..NORD { for s in 0..256u32 { sm[i * 256 + s as usize] = sm_prior(s); } }
         let mut m = Model {
-            table: vec![[0u8; 16]; TMASK as usize + 1],
+            table: vec![0u8; (TMASK as usize + 1) * 16],
             bucket: [0; NORD], ctxh: [0; NORD],
-            sm: (0..NORD).map(|_| StateMap::new()).collect(),
-            msm: vec![32768 << 16; (MLEN_CAP as usize + 1) * 2],
+            sm, smi: [0; NORD],
+            msm: [32768 << 16; (MLEN_CAP as usize + 1) * 2],
             mt: vec![0u32; MMASK as usize + 1], buf: Vec::new(),
             weights: vec![W_INIT; NMIXCTX * N_IN],
             apm1: Apm::new(65536), apm2: Apm::new(65536),
-            c0: 1, nc0: 1, kbits: 0, cur_byte: 0, hist: 0, word: 0, prev_word: 0,
+            c0: 1, nc0: 1, kbits: 0, cur_byte: 0, hist: 0, word: 0, prev_word: 0, a2base: 0,
             st: [0; N_IN], pmix: 2048, mxctx: 0, m_active: false, midx: 0,
             match_ptr: 0, match_len: 0, match_byte: -1,
         };
@@ -141,36 +136,44 @@ impl Model {
             let mut h = (w & 0xFFFF_FFFF) as u32; h ^= h >> 15; h = h.wrapping_mul(0x2C1B_3C6D); h ^= h >> 12;
             self.ctxh[NORD - 1] = h.wrapping_add(0x7777_7777);
         }
+        let h = self.hist;
+        self.a2base = (((h >> 8) & 0xFF) as u32 * 0x9E37 + ((h & 0xFF) as u32) * 0x85EB) & 0xFF00;
     }
 
     /// Find (or claim) the bucket for each order for the current nibble.
     fn lookup_nibble(&mut self) {
-        let nib = if self.kbits < 4 { 0 } else { 16 + (self.c0 & 15) };  // second nibble keys on the first
+        let nib = if self.kbits < 4 { 0 } else { 16 + (self.c0 & 15) };
         for i in 0..NORD {
             let h = self.ctxh[i].wrapping_add(nib.wrapping_mul(0x61C8_8647)).wrapping_mul(0x9E37_79B1);
             let idx = (h & TMASK) as usize;
-            let chk = ((h >> 24) as u8) | 1;         // never 0: 0 means empty
-            let b0 = idx; let b1 = idx ^ 1;
-            let b = if self.table[b0][0] == chk { b0 }
-                else if self.table[b1][0] == chk { b1 }
+            let chk = ((h >> 24) as u8) | 1;
+            let b0 = idx * 16; let b1 = (idx ^ 1) * 16;
+            let t = &mut self.table;
+            let b = unsafe {
+                if *t.get_unchecked(b0) == chk { b0 }
+                else if *t.get_unchecked(b1) == chk { b1 }
                 else {
-                    // replace the less-used of the two (node-1 state's total count as priority)
                     let pri = |s: u8| (s >> 4) + (s & 15);
-                    let v = if pri(self.table[b0][1]) <= pri(self.table[b1][1]) { b0 } else { b1 };
-                    self.table[v] = [0u8; 16]; self.table[v][0] = chk; v
-                };
+                    let v = if pri(*t.get_unchecked(b0 + 1)) <= pri(*t.get_unchecked(b1 + 1)) { b0 } else { b1 };
+                    for k in 0..16 { *t.get_unchecked_mut(v + k) = 0; }
+                    *t.get_unchecked_mut(v) = chk; v
+                }
+            };
             self.bucket[i] = b;
         }
     }
 
-    #[inline] pub fn predict(&mut self) -> i32 {
-        let node = self.nc0 as usize;           // 1..15 within the nibble
-        for i in 0..NORD {
-            let s = self.table[self.bucket[i]][node];
-            let p12 = self.sm[i].p(s);
-            self.st[i] = STRETCH[if p12 != 0 { p12 as usize } else { 1 }];
+    #[inline(always)] pub fn predict(&mut self) -> i32 {
+        let node = self.nc0 as usize;
+        unsafe {
+            for i in 0..NORD {
+                let s = *self.table.get_unchecked(self.bucket[i] + node) as usize;
+                let si = i * 256 + s;
+                self.smi[i] = si;
+                let p12 = (*self.sm.get_unchecked(si) >> 20) as usize;
+                self.st[i] = STRETCH[if p12 != 0 { p12 } else { 1 }];
+            }
         }
-        // match model
         let mut m_active = false;
         let mb = self.match_byte;
         if mb >= 0 {
@@ -194,27 +197,28 @@ impl Model {
         self.mxctx = mxctx;
         let base = mxctx * N_IN;
         let mut dot: i64 = 0;
-        for i in 0..N_IN { dot += self.weights[base + i] as i64 * self.st[i] as i64; }
+        unsafe { for i in 0..N_IN { dot += *self.weights.get_unchecked(base + i) as i64 * self.st[i] as i64; } }
         let dot = (dot >> 16).clamp(-SLIMIT as i64, SLIMIT as i64) as i32;
         let pmix = SQUASH[(dot + 2048) as usize];
         self.pmix = pmix;
-        let h = self.hist;
-        let a1 = (self.c0 | (((h & 0xFF) as u32) << 8)) as usize;
-        let a2 = (self.c0 ^ ((((h >> 8) & 0xFF) as u32 * 0x9E37 + ((h & 0xFF) as u32) * 0x85EB) & 0xFF00)) as usize;
+        let a1 = (self.c0 | (((self.hist & 0xFF) as u32) << 8)) as usize;
+        let a2 = (self.c0 ^ self.a2base) as usize;
         let pr = (pmix + self.apm1.refine(pmix, a1) * 3) >> 2;
         let pr = (pr + self.apm2.refine(pr, a2) * 3) >> 2;
         pr.clamp(1, 4095)
     }
 
-    #[inline] pub fn update(&mut self, y: u32) {
+    #[inline(always)] pub fn update(&mut self, y: u32) {
         let err = (((y as i32) << 12) - self.pmix) * MIX_LR;
         let base = self.mxctx * N_IN;
-        for i in 0..N_IN { self.weights[base + i] += (self.st[i] * err) >> 16; }
+        unsafe { for i in 0..N_IN { *self.weights.get_unchecked_mut(base + i) += (self.st[i] * err) >> 16; } }
         let node = self.nc0 as usize;
-        for i in 0..NORD {
-            self.sm[i].update(y);
-            let b = self.bucket[i];
-            self.table[b][node] = next_state(self.table[b][node], y);
+        unsafe {
+            for i in 0..NORD {
+                let si = self.smi[i];
+                let v = self.sm.get_unchecked_mut(si); *v = sm_update(*v, y);
+                let sp = self.table.get_unchecked_mut(self.bucket[i] + node); *sp = next_state(*sp, y);
+            }
         }
         if self.m_active {
             let mi = self.midx;
