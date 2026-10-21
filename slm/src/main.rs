@@ -32,7 +32,7 @@ fn main() {
             let toks = ids(&a[2]); let nbytes: f64 = a[3].parse().unwrap();
             let (ctx, stride) = (slm::CTX, slm::CTX / 2);
             let mut m = slm::Model::new(&w);
-            let mut bits = 16f64; let mut scored = 0usize; let t0 = Instant::now();
+            let mut bits = 16f64; let mut scored = 0usize; let t0 = Instant::now(); let mut hash = 0xcbf29ce484222325u64;
             let mut start = 0;
             loop {
                 let end = (start + ctx).min(toks.len());
@@ -40,13 +40,16 @@ fn main() {
                 let first = if start == 0 { 1 } else { ctx - stride };
                 for i in start..end {
                     m.step(toks[i]);
+                    for &l in &m.logits { hash = (hash ^ l.to_bits() as u64).wrapping_mul(0x100000001b3); }
                     let k = i - start;
-                    if k + 1 >= first && i + 1 < end { bits += -(slm::log_prob(&m.logits, toks[i + 1] as usize) as f64) / 2f64.ln(); scored += 1; }
+                    if k + 1 >= first && i + 1 < end { bits += -(slm::prof::t(11, || slm::log_prob(&m.logits, toks[i + 1] as usize)) as f64) / 2f64.ln(); scored += 1; }
                 }
                 if end == toks.len() { break; }
                 start += stride;
             }
             let dt = t0.elapsed().as_secs_f64();
+            slm::prof::report();
+            println!("logits hash {hash:016x}");
             println!("tokens {}  scored {scored}  bits per byte {:.4}  ({:.0} tok/s, {:.1} KB/s)", toks.len(), bits / nbytes, (end_steps(toks.len(), ctx, stride)) as f64 / dt, end_steps(toks.len(), ctx, stride) as f64 / dt * nbytes / toks.len() as f64 / 1000.0);
         }
         _ => eprintln!("usage: slmcli check | slmcli bpb <ids.bin> <nbytes>"),
