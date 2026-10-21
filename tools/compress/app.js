@@ -54,7 +54,8 @@
     const done = await new Promise((resolve) => {
       const onMsg = (e) => {
         const m = e.data; if (m.id !== id) return;
-        if (m.type === 'progress') progress(isNcz ? 'unpacking' : 'compressing', m.done, m.total);
+        if (m.type === 'progress') progress(isNcz ? 'unpacking' : (m.brain ? 'compressing, with the brain' : 'compressing'), m.done, m.total);
+        else if (m.type === 'model') render(`<div class="job"><p class="label">fetching the brain</p><div class="bar"><i style="width:${m.total ? (m.done / m.total * 100).toFixed(1) : 0}%"></i></div><p class="sub">3 MB, once</p></div>`);
         else { worker.removeEventListener('message', onMsg); resolve(m); }
       };
       worker.addEventListener('message', onMsg);

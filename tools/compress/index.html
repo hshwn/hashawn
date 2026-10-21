@@ -37,7 +37,7 @@
   <details class="how">
     <summary>what is this</summary>
     <p>A context-mixing compressor, the family that wins the benchmarks and that nobody ships because it's slow. It predicts every bit from what came before, with a tiny neural net that learns as it goes, and a range coder turns the predictions into bytes. The decoder runs the exact same net, so the output is bit-exact. It beats gzip, bzip2 and xz on text and code. It won't beat anything on photos, video or zips, those are already squeezed.</p>
-    <p>The code runs as WebAssembly inside this page, around 2MB a second. A big file takes a while and the bar is honest.</p>
+    <p>For text it also runs a 3-million-parameter language model, the smallest one that still reads English, and feeds its guesses into the mixer as one more input. That part is slow, tens of kilobytes a second, and the first time it fetches the model once (3 MB). Everything else goes through the context mixer alone at around 2MB a second. The bar is honest either way.</p>
   </details>
 </main>
 

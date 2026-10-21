@@ -1,3 +1,4 @@
 target/
 model/weights.bin
 model/ref_*.bin
+model/model.slmq

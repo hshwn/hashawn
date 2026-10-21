@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "hashawn", "runtimeExecutable": "python3", "runtimeArgs": ["dev.py", "4173"], "port": 4173 }
+  ]
+}

@@ -1,16 +1,33 @@
-// worker.js — runs the ncz codec (WebAssembly) off the main thread, in chunks, with progress.
+// worker.js — runs the codec (WebAssembly) off the main thread, in steps, with progress.
+// nczl.wasm is ncz plus the 3M language model as a side input. The model pack (3.3 MB) is fetched
+// only when it is needed: compressing text, or unpacking a file that was made with it.
 // Also gzips the same bytes with the browser's CompressionStream so the page can show an honest comparison.
-let wasm = null, mem = null;
-const CHUNK = 64 * 1024;
+let wasm = null, modelId = null;
+const STEP_LM = 4096, STEP = 64 * 1024;
 const bytes = () => new Uint8Array(wasm.memory.buffer);   // re-read after every call: memory can grow and detach
 
 async function load() {
   if (wasm) return;
   let instance;
-  try { ({ instance } = await WebAssembly.instantiateStreaming(fetch('ncz.wasm'), {})); }
-  catch { ({ instance } = await WebAssembly.instantiate(await (await fetch('ncz.wasm')).arrayBuffer(), {})); }   // server without the wasm MIME type
+  try { ({ instance } = await WebAssembly.instantiateStreaming(fetch('nczl.wasm'), {})); }
+  catch { ({ instance } = await WebAssembly.instantiate(await (await fetch('nczl.wasm')).arrayBuffer(), {})); }   // server without the wasm MIME type
   wasm = instance.exports;
 }
+async function loadModel(id) {
+  if (modelId) return;
+  postMessage({ id, type: 'model', done: 0, total: 0 });
+  const res = await fetch('model.slmq');
+  const total = Number(res.headers.get('content-length')) || 0;
+  const chunks = []; let got = 0; const reader = res.body.getReader();
+  for (;;) { const { value, done } = await reader.read(); if (done) break; chunks.push(value); got += value.byteLength; postMessage({ id, type: 'model', done: got, total }); }
+  const pack = new Uint8Array(got); let off = 0; for (const c of chunks) { pack.set(c, off); off += c.byteLength; }
+  const ptr = wasm.nczl_alloc(pack.length); bytes().set(pack, ptr);
+  modelId = wasm.nczl_load(ptr, pack.length) >>> 0;
+  wasm.nczl_free(ptr, pack.length);
+  if (!modelId) throw new Error('the model pack did not load');
+}
+const put = (u8) => { const p = wasm.nczl_alloc(u8.length); bytes().set(u8, p); return p; };
+const takeOut = (ptr) => { const n = wasm.nczl_out_len(); const out = bytes().slice(ptr, ptr + n); wasm.nczl_free(ptr, n); return out; };
 
 async function gzipSize(u8) {
   try {
@@ -24,48 +41,42 @@ async function gzipSize(u8) {
 
 async function compress(u8, id) {
   await load();
-  const enc = wasm.ncz_enc_new();
-  const scratch = wasm.ncz_alloc(CHUNK);
-  let t0 = performance.now();
-  for (let off = 0; off < u8.length; off += CHUNK) {
-    const part = u8.subarray(off, Math.min(u8.length, off + CHUNK));
-    bytes().set(part, scratch);
-    wasm.ncz_enc_push(enc, scratch, part.length);
+  let inPtr = put(u8);
+  const text = wasm.nczl_is_text(inPtr, u8.length);
+  if (text) { wasm.nczl_free(inPtr, u8.length); await loadModel(id); inPtr = put(u8); }
+  const enc = wasm.nczl_enc_new(inPtr, u8.length);
+  wasm.nczl_free(inPtr, u8.length);
+  const step = text && modelId ? STEP_LM : STEP;
+  let t0 = performance.now(), done = 0;
+  for (;;) {
+    const n = wasm.nczl_enc_step(enc, step);
+    done = wasm.nczl_enc_done(enc);
     const now = performance.now();
-    if (now - t0 > 80 || off + CHUNK >= u8.length) { t0 = now; postMessage({ id, type: 'progress', done: Math.min(u8.length, off + CHUNK), total: u8.length, out: wasm.ncz_enc_out_len(enc) }); }
-    await new Promise((r) => setTimeout(r, 0));          // let progress messages flush
+    if (now - t0 > 80 || n === 0) { t0 = now; postMessage({ id, type: 'progress', done, total: u8.length, brain: !!(text && modelId) }); await new Promise((r) => setTimeout(r, 0)); }
+    if (n === 0) break;
   }
-  wasm.ncz_free(scratch, CHUNK);
-  const lenPtr = wasm.ncz_alloc(8);
-  const outPtr = wasm.ncz_enc_finish(enc, lenPtr);
-  const outLen = Number(new DataView(wasm.memory.buffer).getUint32(lenPtr, true));
-  const out = bytes().slice(outPtr, outPtr + outLen);
-  wasm.ncz_free(outPtr, outLen); wasm.ncz_free(lenPtr, 8);
-  return out;
+  return takeOut(wasm.nczl_enc_finish(enc));
 }
 
 async function decompress(u8, id) {
   await load();
-  const inPtr = wasm.ncz_alloc(u8.length);
-  bytes().set(u8, inPtr);
-  const dec = wasm.ncz_dec_new(inPtr, u8.length);
-  wasm.ncz_free(inPtr, u8.length);
-  if (!dec) throw new Error('not an ncz file');
-  const total = Number(wasm.ncz_dec_total(dec));
-  const out = new Uint8Array(total);
-  const scratch = wasm.ncz_alloc(CHUNK);
-  let off = 0, t0 = performance.now();
-  while (off < total) {
-    const n = wasm.ncz_dec_next(dec, scratch, Math.min(CHUNK, total - off));
-    out.set(bytes().subarray(scratch, scratch + n), off);
-    off += n;
+  let inPtr = put(u8);
+  if (wasm.nczl_needs_model(inPtr, u8.length)) { wasm.nczl_free(inPtr, u8.length); await loadModel(id); inPtr = put(u8); }
+  const dec = wasm.nczl_dec_new(inPtr, u8.length);
+  wasm.nczl_free(inPtr, u8.length);
+  if (!dec) throw new Error('not one of mine, or made with a different model');
+  const total = wasm.nczl_dec_total(dec);
+  let t0 = performance.now();
+  for (;;) {
+    const n = wasm.nczl_dec_step(dec, STEP_LM);
+    const done = wasm.nczl_dec_done(dec);
     const now = performance.now();
-    if (now - t0 > 80 || off >= total) { t0 = now; postMessage({ id, type: 'progress', done: off, total }); }
-    await new Promise((r) => setTimeout(r, 0));
+    if (now - t0 > 80 || n === 0) { t0 = now; postMessage({ id, type: 'progress', done, total }); await new Promise((r) => setTimeout(r, 0)); }
     if (n === 0) break;
   }
-  wasm.ncz_free(scratch, CHUNK); wasm.ncz_dec_free(dec);
-  return out;
+  const ptr = wasm.nczl_dec_finish(dec);
+  if (!ptr) throw new Error('the file is damaged');
+  return takeOut(ptr);
 }
 
 onmessage = async (e) => {

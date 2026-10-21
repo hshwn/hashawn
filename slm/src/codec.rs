@@ -3,10 +3,11 @@
 //! Layout: "NCZL" | version u8 | mode u8 | model id u32 LE | total bytes u64 LE | payload.
 //! Modes: 0 = stored, 1 = ncz only (payload is an NCZ3 payload), 2 = ncz with the model as side input.
 //! The model helps text and hurts everything else, so mode 2 is used when the input is UTF-8 text.
-//! Per byte in mode 2: if inside a token, one flag bit "the token ends here" at the model's probability (straight
-//! through the coder, no mixer), then the byte's eight bits through ncz's mixer with the bridge's stretch
-//! predictions as the extra input. The encoder tokenises with the model's BPE; the decoder learns the
-//! segmentation from the flags. The model id refuses weights that would predict different bits.
+//! Per byte in mode 2: if inside a token, one flag bit "the token ends here" at the model's probability
+//! (straight through the coder, no mixer), then the byte's eight bits through ncz's mixer with the
+//! bridge's stretch predictions as the extra input. The encoder tokenises with the model's BPE; the
+//! decoder learns the segmentation from the flags. The model id refuses weights that would predict
+//! different bits.
 use crate::bridge::{Bridge, Vocab};
 use crate::bpe::Bpe;
 use crate::{Model, Weights};
@@ -14,21 +15,27 @@ use ncz::v3::{Decoder, Encoder};
 
 pub const MAGIC: &[u8; 4] = b"NCZL";
 pub const VERSION: u8 = 1;
-const HEADER: usize = 4 + 1 + 1 + 4 + 8;
+pub(crate) const HEADER: usize = 4 + 1 + 1 + 4 + 8;
 pub const MODE_STORE: u8 = 0; pub const MODE_NCZ: u8 = 1; pub const MODE_LM: u8 = 2;
 
 pub struct Assets { pub weights: Weights, pub vocab: Vocab, pub bpe: Bpe, pub model_id: u32 }
 
 impl Assets {
-    /// From the raw files: manifest.txt, weights.bin (f32), vocab.bin, merges.bin.
+    /// From the raw files: manifest.txt, weights.bin (f32), vocab.bin, merges.bin. The id is the hash of the pack.
     pub fn from_files(manifest: &str, weights: &[u8], vocab: &[u8], merges: &[u8]) -> Assets {
         let w = Weights::load(manifest, weights);
+        let id = crate::pack::id(&crate::pack::pack(&w, vocab, merges));
+        Assets::build(w, vocab, merges, id)
+    }
+    /// From a pack (see `pack.rs`).
+    pub fn from_pack(pack: &[u8]) -> Option<Assets> {
+        let (w, vocab, merges) = crate::pack::unpack(pack)?;
+        Some(Assets::build(w, &vocab, &merges, crate::pack::id(pack)))
+    }
+    fn build(weights: Weights, vocab: &[u8], merges: &[u8], model_id: u32) -> Assets {
         let v = Vocab::load(vocab);
         let bpe = Bpe::load(merges, &v.bytes);
-        // id = FNV-1a over the weight bytes and the vocab, truncated
-        let mut h = 0xcbf29ce484222325u64;
-        for &b in weights.iter().chain(vocab.iter()) { h = (h ^ b as u64).wrapping_mul(0x100000001b3); }
-        Assets { weights: w, vocab: v, bpe, model_id: (h ^ (h >> 32)) as u32 }
+        Assets { weights, vocab: v, bpe, model_id }
     }
     pub fn from_dir(dir: &str) -> Assets {
         let rd = |n: &str| std::fs::read(format!("{dir}/{n}")).unwrap_or_else(|e| panic!("{dir}/{n}: {e}"));
@@ -48,7 +55,7 @@ pub fn looks_like_text(data: &[u8]) -> bool {
     }
 }
 
-fn header(mode: u8, model_id: u32, total: usize, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn header(mode: u8, model_id: u32, total: usize, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER + payload.len());
     out.extend_from_slice(MAGIC); out.push(VERSION); out.push(mode);
     out.extend_from_slice(&model_id.to_le_bytes());
@@ -57,57 +64,106 @@ fn header(mode: u8, model_id: u32, total: usize, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn compress(a: &Assets, data: &[u8], threads: usize) -> Vec<u8> {
-    let best = if looks_like_text(data) { compress_lm(a, data, threads) } else { let mut e = Encoder::new(); e.push(data); header(MODE_NCZ, a.model_id, data.len(), &e.finish_payload()) };
-    if best.len() >= HEADER + data.len() { header(MODE_STORE, a.model_id, data.len(), data) } else { best }
+// ---------------------------------------------------------------------------
+// streaming encoder: tokenises up front, then `step(n)` codes n more bytes
+// ---------------------------------------------------------------------------
+pub struct LmEncoder<'a> {
+    a: &'a Assets, data: Vec<u8>, toks: Vec<u32>,
+    ti: usize, bi: usize, pos: usize, prev: Option<u32>,
+    br: Bridge<'a>, enc: Encoder,
+}
+impl<'a> LmEncoder<'a> {
+    pub fn new(a: &'a Assets, data: &[u8], threads: usize) -> LmEncoder<'a> {
+        LmEncoder { a, data: data.to_vec(), toks: a.bpe.encode(data), ti: 0, bi: 0, pos: 0, prev: None, br: Bridge::new(Model::with_threads(&a.weights, threads), &a.vocab), enc: Encoder::new() }
+    }
+    pub fn done(&self) -> usize { self.pos }
+    pub fn total(&self) -> usize { self.data.len() }
+    /// Code up to `n` more bytes; returns how many were coded (0 when finished).
+    pub fn step(&mut self, n: usize) -> usize {
+        let mut side = [0i16; 8]; let mut k = 0;
+        while k < n && self.ti < self.toks.len() {
+            let tok = self.toks[self.ti]; let tb = &self.a.vocab.bytes[tok as usize];
+            let b = tb[self.bi];
+            if self.br.in_token() {
+                let p = p12(self.br.p_end());
+                if self.bi == 0 { self.enc.encode_bit(1, p); self.br.end_token(self.prev.unwrap()); } else { self.enc.encode_bit(0, p); }
+            }
+            self.br.predict(); self.br.bits(b, &mut side);
+            self.enc.encode_byte(b, Some(&side));
+            assert!(self.br.observe(b), "tokenizer produced a token the vocab trie does not know");
+            self.bi += 1; self.pos += 1; k += 1;
+            if self.bi == tb.len() { self.prev = Some(tok); self.ti += 1; self.bi = 0; }
+        }
+        k
+    }
+    pub fn finish(self) -> Vec<u8> {
+        let (a, total, data) = (self.a, self.data.len(), self.data);
+        let out = header(MODE_LM, a.model_id, total, &self.enc.finish_payload());
+        if out.len() >= HEADER + total { header(MODE_STORE, a.model_id, total, &data) } else { out }
+    }
 }
 
-fn compress_lm(a: &Assets, data: &[u8], threads: usize) -> Vec<u8> {
-    let toks = a.bpe.encode(data);
-    let mut br = Bridge::new(Model::with_threads(&a.weights, threads), &a.vocab);
-    let mut enc = Encoder::new();
-    let mut side = [0i16; 8];
-    let mut prev: Option<u32> = None;
-    for &tok in &toks {
-        for (k, &b) in a.vocab.bytes[tok as usize].iter().enumerate() {
-            if br.in_token() {
-                let p = p12(br.p_end());
-                if k == 0 { enc.encode_bit(1, p); br.end_token(prev.unwrap()); } else { enc.encode_bit(0, p); }
-            }
-            br.predict();
-            br.bits(b, &mut side);
-            enc.encode_byte(b, Some(&side));
-            assert!(br.observe(b), "tokenizer produced a token the vocab trie does not know");
+pub struct LmDecoder<'a> { mode: u8, total: usize, out: Vec<u8>, dec: Option<Decoder>, br: Option<Bridge<'a>>, failed: bool }
+impl<'a> LmDecoder<'a> {
+    /// None when the header is wrong, or the stream needs a model that is missing or different.
+    pub fn new(a: Option<&'a Assets>, blob: &[u8], threads: usize) -> Option<LmDecoder<'a>> {
+        if blob.len() < HEADER || &blob[..4] != MAGIC || blob[4] != VERSION { return None; }
+        let mode = blob[5];
+        let id = u32::from_le_bytes(blob[6..10].try_into().ok()?);
+        let total = u64::from_le_bytes(blob[10..18].try_into().ok()?) as usize;
+        let mut d = LmDecoder { mode, total, out: Vec::with_capacity(total), dec: None, br: None, failed: false };
+        match mode {
+            MODE_STORE => { if blob.len() != HEADER + total { return None; } d.out.extend_from_slice(&blob[HEADER..]); }
+            MODE_NCZ => { d.dec = Some(Decoder::from_payload(blob[HEADER..].to_vec(), total as u64)); }
+            MODE_LM => { let a = a?; if a.model_id != id { return None; } d.dec = Some(Decoder::from_payload(blob[HEADER..].to_vec(), total as u64)); d.br = Some(Bridge::new(Model::with_threads(&a.weights, threads), &a.vocab)); }
+            _ => return None,
         }
-        prev = Some(tok);
+        Some(d)
     }
-    header(MODE_LM, a.model_id, data.len(), &enc.finish_payload())
+    pub fn done(&self) -> usize { self.out.len() }
+    pub fn total(&self) -> usize { self.total }
+    /// Decode up to `n` more bytes; returns how many (0 when finished or failed).
+    pub fn step(&mut self, n: usize) -> usize {
+        if self.failed { return 0; }
+        let n = n.min(self.total - self.out.len());
+        match self.mode {
+            MODE_NCZ => { let dec = self.dec.as_mut().unwrap(); let chunk = dec.next(n); self.out.extend_from_slice(&chunk); n }
+            MODE_LM => {
+                let (dec, br) = (self.dec.as_mut().unwrap(), self.br.as_mut().unwrap());
+                for k in 0..n {
+                    if br.in_token() {
+                        let p = p12(br.p_end());
+                        if dec.decode_bit(p) == 1 { match br.tail_token() { Some(t) => br.end_token(t), None => { self.failed = true; return k; } } }
+                    }
+                    br.predict(); br.begin_byte();
+                    let b = dec.decode_byte(|j, prefix| br.bit_stretch(j, prefix));
+                    self.out.push(b);
+                    if !br.observe(b) { self.failed = true; return k + 1; }
+                }
+                n
+            }
+            _ => 0,
+        }
+    }
+    /// The decoded bytes, or None if the stream was inconsistent.
+    pub fn finish(self) -> Option<Vec<u8>> { if self.failed || self.out.len() != self.total { None } else { Some(self.out) } }
+}
+
+pub fn compress(a: &Assets, data: &[u8], threads: usize) -> Vec<u8> {
+    if looks_like_text(data) {
+        let mut e = LmEncoder::new(a, data, threads);
+        while e.step(1 << 16) > 0 {}
+        e.finish()
+    } else {
+        let mut e = Encoder::new(); e.push(data);
+        let out = header(MODE_NCZ, a.model_id, data.len(), &e.finish_payload());
+        if out.len() >= HEADER + data.len() { header(MODE_STORE, a.model_id, data.len(), data) } else { out }
+    }
 }
 
 /// None when the header is wrong, the model differs, or the stream is inconsistent.
 pub fn decompress(a: &Assets, blob: &[u8], threads: usize) -> Option<Vec<u8>> {
-    if blob.len() < HEADER || &blob[..4] != MAGIC || blob[4] != VERSION { return None; }
-    let mode = blob[5];
-    if u32::from_le_bytes(blob[6..10].try_into().ok()?) != a.model_id { return None; }
-    let total = u64::from_le_bytes(blob[10..18].try_into().ok()?) as usize;
-    match mode {
-        MODE_STORE => return if blob.len() == HEADER + total { Some(blob[HEADER..].to_vec()) } else { None },
-        MODE_NCZ => { let mut d = Decoder::from_payload(blob[HEADER..].to_vec(), total as u64); return Some(d.next(total)); }
-        MODE_LM => {}
-        _ => return None,
-    }
-    let mut dec = Decoder::from_payload(blob[HEADER..].to_vec(), total as u64);
-    let mut br = Bridge::new(Model::with_threads(&a.weights, threads), &a.vocab);
-    let mut out = Vec::with_capacity(total);
-    for _ in 0..total {
-        if br.in_token() {
-            let p = p12(br.p_end());
-            if dec.decode_bit(p) == 1 { let tok = br.tail_token()?; br.end_token(tok); }
-        }
-        br.predict(); br.begin_byte();
-        let b = dec.decode_byte(|j, prefix| br.bit_stretch(j, prefix));
-        out.push(b);
-        if !br.observe(b) { return None; }
-    }
-    Some(out)
+    let mut d = LmDecoder::new(Some(a), blob, threads)?;
+    while d.step(1 << 16) > 0 {}
+    d.finish()
 }

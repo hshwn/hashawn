@@ -20,9 +20,9 @@ pub struct Pool { n: usize, sh: Arc<Shared>, workers: Vec<std::thread::JoinHandl
 
 impl Pool {
     pub fn new(n: usize) -> Pool {
-        let n = n.max(1);
+        #[allow(unused_variables)] let n = n.max(1);
         let sh = Arc::new(Shared { gen: AtomicUsize::new(0), done: AtomicUsize::new(0), job: std::cell::UnsafeCell::new(None), quit: AtomicBool::new(false), parked: AtomicUsize::new(0) });
-        let mut workers = Vec::new();
+        #[allow(unused_mut)] let mut workers = Vec::new();
         #[cfg(not(target_arch = "wasm32"))]
         for tid in 1..n {
             let sh = sh.clone();
@@ -76,6 +76,7 @@ fn qos_interactive() {
     unsafe { pthread_set_qos_class_self_np(0x21 /* QOS_CLASS_USER_INTERACTIVE */, 0); }
 }
 #[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
 fn qos_interactive() {}
 
 /// Rows [0, n) split into `t` ranges aligned to `align`; returns the range of part `i`.

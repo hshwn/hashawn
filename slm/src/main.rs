@@ -31,6 +31,18 @@ fn main() {
             if ours != r { let k = ours.iter().zip(&r).position(|(x, y)| x != y).unwrap_or(ours.len().min(r.len())); let show = |t: &[u32]| t[k.saturating_sub(3)..(k + 5).min(t.len())].iter().map(|&i| String::from_utf8_lossy(&v.bytes[i as usize]).to_string()).collect::<Vec<_>>(); println!("  first difference at token {k}: ours {:?}  hf {:?}", show(&ours), show(&r)); }
             return;
         }
+        Some("pack") => {
+            // slmcli pack <out.slmq>: quantised weights + tokenizer in one file for the browser; prints the model id
+            let dir = model_dir();
+            let rd = |n: &str| fs::read(format!("{dir}/{n}")).unwrap();
+            let w = slm::Weights::load(&String::from_utf8(rd("manifest.txt")).unwrap(), &rd("weights.bin"));
+            let pack = slm::pack::pack(&w, &rd("vocab.bin"), &rd("merges.bin"));
+            fs::write(&a[2], &pack).unwrap();
+            let back = slm::codec::Assets::from_pack(&pack).expect("pack does not read back");
+            let direct = slm::codec::Assets::from_dir(&dir);
+            println!("{}: {} bytes  model id {:08x}  (from weights.bin {:08x}){}", a[2], pack.len(), back.model_id, direct.model_id, if back.model_id == direct.model_id { "" } else { "  MISMATCH" });
+            return;
+        }
         Some("compress") | Some("decompress") | Some("roundtrip") => {
             let assets = slm::codec::Assets::from_dir(&model_dir());
             let data = fs::read(&a[2]).expect("input");
