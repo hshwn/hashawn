@@ -102,3 +102,41 @@ ncz vs xz on the total: +15.6% smaller
 
 ncz vs xz on the total: +16.4% smaller
 
+
+## slm: GPT-S3-3M forward pass in Rust (2026-10-21)
+
+Own streaming implementation of the 3M-parameter GDN-2/attention hybrid (`slm/`), built as the neural input
+for ncz. Numbers are the model's bits per byte (ideal arithmetic coder), tokenizer included. Hardware: M4 Pro.
+
+| build | docs100k bpb | tok/s (1 thread) | notes |
+|---|---:|---:|---|
+| f32 scalar, matches PyTorch to 1e-4 | 1.8688 | 1,294 | |
+| f32, 8-lane dot | 1.8688 | 1,574 | |
+| int8 weights + int8 activations, i32 exact, NEON `sdot` | 1.8710 | 9,659 | scalar path 5,266, identical logits hash |
+| + eight-lane SIMD type for all f32 (NEON / wasm / arrays) | 1.8710 | 14,311 | array backend hashes identical |
+| + int8 keys, vector softplus/ln | 1.8711 | 15,681 | |
+| + fork-join threads inside the token | 1.8711 | 22,900 (3 thr) | 1.47x; sync-bound beyond 3 |
+
+Quantisation cost measured before committing to it: int8 weights 1.8701, +int16 acts 1.8701, +int8 acts 1.8708.
+4-bit weights: 2.115 per row, 2.035 per group of 32 — dead.
+
+Hot-cache int8 matvec: ~100 GMAC/s = one 16-byte load per `sdot`, ~110 GB/s from L2. Weights are ~3 MB per
+token, so ~27 µs is the single-core floor for the projections; that is why threads, not more kernel work.
+
+### Windows vs streaming (same model, 3 threads)
+
+The model was trained on 1024-token windows. Carrying the recurrent state forever drifts; a sliding attention
+window is fine. A constant extra decay of 0.999 per token on every GDN state fixes the drift without resets.
+
+| mode | docs100k bpb | enwik8-1MB bpb (held out) | KB/s |
+|---|---:|---:|---:|
+| windows 1024, stride 512 (recompute half) | 1.8711 | 1.5335 | 25.5 |
+| windows 1024, stride 1024 | 1.9305 | | 39 |
+| streaming, state carried forever | 1.9749 | 1.6449 | 45 |
+| streaming, GDN reset every 1024 | 1.8970 | | |
+| streaming, attention reset every 1024 (GDN carried) | 2.0325 | | |
+| streaming, extra GDN decay 0.9993 | 1.8703 | 1.5414 | 46 |
+| **streaming, extra GDN decay 0.999 (default)** | **1.8705** | **1.5407** | **46** |
+
+Decay knob is flat between 0.999 and 0.9993; 0.998 costs 0.3%, 0.995 costs 1%. Hard resets lose context,
+soft shrink (×0.7 every 512) 1.8727, continuous decay best. Held out: +0.5% bpb for 1.8× throughput.

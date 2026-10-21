@@ -1,0 +1,46 @@
+# slm — GPT-S3-3M, streaming, integer, deterministic
+
+A from-scratch Rust forward pass for [AxiomicLabs/GPT-S3-3M](https://huggingface.co/AxiomicLabs/GPT-S3-3M)
+(2.97M parameters: 6 Gated-DeltaNet-2 layers, 2 gated-GQA attention layers, Full Attention Residuals,
+4096-token vocab). It exists to be the neural input of ncz, so it is built for two things:
+
+- **the same bits on every machine.** Weights are int8 per row, activations int8 per vector, products
+  summed in i32 (exact). Every f32 operation goes through `simd::F8`: eight lanes, lane-wise IEEE ops,
+  no fused multiply-add, fixed reduction order. exp and ln are our own polynomials; rope tables ship
+  with the weights. `cargo build --features scalar` builds the plain-array backend; it hashes identical
+  logits to the NEON build.
+- **speed.** 15.6k tok/s on one M4 Pro core, 20k with three threads, in streaming mode ~50 KB/s of text.
+
+## Build and run
+
+```bash
+uv run --with torch --with transformers --with safetensors --with numpy python export.py <hf model dir> <text file>
+cargo build --release
+./target/release/slmcli check                      # vs PyTorch logits on the first 1024 tokens
+./target/release/slmcli bpb <ids.bin> <nbytes>     # bits per byte, streaming pass (SLM_WINDOWED=1 for 1024/512 windows)
+./target/release/slmcli micro                      # hot-cache int8 matvec throughput
+cargo build --release --features prof              # section timers, printed by bpb
+```
+
+`export.py` writes `model/weights.bin` (f32, quantised at load), `manifest.txt`, the rope tables, PyTorch
+reference logits and the tokenizer's byte table. `model/weights.bin` is not committed (11.9 MB).
+
+Knobs (environment): `SLM_THREADS` (default 3, one per head), `SLM_GDN_DECAY` (default 0.999, see below),
+`SLM_ATT_WIN` (attention window, default 1024), `SLM_STRIDE` (windowed mode).
+
+## Streaming and the decay
+
+The model was trained on 1024-token windows. Run as a stream (no resets), its recurrent state drifts:
+enwik8 1 MB goes from 1.534 bpb windowed to 1.645. Resetting attention is not the problem; a sliding window
+of the last 1024 keys is fine. Resetting the GDN state every 1024 tokens loses context at each boundary
+(1.897 on Nardo docs vs 1.871 windowed). A constant extra decay of 0.999 per token on every GDN state
+keeps nearly everything: 1.8705 on Nardo docs (windowed 1.8711) and 1.5407 held out on enwik8 (windowed
+1.5335), with every token computed once instead of 1.5 times. Full numbers in `../ncz/bench/results.md`.
+
+## Layout
+
+- `src/simd.rs` — `F8`, exp8/ln8/sigmoid8, dot/dots/axpy, quantize, int8 key scores (`sdot` via inline asm).
+- `src/pool.rs` — fork-join pool for work inside one token; `split` for 8-aligned row ranges.
+- `src/lib.rs` — weights (int8 `QMat`, head-major projection rows), `Model::step`, the per-head GDN and
+  attention kernels, `log_prob`.
+- `src/main.rs` — `slmcli`.

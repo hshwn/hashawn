@@ -156,9 +156,18 @@ pub struct Gdn {
 pub struct Attn { pub proj: QMat /* rows: q_gate(2*NH*HD) k(HD) v(HD) */, pub o: QMat, pub q_norm1: Vec<f32>, pub k_norm1: Vec<f32> /* 1 + weight */ }
 pub enum Mixer { Gdn(Gdn), Attn(Attn) }
 pub struct Layer { pub ln1: Vec<f32>, pub ln2: Vec<f32>, pub res1: AttnRes, pub res2: AttnRes, pub mixer: Mixer, pub gu: QMat /* gate(FF) up(FF) */, pub down: QMat }
-pub struct Weights { pub wte: QMat, pub layers: Vec<Layer>, pub ln_f: Vec<f32>, pub res_f: AttnRes, pub rope_cos: Vec<f32>, pub rope_sin: Vec<f32> }
+pub struct Weights { pub wte: QMat, pub layers: Vec<Layer>, pub ln_f: Vec<f32>, pub res_f: AttnRes, pub rope_cos: Vec<f32>, pub rope_sin: Vec<f32>, pub rope_ccos: Vec<f32>, pub rope_csin: Vec<f32> }
 
 impl Weights {
+    /// cos/sin of pos*theta_i for the 12 rotary pairs, any position < 2^20: angle = coarse(pos>>10) + fine(pos&1023).
+    /// For pos < 1024 the coarse part is (1, 0) and the result equals the fine table bit for bit.
+    pub fn rope(&self, pos: usize, cos: &mut [f32; ROT / 2], sin: &mut [f32; ROT / 2]) {
+        let (c, f) = ((pos >> 10) * ROT / 2, (pos & 1023) * ROT / 2);
+        for i in 0..ROT / 2 {
+            let (ca, sa, cb, sb) = (self.rope_ccos[c + i], self.rope_csin[c + i], self.rope_cos[f + i], self.rope_sin[f + i]);
+            cos[i] = ca * cb - sa * sb; sin[i] = sa * cb + ca * sb;
+        }
+    }
     /// `manifest`: lines "name offset count shape"; `blob`: little-endian f32.
     pub fn load(manifest: &str, blob: &[u8]) -> Weights {
         let mut map = std::collections::HashMap::new();
@@ -197,7 +206,7 @@ impl Weights {
             layers.push(Layer { ln1: get(&format!("{p}.ln_1.weight")), ln2: get(&format!("{p}.ln_2.weight")), res1: res(&format!("{p}.attn_res_1")), res2: res(&format!("{p}.attn_res_2")), mixer,
                 gu: QMat::concat(&[&get(&format!("{p}.mlp.w_gate.weight")), &get(&format!("{p}.mlp.w_up.weight"))], H), down: QMat::from_f32(&get(&format!("{p}.mlp.w_down.weight")), FF) });
         }
-        Weights { wte: QMat::from_f32(&get("transformer.wte.weight"), H), layers, ln_f: get("transformer.ln_f.weight"), res_f: res("transformer.attn_res_f"), rope_cos: get("rope.cos"), rope_sin: get("rope.sin") }
+        Weights { wte: QMat::from_f32(&get("transformer.wte.weight"), H), layers, ln_f: get("transformer.ln_f.weight"), res_f: res("transformer.attn_res_f"), rope_cos: get("rope.cos"), rope_sin: get("rope.sin"), rope_ccos: get("rope.ccos"), rope_csin: get("rope.csin") }
     }
 }
 
@@ -205,9 +214,15 @@ impl Weights {
 // streaming state
 // ---------------------------------------------------------------------------
 pub const GP: usize = 7 * HD;   // GDN projection rows per head
+/// Streaming forgetting: the model was trained on 1024-token windows and its recurrent state drifts
+/// when carried for longer (enwik8 1MB: 1.645 bpb carried forever vs 1.534 windowed). A constant extra
+/// decay per token on every GDN state fixes most of that (1.541) without resets or recompute.
+/// Tuned on Nardo docs, checked held-out on enwik8; flat between 0.999 and 0.9993. SLM_GDN_DECAY overrides.
+pub const EXTRA_DECAY: f32 = 0.999;
+fn extra_decay() -> f32 { static D: std::sync::OnceLock<f32> = std::sync::OnceLock::new(); *D.get_or_init(|| std::env::var("SLM_GDN_DECAY").ok().and_then(|v| v.parse().ok()).unwrap_or(EXTRA_DECAY)) }
 struct GdnState { conv: Vec<f32> /* [3 inputs][CONV-1 taps][H] */, s: Vec<f32> /* [NH][HD][HD] */ }
 /// One head's own copy of the attention cache (every thread appends the same k, v: no sharing needed).
-struct AttnHead { kq: Vec<i8>, ks: Vec<f32>, vc: Vec<f32>, n: usize }
+struct AttnHead { kq: Vec<i8>, ks: Vec<f32>, vc: Vec<f32>, total: usize }   // CTX slots; slot = total % CTX; live = min(total, CTX)
 enum MixState { Gdn(GdnState), Attn(Vec<AttnHead>) }
 /// Per-head scratch owned by whichever thread runs that head.
 struct HeadScratch { p: Vec<f32>, sc: Vec<f32> }
@@ -221,6 +236,7 @@ pub struct Model<'a> {
     xq: QVec,
     heads: Vec<HeadScratch>,
     mix: Vec<f32>, y: Vec<f32>, gu: Vec<f32>,
+    attn_win: usize,
     pub logits: Vec<f32>,
 }
 
@@ -229,7 +245,7 @@ impl<'a> Model<'a> {
     pub fn with_threads(w: &'a Weights, threads: usize) -> Model<'a> {
         let mut m = Model { w, st: Vec::new(), pos: 0, pool: Pool::new(threads), src: Vec::with_capacity(2 * NL + 1), src_r: Vec::with_capacity(2 * NL + 1), xq: QVec::zero(),
             heads: (0..NH).map(|_| HeadScratch { p: vec![0f32; GP], sc: vec![0f32; CTX + 8] }).collect(),
-            mix: vec![0f32; H], y: vec![0f32; H], gu: vec![0f32; 2 * FF], logits: vec![0f32; V] };
+            mix: vec![0f32; H], y: vec![0f32; H], gu: vec![0f32; 2 * FF], attn_win: CTX, logits: vec![0f32; V] };
         m.reset();
         m
     }
@@ -238,11 +254,19 @@ impl<'a> Model<'a> {
     pub fn reset(&mut self) {
         self.st.clear(); self.pos = 0;
         for l in 0..NL {
-            self.st.push(if is_attn(l) { MixState::Attn((0..NH).map(|_| AttnHead { kq: Vec::with_capacity(CTX * HD), ks: Vec::with_capacity(CTX), vc: Vec::with_capacity(CTX * HD), n: 0 }).collect()) }
+            self.st.push(if is_attn(l) { MixState::Attn((0..NH).map(|_| AttnHead { kq: vec![0; CTX * HD], ks: vec![0f32; CTX], vc: vec![0f32; CTX * HD], total: 0 }).collect()) }
                 else { MixState::Gdn(GdnState { conv: vec![0f32; 3 * (CONV - 1) * H], s: vec![0f32; NH * HD * HD] }) });
         }
     }
     pub fn pos(&self) -> usize { self.pos }
+    /// Experiment knobs: forget only the recurrent (GDN) state, or only the attention cache.
+    /// Forget the recurrent state of one GDN layer only.
+    pub fn reset_gdn_layer(&mut self, l: usize) { if let MixState::Gdn(g) = &mut self.st[l] { g.conv.iter_mut().for_each(|v| *v = 0.0); g.s.iter_mut().for_each(|v| *v = 0.0); } }
+    /// Experiment: shrink every GDN state by `f` instead of zeroing it.
+    pub fn soften_gdn(&mut self, f: f32) { for st in self.st.iter_mut() { if let MixState::Gdn(g) = st { g.s.iter_mut().for_each(|v| *v *= f); } } }
+    pub fn reset_gdn(&mut self) { for st in self.st.iter_mut() { if let MixState::Gdn(g) = st { g.conv.iter_mut().for_each(|v| *v = 0.0); g.s.iter_mut().for_each(|v| *v = 0.0); } } }
+    pub fn reset_attn(&mut self) { for st in self.st.iter_mut() { if let MixState::Attn(hs) = st { for h in hs { h.total = 0; } } } }
+    pub fn set_attn_window(&mut self, w: usize) { self.attn_win = w.clamp(1, CTX); }
 
     fn attn_res(&self, r: &AttnRes, out: &mut [f32; H]) {
         let n = self.src.len();
@@ -260,7 +284,6 @@ impl<'a> Model<'a> {
 
     /// Feed one token; `self.logits` then holds the next-token logits. Panics past CTX tokens: reset first.
     pub fn step(&mut self, tok: u32) {
-        assert!(self.pos < CTX, "context full: call reset()");
         let w = self.w; let t = self.pool.threads(); let pos = self.pos;
         self.src.clear(); self.src_r.clear();
         let mut x = [0f32; H]; w.wte.row_f32(tok as usize, &mut x);
@@ -280,7 +303,9 @@ impl<'a> Model<'a> {
                 }
                 (Mixer::Attn(a), MixState::Attn(hs)) => {
                     let hs = Shelf::new(hs);
-                    prof::t(1, || self.pool.run(&|tid| { let mut hh = tid; while hh < NH { unsafe { attn_head(a, hh, xq, pos, &w.rope_cos, &w.rope_sin, &mut hs.range(hh, hh + 1)[0], &mut heads.range(hh, hh + 1)[0], mix.range(hh * HD, (hh + 1) * HD)) }; hh += t; } }));
+                    let (mut rc, mut rs) = ([0f32; ROT / 2], [0f32; ROT / 2]); w.rope(pos, &mut rc, &mut rs);
+                    let win = self.attn_win;
+                    prof::t(1, || self.pool.run(&|tid| { let mut hh = tid; while hh < NH { unsafe { attn_head(a, hh, xq, &rc, &rs, win, &mut hs.range(hh, hh + 1)[0], &mut heads.range(hh, hh + 1)[0], mix.range(hh * HD, (hh + 1) * HD)) }; hh += t; } }));
                 }
                 _ => unreachable!(),
             }
@@ -340,13 +365,14 @@ unsafe fn gdn_head(g: &Gdn, hh: usize, x: &QVec, conv: Shelf<f32>, st: Shelf<f32
     { let mut i = 0; while i < HD { F8::load(&gate[i..]).add(F8::load(&g.g_bias[r + i..])).store(&mut gate[i..]); i += 8; } }
     simd::sigmoid_into(gate, &mut sg);
     let decay = F8::splat(-fexp(g.a_log[hh]));
+    let extra = F8::splat(extra_decay());
     let scale = 1.0 / (HD as f32).sqrt();
     let s = st.range(hh * HD * HD, (hh + 1) * HD * HD);     // [k][v]
     // state *= exp(g) per k row; erase = (b*k)^T state; v_new = w*v - erase; state += k v_new^T; o = (q*scale)^T state
     let (mut dk, mut bk, mut wv) = ([0f32; HD], [0f32; HD], [0f32; HD]);
     for c in 0..HD / 8 {
         let i = c * 8;
-        simd::exp8(decay.mul(simd::softplus8(F8::load(&gg[i..]).add(F8::load(&g.dt_bias[r + i..]))))).store(&mut dk[i..]);
+        simd::exp8(decay.mul(simd::softplus8(F8::load(&gg[i..]).add(F8::load(&g.dt_bias[r + i..]))))).mul(extra).store(&mut dk[i..]);
         F8::load(&sb[i..]).mul(F8::load(&k[i..])).store(&mut bk[i..]);
         F8::load(&sw[i..]).mul(F8::load(&v[i..])).store(&mut wv[i..]);
     }
@@ -370,18 +396,19 @@ unsafe fn gdn_head(g: &Gdn, hh: usize, x: &QVec, conv: Shelf<f32>, st: Shelf<f32
 }
 
 /// One attention head for one token. Every head recomputes k and v (96 rows, identical bits) and keeps its own cache copy.
-unsafe fn attn_head(a: &Attn, hh: usize, x: &QVec, pos: usize, rope_cos: &[f32], rope_sin: &[f32], st: &mut AttnHead, hs: &mut HeadScratch, out: &mut [f32]) {
+unsafe fn attn_head(a: &Attn, hh: usize, x: &QVec, rc: &[f32; ROT / 2], rs: &[f32; ROT / 2], win: usize, st: &mut AttnHead, hs: &mut HeadScratch, out: &mut [f32]) {
     let p = &mut hs.p[..];
     let (qg, rest) = p.split_at_mut(2 * HD); let (k, rest) = rest.split_at_mut(HD); let v = &mut rest[..HD];
     qmatvec_rows(&a.proj, x, hh * 2 * HD, (hh + 1) * 2 * HD, qg);
     qmatvec_rows(&a.proj, x, 2 * NH * HD, 2 * NH * HD + HD, k);
     qmatvec_rows(&a.proj, x, 2 * NH * HD + HD, 2 * NH * HD + 2 * HD, v);
     let (q, gate) = qg.split_at_mut(HD);
-    let rope = |t: &mut [f32]| { for i in 0..ROT / 2 { let (c, sn) = (rope_cos[pos * ROT / 2 + i], rope_sin[pos * ROT / 2 + i]); let (e, o) = (t[2 * i], t[2 * i + 1]); t[2 * i] = e * c - o * sn; t[2 * i + 1] = e * sn + o * c; } };
+    let rope = |t: &mut [f32]| { for i in 0..ROT / 2 { let (c, sn) = (rc[i], rs[i]); let (e, o) = (t[2 * i], t[2 * i + 1]); t[2 * i] = e * c - o * sn; t[2 * i + 1] = e * sn + o * c; } };
     offset_rmsnorm(k, &a.k_norm1); rope(k);
-    let mut kq = [0i8; HD]; let ksc = simd::quantize(k, &mut kq);
-    st.kq.extend_from_slice(&kq); st.ks.push(ksc); st.vc.extend_from_slice(v); st.n += 1;
-    let n = st.n; let n8 = (n + 7) & !7;
+    let slot = st.total % win;
+    st.ks[slot] = simd::quantize(k, &mut st.kq[slot * HD..(slot + 1) * HD]);
+    st.vc[slot * HD..(slot + 1) * HD].copy_from_slice(v); st.total += 1;
+    let n = st.total.min(win); let n8 = (n + 7) & !7;
     let sc = &mut hs.sc[..n8];
     offset_rmsnorm(q, &a.q_norm1); rope(q);
     let mut qq = [0i8; HD]; let sq = simd::quantize(q, &mut qq);

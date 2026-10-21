@@ -176,3 +176,7 @@ transformer.h.7.mlp.w_gate.weight 9129288 50688 352x144
 transformer.h.7.mlp.w_up.weight 9332040 50688 352x144
 transformer.ln_f.weight 9534792 144 144
 transformer.wte.weight 9535368 589824 4096x144
+rope.cos 11894664 12288 1024x12
+rope.sin 11943816 12288 1024x12
+rope.ccos 11992968 12288 1024x12
+rope.csin 12042120 12288 1024x12

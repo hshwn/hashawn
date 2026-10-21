@@ -1,5 +1,6 @@
 //! slmcli check            — compare against PyTorch reference logits (model/ref_*.bin)
-//! slmcli bpb <ids.bin> <nbytes>  — bits per byte over a token file, 1024-token windows, stride 512 (same as bench/lm_bpb.py)
+//! slmcli bpb <ids.bin> <nbytes>  — bits per byte over a token file: one streaming pass (default), or SLM_WINDOWED=1 for
+//!                                 1024-token windows at stride 512 (same as bench/lm_bpb.py); SLM_THREADS, SLM_GDN_DECAY, SLM_ATT_WIN knobs
 use std::{env, fs, time::Instant};
 
 fn load() -> slm::Weights {
@@ -33,6 +34,30 @@ fn main() {
             let (ctx, stride) = (slm::CTX, env::var("SLM_STRIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(slm::CTX / 2));
             let mut m = slm::Model::new(&w);
             let mut bits = 16f64; let mut scored = 0usize; let t0 = Instant::now(); let mut hash = 0xcbf29ce484222325u64;
+            let stream = env::var("SLM_WINDOWED").is_err();   // default: one streaming pass; SLM_WINDOWED=1 for the 1024/512 windows
+            if stream {
+                // one pass, no resets: GDN state runs on, attention sees the last CTX keys
+                let gr: usize = env::var("SLM_GDN_RESET").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let ar: usize = env::var("SLM_ATT_RESET").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                if let Some(w) = env::var("SLM_ATT_WIN").ok().and_then(|v| v.parse().ok()) { m.set_attn_window(w); }
+                for i in 0..toks.len() {
+                    if gr > 0 && i > 0 {
+                        if env::var("SLM_GDN_STAGGER").is_ok() {
+                            // six GDN layers reset at six evenly spaced offsets inside the interval
+                            let mut gi = 0; for l in 0..slm::NL { if !slm::is_attn(l) { if (i + gi * gr / 6) % gr == 0 { m.reset_gdn_layer(l); } gi += 1; } }
+                        } else if i % gr == 0 { if let Some(f) = env::var("SLM_GDN_SOFT").ok().and_then(|v| v.parse::<f32>().ok()) { m.soften_gdn(f); } else { m.reset_gdn(); } }
+                    }
+                    if ar > 0 && i > 0 && i % ar == 0 { m.reset_attn(); }
+                    m.step(toks[i]);
+                    for &l in &m.logits { hash = (hash ^ l.to_bits() as u64).wrapping_mul(0x100000001b3); }
+                    if i + 1 < toks.len() { bits += -(slm::prof::t(7, || slm::log_prob(&m.logits, toks[i + 1] as usize)) as f64) / 2f64.ln(); scored += 1; }
+                }
+                let dt = t0.elapsed().as_secs_f64();
+                slm::prof::report();
+                println!("logits hash {hash:016x}");
+                println!("STREAM tokens {}  scored {scored}  bits per byte {:.4}  ({:.0} tok/s, {:.1} KB/s, {} threads)", toks.len(), bits / nbytes, toks.len() as f64 / dt, nbytes / dt / 1000.0, m.threads());
+                return;
+            }
             let mut start = 0;
             loop {
                 let end = (start + ctx).min(toks.len());
