@@ -12,7 +12,9 @@
   "jpegls": 773539,
   "jpegls_k1": 548486,
   "jpegls_k2": 450305,
-  "secs": 11.8
+  "secs": 11.8,
+  "avif_ll": 620648,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim02",
@@ -27,7 +29,9 @@
   "jpegls": 596527,
   "jpegls_k1": 380190,
   "jpegls_k2": 296430,
-  "secs": 4.7
+  "secs": 4.7,
+  "avif_ll": 554095,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim03",
@@ -42,7 +46,9 @@
   "jpegls": 512575,
   "jpegls_k1": 314106,
   "jpegls_k2": 235332,
-  "secs": 5.2
+  "secs": 5.2,
+  "avif_ll": 482045,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim04",
@@ -57,7 +63,9 @@
   "jpegls": 614514,
   "jpegls_k1": 395637,
   "jpegls_k2": 309148,
-  "secs": 5.8
+  "secs": 5.8,
+  "avif_ll": 550808,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim05",
@@ -72,7 +80,9 @@
   "jpegls": 762585,
   "jpegls_k1": 534817,
   "jpegls_k2": 437441,
-  "secs": 6.0
+  "secs": 6.0,
+  "avif_ll": 670672,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim06",
@@ -87,7 +97,9 @@
   "jpegls": 676827,
   "jpegls_k1": 464270,
   "jpegls_k2": 373166,
-  "secs": 6.5
+  "secs": 6.5,
+  "avif_ll": 565431,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim07",
@@ -102,7 +114,9 @@
   "jpegls": 536243,
   "jpegls_k1": 333516,
   "jpegls_k2": 256842,
-  "secs": 5.6
+  "secs": 5.6,
+  "avif_ll": 520030,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim08",
@@ -117,7 +131,9 @@
   "jpegls": 777168,
   "jpegls_k1": 549627,
   "jpegls_k2": 449412,
-  "secs": 7.2
+  "secs": 7.2,
+  "avif_ll": 688045,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim09",
@@ -132,7 +148,9 @@
   "jpegls": 577992,
   "jpegls_k1": 355961,
   "jpegls_k2": 277026,
-  "secs": 6.3
+  "secs": 6.3,
+  "avif_ll": 539838,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim10",
@@ -147,7 +165,9 @@
   "jpegls": 579951,
   "jpegls_k1": 359086,
   "jpegls_k2": 278312,
-  "secs": 7.1
+  "secs": 7.1,
+  "avif_ll": 540023,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim11",
@@ -162,7 +182,9 @@
   "jpegls": 645784,
   "jpegls_k1": 428654,
   "jpegls_k2": 331486,
-  "secs": 7.3
+  "secs": 7.3,
+  "avif_ll": 569613,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim12",
@@ -177,7 +199,9 @@
   "jpegls": 564858,
   "jpegls_k1": 352910,
   "jpegls_k2": 269870,
-  "secs": 6.8
+  "secs": 6.8,
+  "avif_ll": 505769,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim13",
@@ -192,7 +216,9 @@
   "jpegls": 875063,
   "jpegls_k1": 644113,
   "jpegls_k2": 539766,
-  "secs": 6.7
+  "secs": 6.7,
+  "avif_ll": 712980,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim14",
@@ -207,7 +233,9 @@
   "jpegls": 723192,
   "jpegls_k1": 497356,
   "jpegls_k2": 398244,
-  "secs": 6.5
+  "secs": 6.5,
+  "avif_ll": 612072,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim15",
@@ -222,7 +250,9 @@
   "jpegls": 577481,
   "jpegls_k1": 369857,
   "jpegls_k2": 286015,
-  "secs": 5.6
+  "secs": 5.6,
+  "avif_ll": 528302,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim16",
@@ -237,7 +267,9 @@
   "jpegls": 598834,
   "jpegls_k1": 387390,
   "jpegls_k2": 299760,
-  "secs": 7.0
+  "secs": 7.0,
+  "avif_ll": 517911,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim17",
@@ -252,7 +284,9 @@
   "jpegls": 605205,
   "jpegls_k1": 386901,
   "jpegls_k2": 301794,
-  "secs": 6.0
+  "secs": 6.0,
+  "avif_ll": 533083,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim18",
@@ -267,7 +301,9 @@
   "jpegls": 747312,
   "jpegls_k1": 518799,
   "jpegls_k2": 416674,
-  "secs": 5.8
+  "secs": 5.8,
+  "avif_ll": 659606,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim19",
@@ -282,7 +318,9 @@
   "jpegls": 656960,
   "jpegls_k1": 429976,
   "jpegls_k2": 344287,
-  "secs": 7.0
+  "secs": 7.0,
+  "avif_ll": 581328,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim20",
@@ -297,7 +335,9 @@
   "jpegls": 482979,
   "jpegls_k1": 328653,
   "jpegls_k2": 262777,
-  "secs": 5.5
+  "secs": 5.5,
+  "avif_ll": 411310,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim21",
@@ -312,7 +352,9 @@
   "jpegls": 667728,
   "jpegls_k1": 442732,
   "jpegls_k2": 357551,
-  "secs": 6.8
+  "secs": 6.8,
+  "avif_ll": 586131,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim22",
@@ -327,7 +369,9 @@
   "jpegls": 669772,
   "jpegls_k1": 444786,
   "jpegls_k2": 354022,
-  "secs": 6.1
+  "secs": 6.1,
+  "avif_ll": 610147,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim23",
@@ -342,7 +386,9 @@
   "jpegls": 521814,
   "jpegls_k1": 312859,
   "jpegls_k2": 240978,
-  "secs": 6.5
+  "secs": 6.5,
+  "avif_ll": 511095,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "kodak/kodim24",
@@ -357,7 +403,9 @@
   "jpegls": 676799,
   "jpegls_k1": 463319,
   "jpegls_k2": 376028,
-  "secs": 7.4
+  "secs": 7.4,
+  "avif_ll": 602156,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "poster/poupees",
@@ -372,7 +420,9 @@
   "jpegls": 1190791,
   "jpegls_k1": 762225,
   "jpegls_k2": 578850,
-  "secs": 10.4
+  "secs": 10.4,
+  "avif_ll": 1390638,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "poster/ram",
@@ -387,7 +437,9 @@
   "jpegls": 4560942,
   "jpegls_k1": 3087667,
   "jpegls_k2": 2409214,
-  "secs": 17.3
+  "secs": 17.3,
+  "avif_ll": 4202083,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  },
  {
   "name": "poster/harvest",
@@ -402,6 +454,8 @@
   "jpegls": 843490,
   "jpegls_k1": 545395,
   "jpegls_k2": 422899,
-  "secs": 8.0
+  "secs": 8.0,
+  "avif_ll": 848363,
+  "avif_mode": "{'level': 100, 'pixelformat': '444'}"
  }
 ]
