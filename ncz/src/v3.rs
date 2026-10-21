@@ -22,7 +22,7 @@ const MASKS: [u64; 6] = [0, 0xFF, 0xFFFF, 0xFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF_FF
 pub const WORD_MODEL: bool = false;
 pub const MIXER2: bool = false;
 const NORD: usize = MASKS.len() + if WORD_MODEL { 1 } else { 0 };
-const NMIX2: usize = 24;                    // second mixer: weight set by match state x previous byte class
+const NMIX2: usize = 27;                    // second mixer: weight set by match state x previous byte class
 const TBITS: u32 = 22;                      // 2^22 buckets * 16 B = 64 MB, shared by all orders
 const TMASK: u32 = (1 << TBITS) - 1;
 const HISTMASK: u64 = (1u64 << 48) - 1;
