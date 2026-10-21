@@ -433,7 +433,8 @@ impl<'a> Model<'a> {
             }
             // phase B: output projection, rows split
             let o = match &lw.mixer { Mixer::Gdn(g) => &g.o, Mixer::Attn(a) => &a.o };
-            prof::t(2, || self.pool.run(&|tid| { let mut q = QVec::zero(); q.set(mix.all()); let (a, b) = split(H, t, tid, 8); if a < b { qmatvec_rows(o, &q, a, b, unsafe { y.range(a, b) }); } }));
+            // 144x144: too small to split (sync costs more than the work); the main thread does it
+            prof::t(2, || { let mut q = QVec::zero(); q.set(mix.all()); qmatvec_rows(o, &q, 0, H, unsafe { y.range(0, H) }); });
             prof::t(3, || { let yv: [f32; H] = y.all().try_into().unwrap(); self.push_src(&yv); self.attn_res(&lw.res2, &mut h); rmsnorm(&h, &lw.ln2, &mut hn); self.xq.set(&hn); });
             let xq = &self.xq;
             // phase C: gate/up rows split over the FF axis, silu(g)*u for the same range

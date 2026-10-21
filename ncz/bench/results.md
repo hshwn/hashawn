@@ -225,3 +225,22 @@ Nardo docs 100 KB, M4 Pro 3 threads (v1 = flag-first with the mixed flag model: 
 enwik8 1 MB held out: v1 176199 B (1.4096) -> v2 at 0.02 with table 174984 B (1.3999), -0.7%.
 Gains flatten below 0.02 while speed keeps falling, so 0.02 is the default. Cost vs v1: ~40% slower
 (27 vs 44 KB/s native, 8 vs 12 KB/s in the browser). Browser output byte-identical to native (SHA-256).
+
+### Speed pass on the codec (2026-10-21, NCZL v5)
+
+| change | Nardo docs bytes | native 3 thr KB/s | browser KB/s |
+|---|---:|---:|---:|
+| v2 byte-first, threshold 0.02 | 21984 | 27 | 8 |
+| + trie-ordered vocab (SIMD softmax), double-buffered state | 21984 | 31.5 | |
+| + flag first when P(end) < 0.2 (1.53 -> 1.16 model steps per token) | 22012 | 40 | |
+| + 7-bit activations (+0.1% bytes), relaxed-SIMD wasm (V8 lowers it to `sdot`) | 22033 | 40 | 22.8 |
+| + 144x144 output projection on one thread (sync cost more than the work) | 22033 | 42 | 22.8 |
+
+Plain-SIMD fallback (`nczl-base.wasm`, browsers without relaxed SIMD): 11.6 -> 14.8 KB/s by summing four
+exact int16 products before widening. All builds produce identical bytes (SHA-256 on a 30 KB slice).
+enwik8 1 MB held out: 1.4032 bpb. Native single thread 28 KB/s, wasm single thread 22.8: wasm is now within
+20% of native. Tried and dropped: fusing the GDN state passes with a pending rank-one update (no gain,
+the state lives in L1); interleaving rows in the old wasm kernel (no gain, it was instruction-bound).
+
+Where a single thread stands: the int8 matvecs read ~3 MB of weights per model step, ~30 µs at L2
+bandwidth, which is about what they take. More single-thread speed needs fewer weights read per byte.
