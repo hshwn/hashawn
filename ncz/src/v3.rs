@@ -23,7 +23,7 @@ const NORD: usize = ORDERS.len() + if WORD_MODEL { 1 } else { 0 };
 const TBITS: u32 = 22;                      // 2^22 buckets * 16 B = 64 MB, shared by all orders
 const TMASK: u32 = (1 << TBITS) - 1;
 const HISTMASK: u64 = (1u64 << 48) - 1;
-const PRIMES: [u64; 7] = [0x9E37_79B1, 0x85EB_CA77, 0xC2B2_AE3D, 0x27D4_EB2F, 0x1656_67B1, 0xD3A2_646C, 0x3C6E_F372];
+const PRIMES64: [u64; 7] = [0x9E37_79B9_7F4A_7C15, 0xBF58_476D_1CE4_E5B9, 0x94D0_49BB_1331_11EB, 0xC2B2_AE3D_27D4_EB4F, 0x1656_67B1_9E37_79F9, 0xD6E8_FEB8_6659_FD93, 0xA076_1D64_78BD_642F];
 const MIN_MATCH: usize = 6;
 const MTBITS: u32 = 22;
 const MMASK: u32 = (1 << MTBITS) - 1;
@@ -127,12 +127,15 @@ impl Model {
         for i in 0..ORDERS.len() {
             let order = ORDERS[i];
             let cxt = if order == 0 { 0 } else { self.hist & ((1u64 << (8 * order)) - 1) };
-            let mut h = (cxt.wrapping_mul(PRIMES[i]).wrapping_add(i as u64 * 0x9E37_79B9) & 0xFFFF_FFFF) as u32;
+            // high half of a 64-bit product: every input bit reaches the hash (the low half
+            // would only see the lowest 4 bytes, which made orders 5 and 6 behave as order 4)
+            let x = cxt.wrapping_add(i as u64 * 0x9E37_79B9_7F4A_7C15).wrapping_mul(PRIMES64[i]);
+            let mut h = (x >> 32) as u32 ^ (x as u32);
             h ^= h >> 15; h = h.wrapping_mul(0x2C1B_3C6D); h ^= h >> 12;
             self.ctxh[i] = h;
         }
         if WORD_MODEL {
-            let w = (self.word as u64 ^ ((self.prev_word as u64) << 20)).wrapping_mul(PRIMES[6]);
+            let w = (self.word as u64 ^ ((self.prev_word as u64) << 20)).wrapping_mul(PRIMES64[6]);
             let mut h = (w & 0xFFFF_FFFF) as u32; h ^= h >> 15; h = h.wrapping_mul(0x2C1B_3C6D); h ^= h >> 12;
             self.ctxh[NORD - 1] = h.wrapping_add(0x7777_7777);
         }
