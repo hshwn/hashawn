@@ -267,3 +267,36 @@ at 156 KB/s compress / 146 decompress (4.9x). Workers: 4 -> 92 KB/s, 8 -> 150, 1
 The cost grows with file size: one stream keeps learning across the whole file, segments restart.
 wasm (Node, 2 workers, 3 MB = 2 segments): 43.8 KB/s. Also: rope tables gained a third level (positions
 up to 2^30; the 10 MB one-stream run crashed at 2^20), pack v2, model id 1d4f6388.
+
+## Pixel mode (2026-10-21, NCZI v1)
+
+`ncz/src/img.rs`: 8-bit RGB, lossless or near-lossless (every sample within +-k). Green, then red, then blue.
+Each sample: a blend of 12 predictors (neighbours, gradients, MED, and for red/blue "colour from
+brightness": this pixel's green change carried over) weighted by each predictor's recent error around the
+pixel, plus a running bias per context. The residual is binarised (zero? / size / mantissa / sign) and each
+decision is coded by context mixing: 13 context sets in one hashed table (activity, expected error,
+neighbour residuals, the other channels' residual here, and where each predictor points relative to the
+guess), two mixers (by activity and by expected error) averaged, two APMs, range coder. Integer only.
+
+Set: the 24 Kodak photos (`bench/img/fetch-kodak.sh`) + the site's 3 posters (decoded from their web files).
+Baselines from `bench/img/baselines.py` (imagecodecs: libpng 9, libwebp lossless method 6, libjxl lossless).
+Bits per pixel over RGB (raw = 24). Tuned on kodim01-04 only; the other 20 are held out.
+
+| set | ncz pixel | JPEG XL e9 | JPEG XL e7 | WebP lossless | PNG |
+|---|---:|---:|---:|---:|---:|
+| 4 photos tuned on | 8.097 | 8.148 | 8.234 | 9.096 | 12.916 |
+| 20 photos held out | 8.560 | 8.551 | 8.660 | 9.578 | 13.274 |
+| all 24 photos | 8.483 | 8.484 | 8.589 | 9.498 | 13.214 |
+| 3 posters | 3.823 | 4.116 | 4.193 | 4.812 | 6.807 |
+
+Near-lossless, every sample within +-k (verified): photos 5.523 bpp at +-1, 4.277 at +-2; posters 2.815 / 2.249.
+JPEG-LS (CharLS via imagecodecs) gave 8.684 / 6.903 on photos, but its lossless mode came out worse than PNG
+(13.07 bpp), so that encoder setup is probably wrong; treat those JPEG-LS numbers as unreliable.
+Speed ~2.6 MB/s of raw RGB, encode and decode alike (JPEG XL decodes far faster; its e9 encode took 5-12 s per
+photo here).
+
+Path, measured on kodim01-04 (bpp): v1 single blend + 7 small tables 8.929 -> hashed table with "where each
+predictor points" contexts and decoded-prefix keys 8.486 -> remaining predictor offsets 8.227 -> second mixer by
+expected error 8.145 -> mixer step /2 8.101 -> table limit 255 8.097. No gain: predictor-disagreement and
+blend-position contexts, far neighbours (NN, WW, NNE), scale-aware offset pairs. Bits split (kodim01): green
+5.1 bpp, red 2.5, blue 2.4.
