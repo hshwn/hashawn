@@ -314,28 +314,42 @@ impl Encoder {
     /// `side`: one stretch value per bit of `data` (MSB first), fed to the mixer as an extra input.
     pub fn push_side(&mut self, data: &[u8], side: Option<&[i16]>) {
         for (bi, &byte) in data.iter().enumerate() {
-            for shift in (0..8).rev() {
-                let y = ((byte >> shift) & 1) as u32;
-                if let Some(s) = side { self.m.side = s[bi * 8 + (7 - shift)] as i32; }
-                let p = self.m.predict() as u32;
-                let xmid = self.x1 + ((self.x2 - self.x1) >> 12) * p;
-                if y != 0 { self.x2 = xmid; } else { self.x1 = xmid + 1; }
-                while (self.x1 ^ self.x2) & 0xFF00_0000 == 0 {
-                    self.out.push((self.x2 >> 24) as u8);
-                    self.x1 <<= 8;
-                    self.x2 = (self.x2 << 8) | 0xFF;
-                }
-                self.m.update(y);
-            }
+            let s: Option<[i16; 8]> = side.map(|s| s[bi * 8..bi * 8 + 8].try_into().unwrap());
+            self.encode_byte(byte, s.as_ref());
         }
-        self.total += data.len() as u64;
     }
-    pub fn finish(mut self) -> Vec<u8> {
-        self.out.extend_from_slice(&self.x1.to_be_bytes());
-        let mut v = Vec::with_capacity(12 + self.out.len());
+    #[inline(always)] fn enc(&mut self, y: u32, p: u32) {
+        let xmid = self.x1 + ((self.x2 - self.x1) >> 12) * p;
+        if y != 0 { self.x2 = xmid; } else { self.x1 = xmid + 1; }
+        while (self.x1 ^ self.x2) & 0xFF00_0000 == 0 {
+            self.out.push((self.x2 >> 24) as u8);
+            self.x1 <<= 8;
+            self.x2 = (self.x2 << 8) | 0xFF;
+        }
+    }
+    /// One bit straight through the range coder with an external probability: p12 = P(y = 1) in 1..=4095.
+    /// Does not touch the model (for side-channel decisions such as token-boundary flags).
+    #[inline] pub fn encode_bit(&mut self, y: u32, p12: u32) { self.enc(y, p12.clamp(1, 4095)); }
+    /// One byte through the model, MSB first, with an optional stretch prediction per bit.
+    #[inline] pub fn encode_byte(&mut self, byte: u8, side: Option<&[i16; 8]>) {
+        for shift in (0..8).rev() {
+            let y = ((byte >> shift) & 1) as u32;
+            self.m.side = side.map_or(0, |s| s[7 - shift] as i32);
+            let p = self.m.predict() as u32;
+            self.enc(y, p);
+            self.m.update(y);
+        }
+        self.total += 1;
+    }
+    /// The coded payload without the NCZ3 header (for containers that write their own).
+    pub fn finish_payload(mut self) -> Vec<u8> { self.out.extend_from_slice(&self.x1.to_be_bytes()); self.out }
+    pub fn finish(self) -> Vec<u8> {
+        let total = self.total;
+        let out = self.finish_payload();
+        let mut v = Vec::with_capacity(12 + out.len());
         v.extend_from_slice(MAGIC);
-        v.extend_from_slice(&self.total.to_le_bytes());
-        v.extend_from_slice(&self.out);
+        v.extend_from_slice(&total.to_le_bytes());
+        v.extend_from_slice(&out);
         v
     }
 }
@@ -346,35 +360,47 @@ impl Decoder {
     pub fn new(blob: &[u8]) -> Option<Decoder> {
         if blob.len() < 12 || &blob[..4] != MAGIC { return None; }
         let total = u64::from_le_bytes(blob[4..12].try_into().ok()?);
-        let mut d = Decoder { m: Model::new(), x1: 0, x2: 0xFFFF_FFFF, x: 0, payload: blob[12..].to_vec(), pos: 0, remaining: total, total };
+        Some(Decoder::from_payload(blob[12..].to_vec(), total))
+    }
+    /// A decoder over a bare payload (see `Encoder::finish_payload`).
+    pub fn from_payload(payload: Vec<u8>, total: u64) -> Decoder {
+        let mut d = Decoder { m: Model::new(), x1: 0, x2: 0xFFFF_FFFF, x: 0, payload, pos: 0, remaining: total, total };
         for _ in 0..4 { d.x = (d.x << 8) | d.next_in(); }
-        Some(d)
+        d
     }
     #[inline] fn next_in(&mut self) -> u32 { let b = if self.pos < self.payload.len() { self.payload[self.pos] } else { 0 }; self.pos += 1; b as u32 }
+    #[inline(always)] fn dec(&mut self, p: u32) -> u32 {
+        let xmid = self.x1 + ((self.x2 - self.x1) >> 12) * p;
+        let y = if self.x <= xmid { self.x2 = xmid; 1 } else { self.x1 = xmid + 1; 0 };
+        while (self.x1 ^ self.x2) & 0xFF00_0000 == 0 {
+            self.x1 <<= 8;
+            self.x2 = (self.x2 << 8) | 0xFF;
+            self.x = (self.x << 8) | self.next_in();
+        }
+        y
+    }
+    /// Mirror of `Encoder::encode_bit`.
+    #[inline] pub fn decode_bit(&mut self, p12: u32) -> u32 { self.dec(p12.clamp(1, 4095)) }
+    /// Mirror of `Encoder::encode_byte`; `side(j)` gives the stretch for bit j (MSB first), called before that bit is known.
+    #[inline] pub fn decode_byte(&mut self, mut side: impl FnMut(usize, u32) -> i16) -> u8 {
+        let mut byte = 0u32;
+        for j in 0..8 {
+            self.m.side = side(j, byte) as i32;
+            let p = self.m.predict() as u32;
+            let y = self.dec(p);
+            self.m.update(y);
+            byte = (byte << 1) | y;
+        }
+        self.remaining = self.remaining.saturating_sub(1);
+        byte as u8
+    }
     pub fn next(&mut self, max: usize) -> Vec<u8> {
         let n = (self.remaining.min(max as u64)) as usize;
         let mut out = Vec::with_capacity(n);
-        for _ in 0..n {
-            let mut byte = 0u32;
-            for _ in 0..8 {
-                let p = self.m.predict() as u32;
-                let xmid = self.x1 + ((self.x2 - self.x1) >> 12) * p;
-                let y = if self.x <= xmid { self.x2 = xmid; 1 } else { self.x1 = xmid + 1; 0 };
-                while (self.x1 ^ self.x2) & 0xFF00_0000 == 0 {
-                    self.x1 <<= 8;
-                    self.x2 = (self.x2 << 8) | 0xFF;
-                    self.x = (self.x << 8) | self.next_in();
-                }
-                self.m.update(y);
-                byte = (byte << 1) | y;
-            }
-            out.push(byte as u8);
-        }
-        self.remaining -= n as u64;
+        for _ in 0..n { let b = self.decode_byte(|_, _| 0); out.push(b); }
         out
     }
 }
-
 pub fn compress(data: &[u8]) -> Vec<u8> { let mut e = Encoder::new(); e.push(data); e.finish() }
 pub fn decompress(blob: &[u8]) -> Option<Vec<u8>> { let mut d = Decoder::new(blob)?; let n = d.total as usize; Some(d.next(n)) }
 

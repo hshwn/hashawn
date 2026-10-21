@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "ncz"
+version = "0.2.0"
+
+[[package]]
 name = "slm"
 version = "0.1.0"
+dependencies = [
+ "ncz",
+]

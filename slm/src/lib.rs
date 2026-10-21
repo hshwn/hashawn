@@ -12,6 +12,8 @@
 pub mod simd;
 pub mod pool;
 pub mod bridge;
+pub mod bpe;
+pub mod codec;
 use simd::{F8, fexp, fln, dot, dots, axpy};
 use pool::{Pool, Shelf, split};
 

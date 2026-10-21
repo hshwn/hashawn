@@ -105,23 +105,28 @@ impl<'a> Bridge<'a> {
         for b in 0..256 { p[b] = p[b] * inv + u; }
         self.p = p;
     }
-    /// Per-bit predictions for byte `actual` (MSB first) as ncz stretch units, after `predict()`.
-    pub fn bits(&mut self, actual: u8, out: &mut [i16; 8]) {
+    /// The token the tail spells (valid when the end flag fires: p_end > 0 implies the tail is a token).
+    pub fn tail_token(&self) -> Option<u32> { let t = self.v.nodes[self.tail_node].tok; if t < 0 { None } else { Some(t as u32) } }
+    /// Build the binary tree over `self.p` so bits can be predicted one at a time (after `predict()`).
+    pub fn begin_byte(&mut self) {
         let t = &mut self.tree;
         for b in 0..256 { t[256 + b] = self.p[b]; }
         for n in (1..256).rev() { t[n] = t[2 * n] + t[2 * n + 1]; }
-        let mut n = 1usize;
-        for j in 0..8 {
-            let p1 = (t[2 * n + 1] / t[n]).clamp(1e-6, 1.0 - 1e-6);
-            let st = (256.0 * (p1 / (1.0 - p1)).ln()).round().clamp(-2047.0, 2047.0);
-            out[j] = st as i16;
-            let bit = (actual >> (7 - j)) & 1;
-            n = 2 * n + bit as usize;
-        }
     }
-    /// Consume the actual byte (the token continues through it).
-    pub fn observe(&mut self, b: u8) {
-        self.tail_node = self.v.child(self.tail_node, b).expect("byte not on a vocab path: tokenisation does not match");
-        self.tail_len += 1;
+    /// Stretch for bit j (MSB first) given the j bits already known as `prefix`, in ncz units.
+    #[inline] pub fn bit_stretch(&self, j: usize, prefix: u32) -> i16 {
+        let n = (1usize << j) + prefix as usize;
+        let p1 = (self.tree[2 * n + 1] / self.tree[n]).clamp(1e-6, 1.0 - 1e-6);
+        (256.0 * (p1 / (1.0 - p1)).ln()).round().clamp(-2047.0, 2047.0) as i16
+    }
+    /// Per-bit predictions for byte `actual` (MSB first) as ncz stretch units, after `predict()`.
+    pub fn bits(&mut self, actual: u8, out: &mut [i16; 8]) {
+        self.begin_byte();
+        let mut prefix = 0u32;
+        for j in 0..8 { out[j] = self.bit_stretch(j, prefix); prefix = (prefix << 1) | ((actual >> (7 - j)) & 1) as u32; }
+    }
+    /// Consume the actual byte (the token continues through it). False if no token continues this way.
+    pub fn observe(&mut self, b: u8) -> bool {
+        match self.v.child(self.tail_node, b) { Some(n) => { self.tail_node = n; self.tail_len += 1; true } None => false }
     }
 }

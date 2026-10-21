@@ -9,8 +9,47 @@ fn load() -> slm::Weights {
 }
 fn ids(path: &str) -> Vec<u32> { fs::read(path).expect("ids").chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect() }
 
+fn threads() -> usize { env::var("SLM_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(slm::NH) }
+fn model_dir() -> String { env::var("SLM_MODEL").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/model").to_string()) }
+
 fn main() {
     let a: Vec<String> = env::args().collect();
+    match a.get(1).map(String::as_str) {
+        Some("tok-check") => {
+            // slmcli tok-check <file> <nbytes> <ref.ids>: our BPE vs Hugging Face's ids
+            let dir = model_dir();
+            let v = slm::bridge::Vocab::load(&fs::read(format!("{dir}/vocab.bin")).unwrap());
+            let bpe = slm::bpe::Bpe::load(&fs::read(format!("{dir}/merges.bin")).unwrap(), &v.bytes);
+            let n: usize = a[3].parse().unwrap(); let data = fs::read(&a[2]).unwrap(); let data = &data[..n.min(data.len())];
+            let t0 = Instant::now(); let ours = bpe.encode(data); let dt = t0.elapsed().as_secs_f64();
+            let back: Vec<u8> = ours.iter().flat_map(|&i| v.bytes[i as usize].clone()).collect(); assert_eq!(back, data, "round trip");
+            let r = ids(&a[4]);
+            // align by byte offsets: count tokens whose (start, id) pair exists in both
+            let offs = |t: &[u32]| { let mut o = std::collections::HashSet::new(); let mut p = 0usize; for &i in t { o.insert((p, i)); p += v.bytes[i as usize].len(); } o };
+            let (oa, ob) = (offs(&ours), offs(&r)); let same = oa.intersection(&ob).count();
+            println!("bytes {}  ours {} tokens  hf {} tokens  identical tokens {:.2}% of hf  ({:.1} MB/s)", data.len(), ours.len(), r.len(), 100.0 * same as f64 / r.len() as f64, data.len() as f64 / dt / 1e6);
+            if ours != r { let k = ours.iter().zip(&r).position(|(x, y)| x != y).unwrap_or(ours.len().min(r.len())); let show = |t: &[u32]| t[k.saturating_sub(3)..(k + 5).min(t.len())].iter().map(|&i| String::from_utf8_lossy(&v.bytes[i as usize]).to_string()).collect::<Vec<_>>(); println!("  first difference at token {k}: ours {:?}  hf {:?}", show(&ours), show(&r)); }
+            return;
+        }
+        Some("compress") | Some("decompress") | Some("roundtrip") => {
+            let assets = slm::codec::Assets::from_dir(&model_dir());
+            let data = fs::read(&a[2]).expect("input");
+            let t0 = Instant::now();
+            match a[1].as_str() {
+                "compress" => { let out = slm::codec::compress(&assets, &data, threads()); fs::write(&a[3], &out).unwrap(); let dt = t0.elapsed().as_secs_f64(); println!("{} -> {} bytes  {:.4} bpb  {:.1} KB/s", data.len(), out.len(), 8.0 * out.len() as f64 / data.len().max(1) as f64, data.len() as f64 / dt / 1000.0); }
+                "decompress" => { let out = slm::codec::decompress(&assets, &data, threads()).expect("not an NCZL stream for this model"); fs::write(&a[3], &out).unwrap(); let dt = t0.elapsed().as_secs_f64(); println!("{} -> {} bytes  {:.1} KB/s", data.len(), out.len(), out.len() as f64 / dt / 1000.0); }
+                _ => {
+                    let c = slm::codec::compress(&assets, &data, threads()); let t1 = Instant::now();
+                    let d = slm::codec::decompress(&assets, &c, threads()).expect("decode failed");
+                    let ok = d == data;
+                    println!("{}: {} -> {} bytes  {:.4} bpb  enc {:.1} KB/s  dec {:.1} KB/s  {}", a[2], data.len(), c.len(), 8.0 * c.len() as f64 / data.len().max(1) as f64, data.len() as f64 / (t1 - t0).as_secs_f64() / 1000.0, data.len() as f64 / t1.elapsed().as_secs_f64() / 1000.0, if ok { "round trip OK" } else { "MISMATCH" });
+                    if !ok { std::process::exit(1); }
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
     let w = load();
     match a.get(1).map(String::as_str) {
         Some("check") => {
@@ -125,7 +164,7 @@ fn main() {
                 data.len(), toks.len(), byte_bits / nb, (end_bits + cont_bits) / nb, end_bits / nb, cont_bits / nb, (byte_bits + end_bits + cont_bits) / nb, nb / dt / 1000.0, br.m.threads());
             println!("FLAGBITS {:.1}", end_bits + cont_bits);
         }
-        _ => eprintln!("usage: slmcli check | slmcli bpb <ids.bin> <nbytes> | slmcli micro | slmcli side <file> <nbytes> <ids.bin> <out.side>"),
+        _ => eprintln!("usage: slmcli check | bpb <ids.bin> <nbytes> | micro | side <file> <nbytes> <ids.bin> <out.side> | tok-check <file> <nbytes> <ref.ids> | compress <in> <out> | decompress <in> <out> | roundtrip <file>"),
     }
 }
 /// number of model steps the windowed pass performs (windows overlap by ctx-stride)

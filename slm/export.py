@@ -62,3 +62,10 @@ for i in range(len(tok)):
 with open("model/vocab.bin", "wb") as f:
     for b in vocab: f.write(struct.pack("<H", len(b)) + b)
 print(f"ref: {len(ids)} tokens; vocab {len(vocab)} entries written")
+# BPE merges as ids: (left, right, merged) u16 LE per rank, for the Rust tokenizer
+tj = json.load(open(f"{mdir}/tokenizer.json")); tv = tj["model"]["vocab"]
+with open("model/merges.bin", "wb") as f:
+    for m in tj["model"]["merges"]:
+        a, b = (m if isinstance(m, list) else m.split(" ", 1))
+        f.write(struct.pack("<HHH", tv[a], tv[b], tv[a + b]))
+print(f"merges: {len(tj['model']['merges'])}")
