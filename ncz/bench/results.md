@@ -415,3 +415,30 @@ Held out vs v2: fast -0.7% photos, -3.2% posters; learned -0.6% / -3.2%. Vs JPEG
 posters; learned -3.2% / -12.3%. Speed: under the same (loaded) conditions the v4 fast coder ran 2.18 MB/s vs 1.96-2.07
 for the committed v2; on a quiet machine the step table above applies (~2.6 MB/s). nczl.wasm 539 KB -> 725 KB (the prior).
 Browser build: compressed and rebuilt files hash identical to native (kodim03, RGBA, palette).
+
+## Grain lab: measure film grain, regenerate it better than AV1 (2026-10-21, research prototype)
+
+`ncz/bench/grain/` (Python; `separate.py`, `grain_lab.py`). Goal: a "looks the same" mode that strips grain, codes
+the clean picture, sends a grain fingerprint, and regenerates grain with the same character. Not lossless.
+
+Separation: BM3D driven by the grain's own spectrum (estimated from the flattest 6% of patches, median), in an
+opponent colour space. Non-local means leaves grain at edges; bilateral eats edges; a flattest-quarter spectrum
+over-smoothed busy photos (kodim13's water texture counted as grain: 6.5 -> 3.6 levels after the fix).
+
+Generators, scored against the real grain of kodim03/05/13/23 (averages):
+
+| | AV1-style (AR lag 3, 64x64 template, 32x32 tiles) | ours (whole-image, 2D spectrum, colour coupling, 1025-quantile shape, strength per channel by brightness) | physical discs |
+|---|---:|---:|---:|
+| spectrum error (dB) | 0.82 | 0.29 | 2.7 |
+| strength error | 1.2% | 1.0% | 1.2% |
+| colour coupling error | 0.18 | 0.006 | 0.07 |
+| shape error (W1) | 0.093 | 0.008 | 0.008 |
+| clumping (real 0.72-1.27) | 0.34-0.47 | 0.48-0.76 | 0.49-0.94 |
+| repetition (real 0.008-0.023) | 0.04-0.07 | 0.008-0.014 | 0.007-0.022 |
+
+The physical disc model fits poorly here: Kodak is film scanned then downsized to 768x512, grain is sub-pixel
+(the fit hit the smallest grain size tried). Clumping is the one gap left; needs higher-resolution grainy stills.
+
+Size (bpp, pixel codec v4 fast mode; the fingerprint, ~0.02-0.05 bpp, not counted):
+exact 8.55 -> +-1 5.65 (-34%) -> +-2 4.33 (-49%); grain removed + exact 7.26 (-15%), + +-1 4.60 (-46%), + +-2 3.62 (-58%).
+Kodak's grain is weak (0.7-1.0 levels rms on three of four); stronger grain should save more.
