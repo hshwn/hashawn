@@ -1,0 +1,1578 @@
+{
+ "tensors": [
+  {
+   "name": "transformer.attn_res_f.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 0,
+   "count": 144
+  },
+  {
+   "name": "transformer.attn_res_f.query",
+   "shape": [
+    144
+   ],
+   "offset": 576,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.A_log",
+   "shape": [
+    3
+   ],
+   "offset": 1152,
+   "count": 3
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.b_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 1164,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.dt_bias",
+   "shape": [
+    144
+   ],
+   "offset": 84108,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.f_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 84684,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.g_proj.bias",
+   "shape": [
+    144
+   ],
+   "offset": 167628,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.g_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 168204,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.k_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 251148,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.k_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 253452,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.o_norm.weight",
+   "shape": [
+    48
+   ],
+   "offset": 336396,
+   "count": 48
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.o_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 336588,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.q_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 419532,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.q_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 421836,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.v_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 504780,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.v_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 507084,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.0.attn.kernel.w_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 590028,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.0.attn_res_1.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 672972,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.0.attn_res_1.query",
+   "shape": [
+    144
+   ],
+   "offset": 673548,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.0.attn_res_2.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 674124,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.0.attn_res_2.query",
+   "shape": [
+    144
+   ],
+   "offset": 674700,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.0.ln_1.weight",
+   "shape": [
+    144
+   ],
+   "offset": 675276,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.0.ln_2.weight",
+   "shape": [
+    144
+   ],
+   "offset": 675852,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.0.mlp.w_down.weight",
+   "shape": [
+    144,
+    352
+   ],
+   "offset": 676428,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.0.mlp.w_gate.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 879180,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.0.mlp.w_up.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 1081932,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.A_log",
+   "shape": [
+    3
+   ],
+   "offset": 1284684,
+   "count": 3
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.b_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 1284696,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.dt_bias",
+   "shape": [
+    144
+   ],
+   "offset": 1367640,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.f_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 1368216,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.g_proj.bias",
+   "shape": [
+    144
+   ],
+   "offset": 1451160,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.g_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 1451736,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.k_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 1534680,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.k_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 1536984,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.o_norm.weight",
+   "shape": [
+    48
+   ],
+   "offset": 1619928,
+   "count": 48
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.o_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 1620120,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.q_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 1703064,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.q_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 1705368,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.v_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 1788312,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.v_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 1790616,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.1.attn.kernel.w_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 1873560,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.1.attn_res_1.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 1956504,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.1.attn_res_1.query",
+   "shape": [
+    144
+   ],
+   "offset": 1957080,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.1.attn_res_2.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 1957656,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.1.attn_res_2.query",
+   "shape": [
+    144
+   ],
+   "offset": 1958232,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.1.ln_1.weight",
+   "shape": [
+    144
+   ],
+   "offset": 1958808,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.1.ln_2.weight",
+   "shape": [
+    144
+   ],
+   "offset": 1959384,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.1.mlp.w_down.weight",
+   "shape": [
+    144,
+    352
+   ],
+   "offset": 1959960,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.1.mlp.w_gate.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 2162712,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.1.mlp.w_up.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 2365464,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.A_log",
+   "shape": [
+    3
+   ],
+   "offset": 2568216,
+   "count": 3
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.b_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 2568228,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.dt_bias",
+   "shape": [
+    144
+   ],
+   "offset": 2651172,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.f_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 2651748,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.g_proj.bias",
+   "shape": [
+    144
+   ],
+   "offset": 2734692,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.g_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 2735268,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.k_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 2818212,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.k_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 2820516,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.o_norm.weight",
+   "shape": [
+    48
+   ],
+   "offset": 2903460,
+   "count": 48
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.o_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 2903652,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.q_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 2986596,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.q_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 2988900,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.v_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 3071844,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.v_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 3074148,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.2.attn.kernel.w_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 3157092,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.2.attn_res_1.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 3240036,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.2.attn_res_1.query",
+   "shape": [
+    144
+   ],
+   "offset": 3240612,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.2.attn_res_2.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 3241188,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.2.attn_res_2.query",
+   "shape": [
+    144
+   ],
+   "offset": 3241764,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.2.ln_1.weight",
+   "shape": [
+    144
+   ],
+   "offset": 3242340,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.2.ln_2.weight",
+   "shape": [
+    144
+   ],
+   "offset": 3242916,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.2.mlp.w_down.weight",
+   "shape": [
+    144,
+    352
+   ],
+   "offset": 3243492,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.2.mlp.w_gate.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 3446244,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.2.mlp.w_up.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 3648996,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.3.attn.k_norm.weight",
+   "shape": [
+    48
+   ],
+   "offset": 3851748,
+   "count": 48
+  },
+  {
+   "name": "transformer.h.3.attn.k_proj.weight",
+   "shape": [
+    48,
+    144
+   ],
+   "offset": 3851940,
+   "count": 6912
+  },
+  {
+   "name": "transformer.h.3.attn.o_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 3879588,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.3.attn.q_gate_proj.weight",
+   "shape": [
+    288,
+    144
+   ],
+   "offset": 3962532,
+   "count": 41472
+  },
+  {
+   "name": "transformer.h.3.attn.q_norm.weight",
+   "shape": [
+    48
+   ],
+   "offset": 4128420,
+   "count": 48
+  },
+  {
+   "name": "transformer.h.3.attn.v_proj.weight",
+   "shape": [
+    48,
+    144
+   ],
+   "offset": 4128612,
+   "count": 6912
+  },
+  {
+   "name": "transformer.h.3.attn_res_1.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 4156260,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.3.attn_res_1.query",
+   "shape": [
+    144
+   ],
+   "offset": 4156836,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.3.attn_res_2.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 4157412,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.3.attn_res_2.query",
+   "shape": [
+    144
+   ],
+   "offset": 4157988,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.3.ln_1.weight",
+   "shape": [
+    144
+   ],
+   "offset": 4158564,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.3.ln_2.weight",
+   "shape": [
+    144
+   ],
+   "offset": 4159140,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.3.mlp.w_down.weight",
+   "shape": [
+    144,
+    352
+   ],
+   "offset": 4159716,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.3.mlp.w_gate.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 4362468,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.3.mlp.w_up.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 4565220,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.A_log",
+   "shape": [
+    3
+   ],
+   "offset": 4767972,
+   "count": 3
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.b_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 4767984,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.dt_bias",
+   "shape": [
+    144
+   ],
+   "offset": 4850928,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.f_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 4851504,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.g_proj.bias",
+   "shape": [
+    144
+   ],
+   "offset": 4934448,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.g_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 4935024,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.k_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 5017968,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.k_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 5020272,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.o_norm.weight",
+   "shape": [
+    48
+   ],
+   "offset": 5103216,
+   "count": 48
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.o_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 5103408,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.q_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 5186352,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.q_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 5188656,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.v_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 5271600,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.v_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 5273904,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.4.attn.kernel.w_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 5356848,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.4.attn_res_1.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 5439792,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.4.attn_res_1.query",
+   "shape": [
+    144
+   ],
+   "offset": 5440368,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.4.attn_res_2.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 5440944,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.4.attn_res_2.query",
+   "shape": [
+    144
+   ],
+   "offset": 5441520,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.4.ln_1.weight",
+   "shape": [
+    144
+   ],
+   "offset": 5442096,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.4.ln_2.weight",
+   "shape": [
+    144
+   ],
+   "offset": 5442672,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.4.mlp.w_down.weight",
+   "shape": [
+    144,
+    352
+   ],
+   "offset": 5443248,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.4.mlp.w_gate.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 5646000,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.4.mlp.w_up.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 5848752,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.A_log",
+   "shape": [
+    3
+   ],
+   "offset": 6051504,
+   "count": 3
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.b_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 6051516,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.dt_bias",
+   "shape": [
+    144
+   ],
+   "offset": 6134460,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.f_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 6135036,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.g_proj.bias",
+   "shape": [
+    144
+   ],
+   "offset": 6217980,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.g_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 6218556,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.k_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 6301500,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.k_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 6303804,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.o_norm.weight",
+   "shape": [
+    48
+   ],
+   "offset": 6386748,
+   "count": 48
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.o_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 6386940,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.q_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 6469884,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.q_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 6472188,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.v_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 6555132,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.v_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 6557436,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.5.attn.kernel.w_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 6640380,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.5.attn_res_1.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 6723324,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.5.attn_res_1.query",
+   "shape": [
+    144
+   ],
+   "offset": 6723900,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.5.attn_res_2.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 6724476,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.5.attn_res_2.query",
+   "shape": [
+    144
+   ],
+   "offset": 6725052,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.5.ln_1.weight",
+   "shape": [
+    144
+   ],
+   "offset": 6725628,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.5.ln_2.weight",
+   "shape": [
+    144
+   ],
+   "offset": 6726204,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.5.mlp.w_down.weight",
+   "shape": [
+    144,
+    352
+   ],
+   "offset": 6726780,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.5.mlp.w_gate.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 6929532,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.5.mlp.w_up.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 7132284,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.A_log",
+   "shape": [
+    3
+   ],
+   "offset": 7335036,
+   "count": 3
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.b_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 7335048,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.dt_bias",
+   "shape": [
+    144
+   ],
+   "offset": 7417992,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.f_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 7418568,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.g_proj.bias",
+   "shape": [
+    144
+   ],
+   "offset": 7501512,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.g_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 7502088,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.k_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 7585032,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.k_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 7587336,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.o_norm.weight",
+   "shape": [
+    48
+   ],
+   "offset": 7670280,
+   "count": 48
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.o_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 7670472,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.q_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 7753416,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.q_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 7755720,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.v_conv1d.weight",
+   "shape": [
+    144,
+    1,
+    4
+   ],
+   "offset": 7838664,
+   "count": 576
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.v_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 7840968,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.6.attn.kernel.w_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 7923912,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.6.attn_res_1.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 8006856,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.6.attn_res_1.query",
+   "shape": [
+    144
+   ],
+   "offset": 8007432,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.6.attn_res_2.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 8008008,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.6.attn_res_2.query",
+   "shape": [
+    144
+   ],
+   "offset": 8008584,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.6.ln_1.weight",
+   "shape": [
+    144
+   ],
+   "offset": 8009160,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.6.ln_2.weight",
+   "shape": [
+    144
+   ],
+   "offset": 8009736,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.6.mlp.w_down.weight",
+   "shape": [
+    144,
+    352
+   ],
+   "offset": 8010312,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.6.mlp.w_gate.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 8213064,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.6.mlp.w_up.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 8415816,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.7.attn.k_norm.weight",
+   "shape": [
+    48
+   ],
+   "offset": 8618568,
+   "count": 48
+  },
+  {
+   "name": "transformer.h.7.attn.k_proj.weight",
+   "shape": [
+    48,
+    144
+   ],
+   "offset": 8618760,
+   "count": 6912
+  },
+  {
+   "name": "transformer.h.7.attn.o_proj.weight",
+   "shape": [
+    144,
+    144
+   ],
+   "offset": 8646408,
+   "count": 20736
+  },
+  {
+   "name": "transformer.h.7.attn.q_gate_proj.weight",
+   "shape": [
+    288,
+    144
+   ],
+   "offset": 8729352,
+   "count": 41472
+  },
+  {
+   "name": "transformer.h.7.attn.q_norm.weight",
+   "shape": [
+    48
+   ],
+   "offset": 8895240,
+   "count": 48
+  },
+  {
+   "name": "transformer.h.7.attn.v_proj.weight",
+   "shape": [
+    48,
+    144
+   ],
+   "offset": 8895432,
+   "count": 6912
+  },
+  {
+   "name": "transformer.h.7.attn_res_1.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 8923080,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.7.attn_res_1.query",
+   "shape": [
+    144
+   ],
+   "offset": 8923656,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.7.attn_res_2.key_norm_weight",
+   "shape": [
+    144
+   ],
+   "offset": 8924232,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.7.attn_res_2.query",
+   "shape": [
+    144
+   ],
+   "offset": 8924808,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.7.ln_1.weight",
+   "shape": [
+    144
+   ],
+   "offset": 8925384,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.7.ln_2.weight",
+   "shape": [
+    144
+   ],
+   "offset": 8925960,
+   "count": 144
+  },
+  {
+   "name": "transformer.h.7.mlp.w_down.weight",
+   "shape": [
+    144,
+    352
+   ],
+   "offset": 8926536,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.7.mlp.w_gate.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 9129288,
+   "count": 50688
+  },
+  {
+   "name": "transformer.h.7.mlp.w_up.weight",
+   "shape": [
+    352,
+    144
+   ],
+   "offset": 9332040,
+   "count": 50688
+  },
+  {
+   "name": "transformer.ln_f.weight",
+   "shape": [
+    144
+   ],
+   "offset": 9534792,
+   "count": 144
+  },
+  {
+   "name": "transformer.wte.weight",
+   "shape": [
+    4096,
+    144
+   ],
+   "offset": 9535368,
+   "count": 589824
+  }
+ ],
+ "config": {
+  "architectures": [
+   "GPTS3ForCausalLM"
+  ],
+  "model_type": "gpts3_hybrid",
+  "auto_map": {
+   "AutoConfig": "configuration_gpts3.GPTS3Config",
+   "AutoModelForCausalLM": "modeling_gpts3.GPTS3ForCausalLM"
+  },
+  "vocab_size": 4096,
+  "hidden_size": 144,
+  "num_hidden_layers": 8,
+  "gdn_layers_per_attention": 3,
+  "gdn_head_dim": 48,
+  "gdn_conv_size": 4,
+  "gdn_norm_eps": 1e-05,
+  "num_attention_heads": 3,
+  "num_key_value_heads": 1,
+  "head_dim": 48,
+  "rotary_dim": 24,
+  "intermediate_size": 352,
+  "hidden_act": "silu",
+  "max_position_embeddings": 1024,
+  "rope_theta": 10000.0,
+  "rms_norm_eps": 1e-06,
+  "attn_res_eps": 1e-06,
+  "tie_word_embeddings": true,
+  "torch_dtype": "float32",
+  "bias": false,
+  "bos_token_id": 0,
+  "eos_token_id": 0,
+  "pad_token_id": 1
+ }
+}
