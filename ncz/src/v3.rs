@@ -20,9 +20,11 @@ pub const MAGIC: &[u8; 4] = b"NCZ3";
 /// order n is the low n bytes; a sparse context leaves holes.
 const MASKS: [u64; 6] = [0, 0xFF, 0xFFFF, 0xFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF_FFFF];
 pub const WORD_MODEL: bool = false;
-pub const MIXER2: bool = false;
+pub const MIXER2: bool = true;
+pub const TWO_LAYER: bool = false;        // combine the two mixers with a learned layer instead of averaging
+const NMIX3: usize = 16;
 const NORD: usize = MASKS.len() + if WORD_MODEL { 1 } else { 0 };
-const NMIX2: usize = 27;                    // second mixer: weight set by match state x previous byte class
+const NMIX2: usize = 256;                    // second mixer: weight set by match state x previous byte class
 const TBITS: u32 = 22;                      // 2^22 buckets * 16 B = 64 MB, shared by all orders
 const TMASK: u32 = (1 << TBITS) - 1;
 const HISTMASK: u64 = (1u64 << 48) - 1;
@@ -97,10 +99,10 @@ pub struct Model {
     sm: Vec<u32>,                           // NORD * 256 state maps
     smi: [usize; NORD],                     // state-map index used by the last predict, per order
     msm: [u32; (MLEN_CAP as usize + 1) * 2], mt: Vec<u32>, buf: Vec<u8>,
-    weights: Vec<i32>, weights2: Vec<i32>, mxctx2: usize, pmix2: i32, apm1: Apm, apm2: Apm,
+    weights: Vec<i32>, weights2: Vec<i32>, mxctx2: usize, pmix2: i32, weights3: Vec<i32>, mxctx3: usize, st3: [i32; 3], apm1: Apm, apm2: Apm,
     c0: u32, nc0: u32, kbits: u32, cur_byte: u32, hist: u64,
     word: u32, prev_word: u32, a2base: u32,
-    st: [i32; N_IN], pmix: i32, mxctx: usize, m_active: bool, midx: usize,
+    st: [i32; N_IN], pmix: i32, pfinal: i32, mxctx: usize, m_active: bool, midx: usize,
     match_ptr: usize, match_len: u32, match_byte: i32,
 }
 
@@ -114,10 +116,10 @@ impl Model {
             sm, smi: [0; NORD],
             msm: [32768 << 16; (MLEN_CAP as usize + 1) * 2],
             mt: vec![0u32; MMASK as usize + 1], buf: Vec::new(),
-            weights: vec![W_INIT; NMIXCTX * N_IN], weights2: vec![W_INIT; NMIX2 * N_IN], mxctx2: 0, pmix2: 2048,
+            weights: vec![W_INIT; NMIXCTX * N_IN], weights2: vec![W_INIT; NMIX2 * N_IN], mxctx2: 0, pmix2: 2048, weights3: vec![65536 / 2; NMIX3 * 3], mxctx3: 0, st3: [0; 3],
             apm1: Apm::new(65536), apm2: Apm::new(65536),
             c0: 1, nc0: 1, kbits: 0, cur_byte: 0, hist: 0, word: 0, prev_word: 0, a2base: 0,
-            st: [0; N_IN], pmix: 2048, mxctx: 0, m_active: false, midx: 0,
+            st: [0; N_IN], pmix: 2048, pfinal: 2048, mxctx: 0, m_active: false, midx: 0,
             match_ptr: 0, match_len: 0, match_byte: -1,
         };
         m.new_byte_contexts();
@@ -206,10 +208,7 @@ impl Model {
         let dot1 = (dot >> 16).clamp(-SLIMIT as i64, SLIMIT as i64) as i32;
         let pmix = if MIXER2 {
             // selector: match state (none / short / long, with the expected bit) x previous byte class
-            let ms = if !m_active { 0 } else { 1 + ((self.match_len.min(15) / 4) as usize) * 2 + ((self.st[NORD + 1] > 0) as usize) };
-            let pb = (self.hist & 0xFF) as u8;
-            let cls = if pb.is_ascii_alphabetic() { 0 } else if pb.is_ascii_digit() || pb == b' ' { 1 } else { 2 };
-            let m2 = ms * 3 + cls;
+            let m2 = (self.hist & 0xFF) as usize;              // previous byte
             self.mxctx2 = m2;
             let b2 = m2 * N_IN;
             let mut d2: i64 = 0;
@@ -217,8 +216,16 @@ impl Model {
             let dot2 = (d2 >> 16).clamp(-SLIMIT as i64, SLIMIT as i64) as i32;
             self.pmix = SQUASH[(dot1 + 2048) as usize];
             self.pmix2 = SQUASH[(dot2 + 2048) as usize];
-            SQUASH[(((dot1 + dot2) >> 1) + 2048) as usize]
+            if TWO_LAYER {
+                let m3 = (self.c0 as usize >> 4) & 15;
+                self.mxctx3 = m3; self.st3 = [dot1, dot2, 256];
+                let b3 = m3 * 3;
+                let d3 = (self.weights3[b3] as i64 * dot1 as i64 + self.weights3[b3 + 1] as i64 * dot2 as i64 + self.weights3[b3 + 2] as i64 * 256) >> 16;
+                let dot3 = d3.clamp(-SLIMIT as i64, SLIMIT as i64) as i32;
+                SQUASH[(dot3 + 2048) as usize]
+            } else { SQUASH[(((dot1 + dot2) >> 1) + 2048) as usize] }
         } else { let p = SQUASH[(dot1 + 2048) as usize]; self.pmix = p; p };
+        self.pfinal = pmix;
         let a1 = (self.c0 | (((self.hist & 0xFF) as u32) << 8)) as usize;
         let a2 = (self.c0 ^ self.a2base) as usize;
         let pr = (pmix + self.apm1.refine(pmix, a1) * 3) >> 2;
@@ -234,6 +241,11 @@ impl Model {
             let err2 = (((y as i32) << 12) - self.pmix2) * MIX_LR;
             let b2 = self.mxctx2 * N_IN;
             unsafe { for i in 0..N_IN { *self.weights2.get_unchecked_mut(b2 + i) += (self.st[i] * err2) >> 16; } }
+            if TWO_LAYER {
+                let err3 = (((y as i32) << 12) - self.pfinal) * MIX_LR;
+                let b3 = self.mxctx3 * 3;
+                for i in 0..3 { self.weights3[b3 + i] += (self.st3[i] * err3) >> 16; }
+            }
         }
         let node = self.nc0 as usize;
         unsafe {
