@@ -202,3 +202,11 @@ weights start at "model only". Learning rate flat between 0.005 and 0.015; 0.06 
 About 5% of the flag cost. The rest is real uncertainty about the next character, which only the model
 sees. Also in this change: the bridge's stretch now uses our own `fln` instead of the platform `ln`, so
 native and wasm run identical code there too (browser output re-verified byte-identical).
+
+### Byte-first coding with speculative steps (2026-10-21, NCZL v2, partial)
+
+Byte coded under (1-q)·P(b|continue) + q·P(b|new token) with the new-token distribution from a speculative
+model step (snapshot/restore); the flag then coded given the byte (free when deterministic). Nardo docs:
+flag-first 22132 B (1.7706) -> byte-first 22023 B (1.7618) at speculation threshold q >= 0.02, 21974 B
+(1.7579) at 0.005. Cost: 16 KB/s vs 44 (extra model steps). enwik8 held-out and the threshold sweep NOT
+yet run; wasm rebuilt to the v2 format. Session stopped here at the usage limit.

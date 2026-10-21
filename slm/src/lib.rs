@@ -262,6 +262,10 @@ enum MixState { Gdn(GdnState), Attn(Vec<AttnHead>) }
 /// Per-head scratch owned by whichever thread runs that head.
 struct HeadScratch { p: Vec<f32>, sc: Vec<f32> }
 
+/// The model's recurrent state at one point in time (see `Model::snapshot_into`).
+#[derive(Default)]
+pub struct Snapshot { pos: usize, gdn: Vec<(Vec<f32>, Vec<f32>)>, attn: Vec<Vec<usize>> }
+
 pub struct Model<'a> {
     w: &'a Weights,
     st: Vec<MixState>,
@@ -294,6 +298,23 @@ impl<'a> Model<'a> {
         }
     }
     pub fn pos(&self) -> usize { self.pos }
+    /// Copy the recurrent state so a speculative step can be undone. Reuses `snap`'s buffers.
+    pub fn snapshot_into(&self, snap: &mut Snapshot) {
+        snap.pos = self.pos;
+        snap.gdn.resize(NL, (Vec::new(), Vec::new())); snap.attn.resize(NL, Vec::new());
+        for l in 0..NL { match &self.st[l] {
+            MixState::Gdn(g) => { let (c, s) = &mut snap.gdn[l]; c.clear(); c.extend_from_slice(&g.conv); s.clear(); s.extend_from_slice(&g.s); }
+            MixState::Attn(hs) => { let t = &mut snap.attn[l]; t.clear(); t.extend(hs.iter().map(|h| h.total)); }
+        } }
+    }
+    /// Undo everything since `snapshot_into`. Attention slots written since are simply reused.
+    pub fn restore(&mut self, snap: &Snapshot) {
+        self.pos = snap.pos;
+        for l in 0..NL { match &mut self.st[l] {
+            MixState::Gdn(g) => { let (c, s) = &snap.gdn[l]; g.conv.copy_from_slice(c); g.s.copy_from_slice(s); }
+            MixState::Attn(hs) => { for (h, &t) in hs.iter_mut().zip(&snap.attn[l]) { h.total = t; } }
+        } }
+    }
     /// Experiment knobs: forget only the recurrent (GDN) state, or only the attention cache.
     /// Forget the recurrent state of one GDN layer only.
     pub fn reset_gdn_layer(&mut self, l: usize) { if let MixState::Gdn(g) = &mut self.st[l] { g.conv.iter_mut().for_each(|v| *v = 0.0); g.s.iter_mut().for_each(|v| *v = 0.0); } }

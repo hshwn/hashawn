@@ -8,7 +8,7 @@
 //! bridge's stretch predictions as the extra input. The encoder tokenises with the model's BPE; the
 //! decoder learns the segmentation from the flags. The model id refuses weights that would predict
 //! different bits.
-use crate::bridge::{Bridge, Vocab};
+use crate::bridge::{Bridge, Flag, Vocab};
 use crate::bpe::Bpe;
 use crate::{Model, Weights};
 use ncz::v3::{Decoder, Encoder};
@@ -17,7 +17,10 @@ use crate::flags::FlagModel;
 fn flag_model() -> FlagModel { match std::env::var("SLM_FLAG_LR").ok().and_then(|v| v.parse().ok()) { Some(lr) => FlagModel::with_lr(lr), None => FlagModel::new() } }
 
 pub const MAGIC: &[u8; 4] = b"NCZL";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
+/// Below this P(end) the speculative model step is skipped (SLM_SPEC_MIN overrides).
+pub const SPEC_MIN: f64 = 0.02;
+fn spec_min() -> f64 { std::env::var("SLM_SPEC_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(SPEC_MIN) }
 pub(crate) const HEADER: usize = 4 + 1 + 1 + 4 + 8;
 pub const MODE_STORE: u8 = 0; pub const MODE_NCZ: u8 = 1; pub const MODE_LM: u8 = 2;
 
@@ -73,11 +76,11 @@ pub(crate) fn header(mode: u8, model_id: u32, total: usize, payload: &[u8]) -> V
 pub struct LmEncoder<'a> {
     a: &'a Assets, data: Vec<u8>, toks: Vec<u32>,
     ti: usize, bi: usize, pos: usize, prev: Option<u32>,
-    br: Bridge<'a>, enc: Encoder, fm: FlagModel,
+    br: Bridge<'a>, enc: Encoder, fm: FlagModel, spec_min: f64,
 }
 impl<'a> LmEncoder<'a> {
     pub fn new(a: &'a Assets, data: &[u8], threads: usize) -> LmEncoder<'a> {
-        LmEncoder { a, data: data.to_vec(), toks: a.bpe.encode(data), ti: 0, bi: 0, pos: 0, prev: None, br: Bridge::new(Model::with_threads(&a.weights, threads), &a.vocab), enc: Encoder::new(), fm: flag_model() }
+        LmEncoder { a, data: data.to_vec(), toks: a.bpe.encode(data), ti: 0, bi: 0, pos: 0, prev: None, br: Bridge::new(Model::with_threads(&a.weights, threads), &a.vocab), enc: Encoder::new(), fm: flag_model(), spec_min: spec_min() }
     }
     pub fn done(&self) -> usize { self.pos }
     pub fn total(&self) -> usize { self.data.len() }
@@ -87,15 +90,16 @@ impl<'a> LmEncoder<'a> {
         while k < n && self.ti < self.toks.len() {
             let tok = self.toks[self.ti]; let tb = &self.a.vocab.bytes[tok as usize];
             let b = tb[self.bi];
-            if self.br.in_token() {
-                let p = p12(self.fm.p(self.br.p_end(), self.br.tail(), self.br.prev_byte()));
-                let ended = self.bi == 0;
-                self.enc.encode_bit(ended as u32, p); self.fm.update(ended);
-                if ended { self.br.end_token(self.prev.unwrap()); }
-            }
-            self.br.predict(); self.br.bits(b, &mut side);
+            let ended = self.bi == 0 && self.br.in_token();
+            let asked = self.br.in_token() && self.br.tail_token().is_some();
+            let q = if asked { self.fm.p(self.br.p_end(), self.br.tail(), self.br.prev_byte()) } else { 0.0 };
+            self.br.begin(q, q >= self.spec_min);
+            self.br.bits(b, &mut side);
             self.enc.encode_byte(b, Some(&side));
-            assert!(self.br.observe(b), "tokenizer produced a token the vocab trie does not know");
+            match self.br.flag(b) { Flag::Prob(p) => self.enc.encode_bit(ended as u32, p12(p)), Flag::MustEnd => debug_assert!(ended), Flag::MustContinue => debug_assert!(!ended) }
+            if asked { self.fm.update(ended); }
+            let ok = if ended { self.br.commit_end(b) } else { self.br.commit_continue(b) };
+            assert!(ok, "tokenizer produced a token the vocab trie does not know");
             self.bi += 1; self.pos += 1; k += 1;
             if self.bi == tb.len() { self.prev = Some(tok); self.ti += 1; self.bi = 0; }
         }
@@ -108,7 +112,7 @@ impl<'a> LmEncoder<'a> {
     }
 }
 
-pub struct LmDecoder<'a> { mode: u8, total: usize, out: Vec<u8>, dec: Option<Decoder>, br: Option<Bridge<'a>>, fm: FlagModel, failed: bool }
+pub struct LmDecoder<'a> { mode: u8, total: usize, out: Vec<u8>, dec: Option<Decoder>, br: Option<Bridge<'a>>, fm: FlagModel, spec_min: f64, failed: bool }
 impl<'a> LmDecoder<'a> {
     /// None when the header is wrong, or the stream needs a model that is missing or different.
     pub fn new(a: Option<&'a Assets>, blob: &[u8], threads: usize) -> Option<LmDecoder<'a>> {
@@ -116,7 +120,7 @@ impl<'a> LmDecoder<'a> {
         let mode = blob[5];
         let id = u32::from_le_bytes(blob[6..10].try_into().ok()?);
         let total = u64::from_le_bytes(blob[10..18].try_into().ok()?) as usize;
-        let mut d = LmDecoder { mode, total, out: Vec::with_capacity(total), dec: None, br: None, fm: flag_model(), failed: false };
+        let mut d = LmDecoder { mode, total, out: Vec::with_capacity(total), dec: None, br: None, fm: flag_model(), spec_min: spec_min(), failed: false };
         match mode {
             MODE_STORE => { if blob.len() != HEADER + total { return None; } d.out.extend_from_slice(&blob[HEADER..]); }
             MODE_NCZ => { d.dec = Some(Decoder::from_payload(blob[HEADER..].to_vec(), total as u64)); }
@@ -134,17 +138,18 @@ impl<'a> LmDecoder<'a> {
         match self.mode {
             MODE_NCZ => { let dec = self.dec.as_mut().unwrap(); let chunk = dec.next(n); self.out.extend_from_slice(&chunk); n }
             MODE_LM => {
-                let (dec, br, fm) = (self.dec.as_mut().unwrap(), self.br.as_mut().unwrap(), &mut self.fm);
+                let (dec, br, fm, spec_min) = (self.dec.as_mut().unwrap(), self.br.as_mut().unwrap(), &mut self.fm, self.spec_min);
                 for k in 0..n {
-                    if br.in_token() {
-                        let p = p12(fm.p(br.p_end(), br.tail(), br.prev_byte()));
-                        let ended = dec.decode_bit(p) == 1; fm.update(ended);
-                        if ended { match br.tail_token() { Some(t) => br.end_token(t), None => { self.failed = true; return k; } } }
-                    }
-                    br.predict(); br.begin_byte();
+                    let asked = br.in_token() && br.tail_token().is_some();
+                    let q = if asked { fm.p(br.p_end(), br.tail(), br.prev_byte()) } else { 0.0 };
+                    br.begin(q, q >= spec_min);
+                    br.begin_byte();
                     let b = dec.decode_byte(|j, prefix| br.bit_stretch(j, prefix));
+                    let ended = match br.flag(b) { Flag::Prob(p) => dec.decode_bit(p12(p)) == 1, Flag::MustEnd => true, Flag::MustContinue => false };
+                    if asked { fm.update(ended); }
                     self.out.push(b);
-                    if !br.observe(b) { self.failed = true; return k + 1; }
+                    let ok = if ended { br.commit_end(b) } else { br.commit_continue(b) };
+                    if !ok { self.failed = true; return k + 1; }
                 }
                 n
             }
