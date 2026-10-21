@@ -1,0 +1,719 @@
+{
+ "kodak_kodim01": {
+  "real_rms_flat": [
+   1.31,
+   0.35,
+   0.39
+  ],
+  "synth_rms_flat": [
+   1.28,
+   0.35,
+   0.39
+  ],
+  "real_rms_all": 0.51,
+  "synth_rms_all": 0.64,
+  "strength_rel_err": 0.053,
+  "spectrum_db": 0.75,
+  "shape_w1": 0.023,
+  "coupling": 0.008,
+  "clumping": [
+   1.339,
+   1.247
+  ],
+  "blob_mean": [
+   2.16,
+   1.81
+  ],
+  "blob_p90": [
+   4.0,
+   3.0
+  ],
+  "spectrum_patches": 79
+ },
+ "kodak_kodim02": {
+  "real_rms_flat": [
+   1.64,
+   0.39,
+   0.46
+  ],
+  "synth_rms_flat": [
+   1.65,
+   0.39,
+   0.46
+  ],
+  "real_rms_all": 0.79,
+  "synth_rms_all": 1.0,
+  "strength_rel_err": 0.088,
+  "spectrum_db": 0.99,
+  "shape_w1": 0.011,
+  "coupling": 0.004,
+  "clumping": [
+   0.658,
+   0.534
+  ],
+  "blob_mean": [
+   2.0,
+   1.84
+  ],
+  "blob_p90": [
+   4.0,
+   4.0
+  ],
+  "spectrum_patches": 90
+ },
+ "kodak_kodim03": {
+  "real_rms_flat": [
+   1.35,
+   0.42,
+   0.41
+  ],
+  "synth_rms_flat": [
+   1.35,
+   0.42,
+   0.42
+  ],
+  "real_rms_all": 0.65,
+  "synth_rms_all": 0.81,
+  "strength_rel_err": 0.021,
+  "spectrum_db": 0.86,
+  "shape_w1": 0.025,
+  "coupling": 0.01,
+  "clumping": [
+   0.355,
+   0.311
+  ],
+  "blob_mean": [
+   1.53,
+   1.46
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 233
+ },
+ "kodak_kodim04": {
+  "real_rms_flat": [
+   2.07,
+   0.41,
+   0.44
+  ],
+  "synth_rms_flat": [
+   2.06,
+   0.41,
+   0.44
+  ],
+  "real_rms_all": 0.91,
+  "synth_rms_all": 1.18,
+  "strength_rel_err": 0.034,
+  "spectrum_db": 0.44,
+  "shape_w1": 0.012,
+  "coupling": 0.004,
+  "clumping": [
+   0.48,
+   0.403
+  ],
+  "blob_mean": [
+   1.62,
+   1.55
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 187
+ },
+ "kodak_kodim05": {
+  "real_rms_flat": [
+   1.18,
+   0.36,
+   0.43
+  ],
+  "synth_rms_flat": [
+   1.17,
+   0.37,
+   0.44
+  ],
+  "real_rms_all": 0.54,
+  "synth_rms_all": 0.71,
+  "strength_rel_err": 0.07,
+  "spectrum_db": 1.38,
+  "shape_w1": 0.038,
+  "coupling": 0.007,
+  "clumping": [
+   1.102,
+   0.968
+  ],
+  "blob_mean": [
+   1.74,
+   1.39
+  ],
+  "blob_p90": [
+   3.0,
+   2.0
+  ],
+  "spectrum_patches": 77
+ },
+ "kodak_kodim06": {
+  "real_rms_flat": [
+   0.88,
+   0.32,
+   0.43
+  ],
+  "synth_rms_flat": [
+   0.87,
+   0.21,
+   0.44
+  ],
+  "real_rms_all": 0.38,
+  "synth_rms_all": 0.42,
+  "strength_rel_err": 0.147,
+  "spectrum_db": 0.64,
+  "shape_w1": 0.155,
+  "coupling": 0.126,
+  "clumping": [
+   0.842,
+   0.846
+  ],
+  "blob_mean": [
+   2.22,
+   1.95
+  ],
+  "blob_p90": [
+   5.0,
+   4.0
+  ],
+  "spectrum_patches": 215
+ },
+ "kodak_kodim07": {
+  "real_rms_flat": [
+   1.55,
+   0.41,
+   0.44
+  ],
+  "synth_rms_flat": [
+   1.55,
+   0.41,
+   0.45
+  ],
+  "real_rms_all": 0.75,
+  "synth_rms_all": 0.9,
+  "strength_rel_err": 0.019,
+  "spectrum_db": 0.38,
+  "shape_w1": 0.024,
+  "coupling": 0.006,
+  "clumping": [
+   0.334,
+   0.293
+  ],
+  "blob_mean": [
+   1.61,
+   1.56
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 154
+ },
+ "kodak_kodim08": {
+  "real_rms_flat": [
+   2.49,
+   0.35,
+   0.52
+  ],
+  "synth_rms_flat": [
+   2.51,
+   0.35,
+   0.53
+  ],
+  "real_rms_all": 1.17,
+  "synth_rms_all": 1.44,
+  "strength_rel_err": 0.048,
+  "spectrum_db": 0.86,
+  "shape_w1": 0.04,
+  "coupling": 0.049,
+  "clumping": [
+   0.716,
+   0.534
+  ],
+  "blob_mean": [
+   1.42,
+   1.3
+  ],
+  "blob_p90": [
+   2.0,
+   2.0
+  ],
+  "spectrum_patches": 103
+ },
+ "kodak_kodim09": {
+  "real_rms_flat": [
+   2.85,
+   0.43,
+   0.45
+  ],
+  "synth_rms_flat": [
+   2.84,
+   0.43,
+   0.45
+  ],
+  "real_rms_all": 1.41,
+  "synth_rms_all": 1.6,
+  "strength_rel_err": 0.059,
+  "spectrum_db": 0.29,
+  "shape_w1": 0.019,
+  "coupling": 0.003,
+  "clumping": [
+   0.292,
+   0.298
+  ],
+  "blob_mean": [
+   1.52,
+   1.52
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 96
+ },
+ "kodak_kodim10": {
+  "real_rms_flat": [
+   2.48,
+   0.43,
+   0.44
+  ],
+  "synth_rms_flat": [
+   2.47,
+   0.43,
+   0.44
+  ],
+  "real_rms_all": 1.23,
+  "synth_rms_all": 1.44,
+  "strength_rel_err": 0.025,
+  "spectrum_db": 0.56,
+  "shape_w1": 0.013,
+  "coupling": 0.005,
+  "clumping": [
+   0.322,
+   0.283
+  ],
+  "blob_mean": [
+   1.37,
+   1.36
+  ],
+  "blob_p90": [
+   2.0,
+   2.0
+  ],
+  "spectrum_patches": 91
+ },
+ "kodak_kodim11": {
+  "real_rms_flat": [
+   1.22,
+   0.35,
+   0.35
+  ],
+  "synth_rms_flat": [
+   1.19,
+   0.34,
+   0.35
+  ],
+  "real_rms_all": 0.47,
+  "synth_rms_all": 0.64,
+  "strength_rel_err": 0.116,
+  "spectrum_db": 2.04,
+  "shape_w1": 0.027,
+  "coupling": 0.02,
+  "clumping": [
+   0.827,
+   0.661
+  ],
+  "blob_mean": [
+   1.88,
+   1.44
+  ],
+  "blob_p90": [
+   4.0,
+   3.0
+  ],
+  "spectrum_patches": 183
+ },
+ "kodak_kodim12": {
+  "real_rms_flat": [
+   1.77,
+   0.42,
+   0.45
+  ],
+  "synth_rms_flat": [
+   1.77,
+   0.41,
+   0.44
+  ],
+  "real_rms_all": 0.83,
+  "synth_rms_all": 1.05,
+  "strength_rel_err": 0.042,
+  "spectrum_db": 0.76,
+  "shape_w1": 0.036,
+  "coupling": 0.006,
+  "clumping": [
+   0.473,
+   0.421
+  ],
+  "blob_mean": [
+   1.35,
+   1.34
+  ],
+  "blob_p90": [
+   2.0,
+   2.0
+  ],
+  "spectrum_patches": 141
+ },
+ "kodak_kodim13": {
+  "real_rms_flat": [
+   2.98,
+   0.52,
+   0.51
+  ],
+  "synth_rms_flat": [
+   2.94,
+   0.52,
+   0.5
+  ],
+  "real_rms_all": 1.37,
+  "synth_rms_all": 1.76,
+  "strength_rel_err": 0.049,
+  "spectrum_db": 1.45,
+  "shape_w1": 0.037,
+  "coupling": 0.01,
+  "clumping": [
+   0.91,
+   0.723
+  ],
+  "blob_mean": [
+   1.65,
+   1.49
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 72
+ },
+ "kodak_kodim14": {
+  "real_rms_flat": [
+   1.87,
+   0.37,
+   0.46
+  ],
+  "synth_rms_flat": [
+   1.85,
+   0.36,
+   0.46
+  ],
+  "real_rms_all": 0.84,
+  "synth_rms_all": 1.04,
+  "strength_rel_err": 0.045,
+  "spectrum_db": 0.73,
+  "shape_w1": 0.03,
+  "coupling": 0.006,
+  "clumping": [
+   0.927,
+   0.768
+  ],
+  "blob_mean": [
+   1.59,
+   1.42
+  ],
+  "blob_p90": [
+   3.0,
+   2.0
+  ],
+  "spectrum_patches": 84
+ },
+ "kodak_kodim15": {
+  "real_rms_flat": [
+   1.5,
+   0.42,
+   0.49
+  ],
+  "synth_rms_flat": [
+   1.5,
+   0.42,
+   0.43
+  ],
+  "real_rms_all": 0.66,
+  "synth_rms_all": 0.93,
+  "strength_rel_err": 0.05,
+  "spectrum_db": 0.57,
+  "shape_w1": 0.103,
+  "coupling": 0.017,
+  "clumping": [
+   0.437,
+   0.395
+  ],
+  "blob_mean": [
+   1.92,
+   1.74
+  ],
+  "blob_p90": [
+   4.0,
+   3.0
+  ],
+  "spectrum_patches": 261
+ },
+ "kodak_kodim16": {
+  "real_rms_flat": [
+   1.39,
+   0.41,
+   0.46
+  ],
+  "synth_rms_flat": [
+   1.39,
+   0.41,
+   0.47
+  ],
+  "real_rms_all": 0.62,
+  "synth_rms_all": 0.82,
+  "strength_rel_err": 0.04,
+  "spectrum_db": 0.4,
+  "shape_w1": 0.019,
+  "coupling": 0.007,
+  "clumping": [
+   0.423,
+   0.377
+  ],
+  "blob_mean": [
+   1.52,
+   1.44
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 249
+ },
+ "kodak_kodim17": {
+  "real_rms_flat": [
+   1.95,
+   0.43,
+   0.45
+  ],
+  "synth_rms_flat": [
+   1.93,
+   0.43,
+   0.45
+  ],
+  "real_rms_all": 0.86,
+  "synth_rms_all": 1.03,
+  "strength_rel_err": 0.023,
+  "spectrum_db": 0.29,
+  "shape_w1": 0.014,
+  "coupling": 0.004,
+  "clumping": [
+   0.41,
+   0.403
+  ],
+  "blob_mean": [
+   1.41,
+   1.38
+  ],
+  "blob_p90": [
+   2.0,
+   2.0
+  ],
+  "spectrum_patches": 203
+ },
+ "kodak_kodim18": {
+  "real_rms_flat": [
+   3.28,
+   0.59,
+   0.53
+  ],
+  "synth_rms_flat": [
+   3.28,
+   0.58,
+   0.53
+  ],
+  "real_rms_all": 1.43,
+  "synth_rms_all": 1.86,
+  "strength_rel_err": 0.02,
+  "spectrum_db": 0.61,
+  "shape_w1": 0.013,
+  "coupling": 0.004,
+  "clumping": [
+   0.468,
+   0.4
+  ],
+  "blob_mean": [
+   1.53,
+   1.55
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 143
+ },
+ "kodak_kodim19": {
+  "real_rms_flat": [
+   2.57,
+   0.41,
+   0.58
+  ],
+  "synth_rms_flat": [
+   2.57,
+   0.41,
+   0.58
+  ],
+  "real_rms_all": 1.12,
+  "synth_rms_all": 1.52,
+  "strength_rel_err": 0.008,
+  "spectrum_db": 0.36,
+  "shape_w1": 0.017,
+  "coupling": 0.006,
+  "clumping": [
+   0.284,
+   0.265
+  ],
+  "blob_mean": [
+   1.49,
+   1.51
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 145
+ },
+ "kodak_kodim20": "grain-free",
+ "kodak_kodim21": {
+  "real_rms_flat": [
+   2.75,
+   0.42,
+   0.57
+  ],
+  "synth_rms_flat": [
+   2.76,
+   0.42,
+   0.57
+  ],
+  "real_rms_all": 1.15,
+  "synth_rms_all": 1.63,
+  "strength_rel_err": 0.006,
+  "spectrum_db": 0.23,
+  "shape_w1": 0.009,
+  "coupling": 0.003,
+  "clumping": [
+   0.257,
+   0.248
+  ],
+  "blob_mean": [
+   1.63,
+   1.62
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 338
+ },
+ "kodak_kodim22": {
+  "real_rms_flat": [
+   2.52,
+   0.4,
+   0.55
+  ],
+  "synth_rms_flat": [
+   2.49,
+   0.4,
+   0.54
+  ],
+  "real_rms_all": 1.07,
+  "synth_rms_all": 1.38,
+  "strength_rel_err": 0.021,
+  "spectrum_db": 0.36,
+  "shape_w1": 0.017,
+  "coupling": 0.006,
+  "clumping": [
+   0.516,
+   0.497
+  ],
+  "blob_mean": [
+   1.63,
+   1.57
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 166
+ },
+ "kodak_kodim23": {
+  "real_rms_flat": [
+   1.73,
+   0.44,
+   0.44
+  ],
+  "synth_rms_flat": [
+   1.73,
+   0.43,
+   0.44
+  ],
+  "real_rms_all": 0.86,
+  "synth_rms_all": 0.97,
+  "strength_rel_err": 0.072,
+  "spectrum_db": 0.36,
+  "shape_w1": 0.013,
+  "coupling": 0.002,
+  "clumping": [
+   0.312,
+   0.318
+  ],
+  "blob_mean": [
+   1.32,
+   1.8
+  ],
+  "blob_p90": [
+   2.0,
+   3.0
+  ],
+  "spectrum_patches": 218
+ },
+ "kodak_kodim24": "grain-free",
+ "poster_harvest": "grain-free",
+ "poster_poupees": "grain-free",
+ "poster_ram": {
+  "real_rms_flat": [
+   3.53,
+   0.01,
+   0.02
+  ],
+  "synth_rms_flat": [
+   3.44,
+   0.14,
+   0.11
+  ],
+  "real_rms_all": 1.78,
+  "synth_rms_all": 1.8,
+  "strength_rel_err": 0.033,
+  "spectrum_db": 1.63,
+  "shape_w1": 0.074,
+  "coupling": 0.164,
+  "clumping": [
+   0.572,
+   0.527
+  ],
+  "blob_mean": [
+   1.5,
+   1.52
+  ],
+  "blob_p90": [
+   3.0,
+   3.0
+  ],
+  "spectrum_patches": 231
+ }
+}

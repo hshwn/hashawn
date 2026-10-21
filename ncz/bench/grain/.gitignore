@@ -2,3 +2,6 @@ out/*.npy
 out/*.ppm
 out/*_crops.png
 scans/
+__pycache__/
+out/mode/*.ppm
+out/mode/*_crops.png

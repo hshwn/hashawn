@@ -7,6 +7,7 @@ pub mod v2;
 pub mod v3;
 pub mod img;
 pub mod pngc;
+pub mod grain;
 
 pub use v3::{Encoder, compress};
 

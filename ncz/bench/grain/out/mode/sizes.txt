@@ -1,0 +1,28 @@
+kodak_kodim01 exact  9.184  +-2  4.999  grain mode  4.860 bpp (1515 B fingerprint, env 0.25)  -47.1% vs exact  enc  1.5s dec  0.7s  1ba745153bb8d4aa repeatable
+kodak_kodim02 exact  7.991  +-2  3.843  grain mode  3.426 bpp (1482 B fingerprint, env 0.15)  -57.1% vs exact  enc  1.4s dec  0.6s  4776e81be29e1559 repeatable
+kodak_kodim03 exact  6.086  +-2  2.857  grain mode  2.459 bpp (1309 B fingerprint, env 0.05)  -59.6% vs exact  enc  1.3s dec  0.5s  5c6b1c7857d70c97 repeatable
+kodak_kodim04 exact  8.073  +-2  3.927  grain mode  3.423 bpp (1406 B fingerprint, env 0.10)  -57.6% vs exact  enc  1.4s dec  0.6s  2004c7f6de5a4978 repeatable
+kodak_kodim05 exact  9.817  +-2  5.136  grain mode  5.000 bpp (1549 B fingerprint, env 0.20)  -49.1% vs exact  enc  1.5s dec  0.7s  de02271fa6d1bbc1 repeatable
+kodak_kodim06 exact  8.411  +-2  4.345  grain mode  4.190 bpp (1464 B fingerprint, env 0.15)  -50.2% vs exact  enc  1.5s dec  0.6s  f1112af2d3690a30 repeatable
+kodak_kodim07 exact  6.775  +-2  3.186  grain mode  2.664 bpp (1348 B fingerprint, env 0.05)  -60.7% vs exact  enc  1.4s dec  0.5s  df6b3dda9ea60586 repeatable
+kodak_kodim08 exact 10.055  +-2  5.369  grain mode  5.032 bpp (1532 B fingerprint, env 0.15)  -49.9% vs exact  enc  1.5s dec  0.7s  a5234f082703ec78 repeatable
+kodak_kodim09 exact  7.407  +-2  3.518  grain mode  2.297 bpp (1424 B fingerprint, env 0.00)  -69.0% vs exact  enc  1.4s dec  0.5s  afdc88ace4b4fdd2 repeatable
+kodak_kodim10 exact  7.637  +-2  3.607  grain mode  2.704 bpp (1474 B fingerprint, env 0.05)  -64.6% vs exact  enc  1.4s dec  0.5s  02af9143f71c5c5c repeatable
+kodak_kodim11 exact  8.018  +-2  4.104  grain mode  3.938 bpp (1287 B fingerprint, env 0.15)  -50.9% vs exact  enc  1.4s dec  0.5s  f920da57a0e0a676 repeatable
+kodak_kodim12 exact  6.901  +-2  3.378  grain mode  2.847 bpp (1400 B fingerprint, env 0.10)  -58.7% vs exact  enc  1.3s dec  0.5s  74e11a84c9f24f3e repeatable
+kodak_kodim13 exact 11.142  +-2  6.174  grain mode  5.947 bpp (1498 B fingerprint, env 0.20)  -46.6% vs exact  enc  1.5s dec  0.7s  b8687225eff896af repeatable
+kodak_kodim14 exact  9.145  +-2  4.840  grain mode  4.590 bpp (1562 B fingerprint, env 0.20)  -49.8% vs exact  enc  1.5s dec  0.6s  11f0590671d9a641 repeatable
+kodak_kodim15 exact  7.433  +-2  3.602  grain mode  3.151 bpp (1354 B fingerprint, env 0.10)  -57.6% vs exact  enc  1.4s dec  0.6s  4ca4b60ff9fb2e67 repeatable
+kodak_kodim16 exact  7.236  +-2  3.592  grain mode  3.239 bpp (1390 B fingerprint, env 0.10)  -55.2% vs exact  enc  1.4s dec  0.6s  cfd484df7449dff5 repeatable
+kodak_kodim17 exact  7.585  +-2  3.682  grain mode  3.161 bpp (1370 B fingerprint, env 0.10)  -58.3% vs exact  enc  1.4s dec  0.6s  fa207b6120f03265 repeatable
+kodak_kodim18 exact 10.402  +-2  5.324  grain mode  4.632 bpp (1436 B fingerprint, env 0.10)  -55.5% vs exact  enc  1.5s dec  0.6s  9d8c8a14db00cff4 repeatable
+kodak_kodim19 exact  8.633  +-2  4.256  grain mode  3.543 bpp (1459 B fingerprint, env 0.00)  -59.0% vs exact  enc  1.4s dec  0.5s  fa12f00a4043499f repeatable
+kodak_kodim20 exact  6.361  +-2  3.058  grain mode  3.059 bpp (  17 B fingerprint, env 0.00)  -51.9% vs exact  enc  1.3s dec  0.3s  8a8bc5ed63a26c96 repeatable
+kodak_kodim21 exact  8.685  +-2  4.344  grain mode  3.450 bpp (1393 B fingerprint, env 0.00)  -60.3% vs exact  enc  1.4s dec  0.5s  950a9b806d67060d repeatable
+kodak_kodim22 exact  9.436  +-2  4.665  grain mode  4.103 bpp (1461 B fingerprint, env 0.10)  -56.5% vs exact  enc  1.4s dec  0.6s  6b143e5f110a7ba8 repeatable
+kodak_kodim23 exact  7.159  +-2  3.158  grain mode  2.486 bpp (1382 B fingerprint, env 0.05)  -65.3% vs exact  enc  1.4s dec  0.5s  2e37ea0ade7cd80a repeatable
+kodak_kodim24 exact  8.629  +-2  4.513  grain mode  4.514 bpp (  17 B fingerprint, env 0.00)  -47.7% vs exact  enc  1.5s dec  0.4s  2514ccc58256f30c repeatable
+poster_harvest exact  3.846  +-2  1.687  grain mode  1.687 bpp (  17 B fingerprint, env 0.00)  -56.1% vs exact  enc  3.1s dec  0.8s  72ba06007c7b518a repeatable
+poster_poupees exact  1.953  +-2  0.899  grain mode  0.899 bpp (  17 B fingerprint, env 0.00)  -54.0% vs exact  enc  6.7s dec  1.4s  9ed77d12e8f38f13 repeatable
+poster_ram   exact  5.258  +-2  3.048  grain mode  2.616 bpp ( 754 B fingerprint, env 0.15)  -50.2% vs exact  enc  7.7s dec  4.2s  e60cc4808cfecb95 repeatable
+TOTAL exact 6.325  +-2 3.214  grain mode 2.878 bpp (fingerprints 0.016 bpp)  -54.5% vs exact, -10.4% vs +-2

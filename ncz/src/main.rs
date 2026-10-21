@@ -27,6 +27,39 @@ fn main() {
         if tin > 0 { println!("TOTAL {tin} -> {tout} bytes ({:.1}% of the PNGs)", 100.0 * tout as f64 / tin as f64); }
         return;
     }
+    if a.len() >= 3 && a[1] == "grain" {
+        // nczcli grain <k> <a.ppm>...: grain mode (LOOKS THE SAME, not exact). Sizes vs exact and +-k on the original;
+        // decodes twice to check the regenerated grain is identical. GRAIN_OUT=<dir> writes <name>.clean.ppm / .recon.ppm.
+        let k: u8 = a[2].parse().expect("k");
+        let out = std::env::var("GRAIN_OUT").ok();
+        let ppm = |p: &[u8], w: usize, h: usize| { let mut v = format!("P6\n{w} {h}\n255\n").into_bytes(); v.extend_from_slice(p); v };
+        let (mut px, mut b_ex, mut b_k, mut b_g, mut b_fp) = (0f64, 0f64, 0f64, 0f64, 0f64);
+        for f in &a[3..] {
+            let (rgb, w, h) = ncz::img::read_ppm(&fs::read(f).expect("read")).expect("not a P6 PPM");
+            let n = (w * h) as f64;
+            let ex = ncz::img::compress_rgb(&rgb, w, h, 0).len() as f64; let pk = ncz::img::compress_rgb(&rgb, w, h, k).len() as f64;
+            let t0 = std::time::Instant::now();
+            let e = ncz::grain::compress(&rgb, w, h, k).expect("picture under 64x64");
+            let te = t0.elapsed().as_secs_f64();
+            let t1 = std::time::Instant::now();
+            let (r1, _, _) = ncz::grain::decompress(&e.stream).expect("decode");
+            let td = t1.elapsed().as_secs_f64();
+            let (r2, _, _) = ncz::grain::decompress(&e.stream).expect("decode");
+            let fpb = ncz::grain::fingerprint_bytes(&e.stream) as f64;
+            let mut hh = 0xcbf29ce484222325u64; for &x in &r1 { hh = (hh ^ x as u64).wrapping_mul(0x100000001b3); }
+            let name = std::path::Path::new(f).file_stem().unwrap().to_string_lossy().to_string();
+            println!("{:12} exact {:6.3}  +-{k} {:6.3}  grain mode {:6.3} bpp ({:4.0} B fingerprint, env {:.2})  {:+5.1}% vs exact  enc {:4.1}s dec {:4.1}s  {:016x} {}",
+                name, 8.0 * ex / n, 8.0 * pk / n, 8.0 * e.stream.len() as f64 / n, fpb, e.fp.env, 100.0 * (e.stream.len() as f64 / ex - 1.0), te, td, hh, if r1 == r2 { "repeatable" } else { "NOT REPEATABLE" });
+            if r1 != r2 { process::exit(1); }
+            if let Some(d) = &out {
+                let n0 = 18 + fpb as usize; let (clean, _, _, _) = ncz::img::decompress_rgb(&e.stream[n0..]).unwrap();
+                fs::write(format!("{d}/{name}.clean.ppm"), ppm(&clean, w, h)).unwrap(); fs::write(format!("{d}/{name}.sep.ppm"), ppm(&e.clean, w, h)).unwrap(); fs::write(format!("{d}/{name}.recon.ppm"), ppm(&r1, w, h)).unwrap();
+            }
+            px += n; b_ex += ex; b_k += pk; b_g += e.stream.len() as f64; b_fp += fpb;
+        }
+        println!("TOTAL exact {:.3}  +-{k} {:.3}  grain mode {:.3} bpp (fingerprints {:.3} bpp)  {:+.1}% vs exact, {:+.1}% vs +-{k}", 8.0 * b_ex / px, 8.0 * b_k / px, 8.0 * b_g / px, 8.0 * b_fp / px, 100.0 * (b_g / b_ex - 1.0), 100.0 * (b_g / b_k - 1.0));
+        return;
+    }
     if a.len() >= 3 && a[1] == "img-hash" {
         // nczcli img-hash <flags> <a.ppm>...: FNV hash of each compressed stream (regression check)
         let flags: u8 = a[2].parse().unwrap();

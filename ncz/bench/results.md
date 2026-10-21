@@ -467,3 +467,51 @@ Clump size = connected blobs above +1 sigma.
 "ours + envelope": the spectrum-matched grain modulated by a slow random envelope (grain locally denser in places),
 its strength (0.05-0.15) fitted to the real, dust-masked clumping. AV1-style tiles show as visible seams and ~20x the
 real repetition. A physical disc model (lognormal discs, 50% cover) overshoots clumping (0.61-0.73) and is dropped.
+
+### Grain mode in the coder: NCZG, a LOOKS-THE-SAME mode (2026-10-22)
+
+`ncz/src/grain.rs`, `nczcli grain <k> <ppm...>`. **Not exact.** The output is a different picture with the same look:
+the encoder splits the photo into a clean picture and its grain, codes the clean picture with the pixel model (every
+sample within +-2 of the clean picture), and stores the grain's fingerprint; the decoder grows new grain with that
+fingerprint on top. Its own magic (`NCZG`) so it can never be mistaken for the exact (`NCZI`/`NCZP`) streams.
+
+- Split (encoder only): white-noise pilot -> grain spectrum from (photo - pilot) in the flattest 6% of 32x32 patches
+  (median) -> two-stage 16x16 block-DCT filter driven by that spectrum (hard threshold, then empirical Wiener), strength
+  adapted per brightness band. BM3D's transform-domain core without block matching: more conservative in texture.
+- Fingerprint (~1.3-1.5 KB, 0.016 bpp over the set), measured on FLAT pixels only: strength per channel in 16
+  brightness bands, half of the 32x32 spectrum, channel coupling, 65 quantiles, envelope strength (clumping fit).
+- Decoder (deterministic: integer RNG, own exp/cos/ln/inverse-normal, f64 in fixed order, no libm, no FFT): 17x17
+  spectrum kernel over noise -> slow envelope -> coupling -> rank-map to the quantiles -> strength by the clean
+  picture's brightness. Decoded twice per image: identical every time. Cross-platform (wasm) check not done yet; the
+  browser tool does not have grain mode.
+- No measurable grain (mean brightness-grain < 0.5 levels): nothing is split, the picture itself goes at +-2 and the
+  decoder adds nothing (kodim20, kodim24, the two digital posters).
+
+Size (bpp, fingerprint included; pixel codec v4 fast mode):
+
+| | exact | +-2 | grain mode | vs exact | vs +-2 |
+|---|---:|---:|---:|---:|---:|
+| Kodak 24 (mean) | 8.258 | 4.145 | 3.696 | -55.2% | -10.8% |
+| 3 posters (mean) | 3.686 | 1.878 | 1.734 | -53.0% | -7.7% |
+| all 27 (pooled) | 6.325 | 3.214 | 2.878 | -54.5% | -10.4% |
+
+Best: kodim09 2.30 vs 3.52 at +-2 (-35%), kodim10 -25%, kodim21 -21%, kodim23 -21%; scanned ram poster -14%.
+Encode ~1.4 s, decode ~0.5 s per 768x512 photo (single thread).
+
+Matched check on kodim03/05/13/23 vs the BM3D split from the lab: grain mode 3.94 bpp vs BM3D-clean +-2 3.62 (+ its
+fingerprint). BM3D removes more, but on kodim13 part of what it removes is the water's sparkle (picture, not grain).
+
+Grain fidelity (`bench/grain/mode_eval.py`; real = photo - clean, regenerated = output - decoded clean; flat pixels;
+23 grainy pictures):
+
+| | median | worst |
+|---|---:|---:|
+| strength error per brightness band | 4.2% | 14.7% (kodim06) |
+| spectrum error (dB, radial) | 0.61 | 2.04 (kodim11, scanner line noise) |
+| value shape (W1) | 0.023 | 0.155 (kodim06) |
+| coupling error | 0.006 | 0.164 (ram poster: red pinned at 255) |
+| clumping, regenerated / real | 0.89 | 0.75 |
+| blob size, regenerated / real | 0.96 | 0.77-1.36 |
+
+Known gaps: clumping a bit low on busy pictures; regenerated grain is laid evenly while the split leaves some real grain
+in textured areas, so whole-picture grain is ~1.27x the removed grain there (texture hides it; flat areas match).
