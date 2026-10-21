@@ -71,9 +71,23 @@ impl Weights {
 // ---------------------------------------------------------------------------
 // maths
 // ---------------------------------------------------------------------------
-#[inline] fn matvec(w: &[f32], x: &[f32], out: &mut [f32]) {            // w is [out][in], row-major (PyTorch Linear)
+/// w is [out][in], row-major (PyTorch Linear). Eight independent accumulators: lets the
+/// compiler use SIMD and fixes the summation order, so every machine gets the same bits.
+#[inline] fn matvec(w: &[f32], x: &[f32], out: &mut [f32]) {
     let n = x.len();
-    for (o, row) in out.iter_mut().zip(w.chunks_exact(n)) { let mut s = 0f32; for i in 0..n { s += row[i] * x[i]; } *o = s; }
+    for (o, row) in out.iter_mut().zip(w.chunks_exact(n)) { *o = dot(row, x); }
+}
+#[inline] pub fn dot(a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len().min(b.len());
+    let mut acc = [0f32; 8];
+    let mut i = 0;
+    while i + 8 <= n {
+        for l in 0..8 { acc[l] += a[i + l] * b[i + l]; }
+        i += 8;
+    }
+    let mut s = ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]));
+    while i < n { s += a[i] * b[i]; i += 1; }
+    s
 }
 #[inline] fn sigmoid(x: f32) -> f32 { 1.0 / (1.0 + (-x).exp()) }
 #[inline] fn silu(x: f32) -> f32 { x * sigmoid(x) }
