@@ -59,6 +59,8 @@ impl Vocab {
     #[inline] fn child(&self, n: usize, b: u8) -> Option<usize> { self.nodes[n].children.binary_search_by_key(&b, |(c, _)| *c).ok().map(|i| self.nodes[n].children[i].1 as usize) }
 }
 
+fn fb_on() -> bool { static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *F.get_or_init(|| std::env::var("SLM_FB_OFF").is_err()) }
+
 /// What the flag can be, given the byte just coded.
 pub enum Flag { MustContinue, MustEnd, Prob(f64) }
 
@@ -71,6 +73,7 @@ pub struct Bridge<'a> {
     snap: crate::Snapshot, spec: bool, q: f64,
     pc: [f64; 256], pn: [f64; 256],              // continue / new-token byte distributions behind `p`
     tail_node: usize, tail_len: usize, tail: Vec<u8>, prev_byte: u8,
+    fb: Vec<f64>,           // [last byte of a token][first byte of the next] counts: the fallback when not speculating
     pub tokens: usize,      // model steps so far (speculative ones included)
     pub spec_steps: usize,
     pub p: [f64; 256],      // last next-byte distribution
@@ -80,7 +83,7 @@ pub struct Bridge<'a> {
 impl<'a> Bridge<'a> {
     pub fn new(m: Model<'a>, v: &'a Vocab) -> Bridge<'a> {
         let mut b = Bridge { m, v, pre: vec![0f64; V + 1], by_rank: vec![0f64; V], pre_s: vec![0f64; V + 1], by_rank_s: vec![0f64; V], snap: crate::Snapshot::default(), spec: false, q: 0.0,
-            pc: [0.0; 256], pn: [0.0; 256], tail_node: 0, tail_len: 0, tail: Vec::with_capacity(16), prev_byte: 0, tokens: 0, spec_steps: 0, p: [0.0; 256], tree: [0.0; 512] };
+            pc: [0.0; 256], pn: [0.0; 256], tail_node: 0, tail_len: 0, tail: Vec::with_capacity(16), prev_byte: 0, fb: vec![0.0; 256 * 256], tokens: 0, spec_steps: 0, p: [0.0; 256], tree: [0.0; 512] };
         b.step(EOT, false);
         b
     }
@@ -130,8 +133,13 @@ impl<'a> Bridge<'a> {
             self.m.snapshot_into(&mut self.snap);
             self.step(tok, true); self.spec = true; self.spec_steps += 1;
         }
-        let pre_new = if self.spec { &self.pre_s } else { &self.pre };
-        if q > 0.0 || self.tail_len == 0 {
+        if q > 0.0 && !self.spec && fb_on() {
+            // no speculative step: what usually follows a token ending in this byte, uniform prior
+            let row = &self.fb[*self.tail.last().unwrap() as usize * 256..][..256];
+            let mut tot = 0f64; for b in 0..256 { pn[b] = row[b] + 0.05; tot += pn[b]; }
+            let inv = 1.0 / tot; for b in 0..256 { pn[b] *= inv; }
+        } else if q > 0.0 || self.tail_len == 0 {
+            let pre_new = if self.spec { &self.pre_s } else { &self.pre };
             let root = &self.v.nodes[0];
             let mut tot = 0f64; for &(b, c) in &root.children { let m = Self::mass_in(pre_new, &self.v.nodes[c as usize]); pn[b as usize] = m; tot += m; }
             if tot > 0.0 { let inv = 1.0 / tot; for b in 0..256 { pn[b] *= inv; } }
@@ -165,6 +173,7 @@ impl<'a> Bridge<'a> {
         else { std::mem::swap(&mut self.pre, &mut self.pre_s); std::mem::swap(&mut self.by_rank, &mut self.by_rank_s); }
         self.spec = false;
         self.prev_byte = *self.tail.last().unwrap_or(&0);
+        self.fb[self.prev_byte as usize * 256 + b as usize] += 1.0;
         self.tail.clear(); self.tail_len = 0; self.tail_node = 0;
         self.observe(b)
     }

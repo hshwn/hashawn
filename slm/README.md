@@ -62,8 +62,11 @@ every header is the hash of that pack, so native and wasm streams interoperate (
 `nczl_enc_*` / `nczl_dec_*`. Build: `RUSTFLAGS="-C target-feature=+simd128 -C strip=debuginfo" cargo build
 --release --target wasm32-unknown-unknown`, copy `slm.wasm` to `tools/compress/nczl.wasm`.
 
-Nardo docs 100 KB: 1.7706 bpb (ncz 2.3218, xz 2.765); enwik8 1 MB 1.4096 (ncz 1.9071). 44 KB/s native, 12 KB/s in the browser.
-The token-end flag is predicted by `src/flags.rs`, a small online mixer over the model's estimate and byte-context counters.
+Nardo docs 100 KB: 1.7587 bpb (ncz 2.3218, xz 2.765); enwik8 1 MB 1.3999 (ncz 1.9071). 27 KB/s native, 8 KB/s in the browser.
+Stream v2 codes each byte first, under a mixture of "the token continues" and "a new token starts" (a speculative
+model step, undone if the token continues), then the token-end flag given the byte. `src/flags.rs` predicts the
+flag (online mixer over the model's estimate and byte-context counters); `SLM_SPEC_MIN` (default 0.02) sets when
+the speculative step is skipped.
 
 ## Layout
 

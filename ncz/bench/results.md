@@ -203,10 +203,25 @@ About 5% of the flag cost. The rest is real uncertainty about the next character
 sees. Also in this change: the bridge's stretch now uses our own `fln` instead of the platform `ln`, so
 native and wasm run identical code there too (browser output re-verified byte-identical).
 
-### Byte-first coding with speculative steps (2026-10-21, NCZL v2, partial)
+### Byte-first coding with speculative steps (2026-10-21, NCZL v2)
 
-Byte coded under (1-q)·P(b|continue) + q·P(b|new token) with the new-token distribution from a speculative
-model step (snapshot/restore); the flag then coded given the byte (free when deterministic). Nardo docs:
-flag-first 22132 B (1.7706) -> byte-first 22023 B (1.7618) at speculation threshold q >= 0.02, 21974 B
-(1.7579) at 0.005. Cost: 16 KB/s vs 44 (extra model steps). enwik8 held-out and the threshold sweep NOT
-yet run; wasm rebuilt to the v2 format. Session stopped here at the usage limit.
+Byte coded under (1-q)·P(b|continue) + q·P(b|new token), q = the flag model's P(end); the new-token
+distribution comes from a speculative model step on the tail's token (snapshot/restore, kept if the token
+ends). The flag is then coded given the byte, free when only one reading is possible. Below a threshold
+on q the step is skipped; the fallback is an adaptive table of "first byte after a token ending in x"
+(the current distribution, used before, is the wrong one: 2.33 bpb when never speculating).
+
+Nardo docs 100 KB, M4 Pro 3 threads (v1 = flag-first with the mixed flag model: 22132 B, 1.7706, 44 KB/s):
+
+| threshold | no fallback table | with table | enc KB/s |
+|---|---:|---:|---:|
+| 0 (always) | 21958 B, 1.7566 | | 19 |
+| 0.005 | 21974, 1.7579 | 21964, 1.7571 | 23 |
+| **0.02 (default)** | 22023, 1.7618 | **21984, 1.7587** | 27 |
+| 0.05 | 22182, 1.7746 | 22040, 1.7632 | 29 |
+| 0.1 | 22475, 1.7980 | 22145, 1.7716 | 32 |
+| never | 29181, 2.3345 | 26012, 2.0810 | 44 |
+
+enwik8 1 MB held out: v1 176199 B (1.4096) -> v2 at 0.02 with table 174984 B (1.3999), -0.7%.
+Gains flatten below 0.02 while speed keeps falling, so 0.02 is the default. Cost vs v1: ~40% slower
+(27 vs 44 KB/s native, 8 vs 12 KB/s in the browser). Browser output byte-identical to native (SHA-256).
