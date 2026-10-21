@@ -1,3 +1,4 @@
 out/*.npy
 out/*.ppm
 out/*_crops.png
+scans/

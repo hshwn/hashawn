@@ -1,0 +1,172 @@
+{
+ "Tri-x_400_grain1NoProfile": {
+  "real": {
+   "spectrum_db": 0.0,
+   "shape_w1": 0.0,
+   "coupling": 0.0,
+   "clumping": 0.5550967859138497,
+   "repetition": 0.004348234792781635,
+   "blob_mean_px": 4.156556786158988,
+   "blob_p90_px": 10.0
+  },
+  "av1": {
+   "spectrum_db": 1.413637671609214,
+   "shape_w1": 0.0873981636314626,
+   "coupling": 0.0,
+   "clumping": 0.4102161793514298,
+   "repetition": 0.09174096935657498,
+   "blob_mean_px": 5.485394497600525,
+   "blob_p90_px": 12.0
+  },
+  "ours": {
+   "spectrum_db": 0.3814296671660726,
+   "shape_w1": 0.004498650450367059,
+   "coupling": 0.0,
+   "clumping": 0.4606234767471195,
+   "repetition": 0.0044954017879415805,
+   "blob_mean_px": 4.080649131899456,
+   "blob_p90_px": 10.0
+  },
+  "ours+env": {
+   "spectrum_db": 0.3689125221169586,
+   "shape_w1": 0.004216681179084908,
+   "coupling": 0.0,
+   "clumping": 0.5345615502258748,
+   "repetition": 0.004925782601762422,
+   "blob_mean_px": 4.182002270629868,
+   "blob_p90_px": 10.0
+  },
+  "film": {
+   "spectrum_db": 2.1381195359211054,
+   "shape_w1": 0.00392141487706009,
+   "coupling": 0.0,
+   "clumping": 0.9876364186130215,
+   "repetition": 0.06652090139590544,
+   "blob_mean_px": 11.615353408692766,
+   "blob_p90_px": 31.0
+  },
+  "film_fit": {
+   "r0_px": 0.9,
+   "spread": 0.4,
+   "fit_db": 0.45425709755310806
+  },
+  "envelope_strength": 0.15,
+  "grain_rms_8bit_levels": [
+   7.941123546399146
+  ]
+ },
+ "Tmax100_GrainNoProfile": {
+  "real": {
+   "spectrum_db": 0.0,
+   "shape_w1": 0.0,
+   "coupling": 0.0,
+   "clumping": 0.4104327555234366,
+   "repetition": 0.0033970582478893637,
+   "blob_mean_px": 3.1214267935438165,
+   "blob_p90_px": 7.0
+  },
+  "av1": {
+   "spectrum_db": 0.9871165897862675,
+   "shape_w1": 0.05166955888899249,
+   "coupling": 0.0,
+   "clumping": 0.34477342552869406,
+   "repetition": 0.06462031229396832,
+   "blob_mean_px": 3.523587178677656,
+   "blob_p90_px": 9.0
+  },
+  "ours": {
+   "spectrum_db": 0.0758653222436852,
+   "shape_w1": 0.008187764757547216,
+   "coupling": 0.0,
+   "clumping": 0.366179958151721,
+   "repetition": 0.003976944724148549,
+   "blob_mean_px": 3.082057766538001,
+   "blob_p90_px": 7.0
+  },
+  "ours+env": {
+   "spectrum_db": 0.1067810328131868,
+   "shape_w1": 0.0070282824522503885,
+   "coupling": 0.0,
+   "clumping": 0.4118808774730654,
+   "repetition": 0.0036329925619342433,
+   "blob_mean_px": 3.1107752540518754,
+   "blob_p90_px": 7.0
+  },
+  "film": {
+   "spectrum_db": 0.49765670485392877,
+   "shape_w1": 0.006316218728051377,
+   "coupling": 0.0,
+   "clumping": 0.6377286802502233,
+   "repetition": 0.026087402932083358,
+   "blob_mean_px": 2.628458610191067,
+   "blob_p90_px": 6.0
+  },
+  "film_fit": {
+   "r0_px": 0.9,
+   "spread": 0.15,
+   "fit_db": 0.5834660597961264
+  },
+  "envelope_strength": 0.1,
+  "grain_rms_8bit_levels": [
+   8.296272605217933
+  ]
+ },
+ "KodakUltramax400GrainScan01": {
+  "real": {
+   "spectrum_db": 2.7837736120074503e-16,
+   "shape_w1": 0.0,
+   "coupling": 0.0,
+   "clumping": 0.3771963009152248,
+   "repetition": 0.0038040993574596517,
+   "blob_mean_px": 3.774857413924344,
+   "blob_p90_px": 9.0
+  },
+  "av1": {
+   "spectrum_db": 0.7275902965708229,
+   "shape_w1": 0.0806402677949838,
+   "coupling": 0.4684878035805728,
+   "clumping": 0.40435543831674975,
+   "repetition": 0.06892248220020913,
+   "blob_mean_px": 3.869000143990284,
+   "blob_p90_px": 8.0
+  },
+  "ours": {
+   "spectrum_db": 0.1467623102979957,
+   "shape_w1": 0.0049578131929838365,
+   "coupling": 0.003488608777031388,
+   "clumping": 0.3577626330073386,
+   "repetition": 0.0040075207832646195,
+   "blob_mean_px": 3.6783340431152056,
+   "blob_p90_px": 8.0
+  },
+  "ours+env": {
+   "spectrum_db": 0.15662261280806544,
+   "shape_w1": 0.0051188421907768615,
+   "coupling": 0.0031088756688807395,
+   "clumping": 0.36897552415635465,
+   "repetition": 0.004205606704052245,
+   "blob_mean_px": 3.679246402130952,
+   "blob_p90_px": 8.0
+  },
+  "film": {
+   "spectrum_db": 0.9706240205457478,
+   "shape_w1": 0.0037574605160376404,
+   "coupling": 0.0935013869127615,
+   "clumping": 0.6416649567087865,
+   "repetition": 0.03649351696397728,
+   "blob_mean_px": 4.903326410796283,
+   "blob_p90_px": 12.0
+  },
+  "film_fit": {
+   "r0_px": 0.9,
+   "spread": 0.4,
+   "fit_db": 0.311532289547643
+  },
+  "envelope_strength": 0.05,
+  "grain_rms_8bit_levels": [
+   15.267261904782476,
+   12.45811536711512,
+   20.1641809808644
+  ]
+ }
+}

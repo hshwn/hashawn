@@ -442,3 +442,28 @@ The physical disc model fits poorly here: Kodak is film scanned then downsized t
 Size (bpp, pixel codec v4 fast mode; the fingerprint, ~0.02-0.05 bpp, not counted):
 exact 8.55 -> +-1 5.65 (-34%) -> +-2 4.33 (-49%); grain removed + exact 7.26 (-15%), + +-1 4.60 (-46%), + +-2 3.62 (-58%).
 Kodak's grain is weak (0.7-1.0 levels rms on three of four); stronger grain should save more.
+
+### Grain lab on real 35mm grain scans (2026-10-22)
+
+`ncz/bench/grain/plate_lab.py`. Three Wikimedia Commons CC0 grain scans by Wiley.andrew.r (Nikon Coolscan V ED, ~4000 dpi,
+16-bit; film exposed to a white card, so pure grain at one density): Kodak Tri-X 400, T-Max 100, UltraMax 400 (colour).
+Scans stay local (gitignored). 2048x2048 centre crops; grain = scan - heavy blur; dust masked (0.2-0.3%).
+Clump size = connected blobs above +1 sigma.
+
+| film | measure | real | AV1-style | ours | ours + envelope |
+|---|---|---:|---:|---:|---:|
+| Tri-X 400 | spectrum error (dB) | | 1.41 | 0.38 | 0.37 |
+| | clumping | 0.555 | 0.410 | 0.461 | 0.535 |
+| | mean / p90 clump (px) | 4.2 / 10 | 5.5 / 12 | 4.1 / 10 | 4.2 / 10 |
+| | repetition | 0.004 | 0.092 | 0.004 | 0.005 |
+| T-Max 100 | spectrum error (dB) | | 0.99 | 0.08 | 0.11 |
+| | clumping | 0.410 | 0.345 | 0.366 | 0.412 |
+| | mean / p90 clump (px) | 3.1 / 7 | 3.5 / 9 | 3.1 / 7 | 3.1 / 7 |
+| UltraMax 400 | spectrum error (dB) | | 0.73 | 0.15 | 0.16 |
+| | colour coupling error | | 0.468 | 0.003 | 0.003 |
+| | clumping | 0.377 | 0.404 | 0.358 | 0.369 |
+| | mean / p90 clump (px) | 3.8 / 9 | 3.9 / 8 | 3.7 / 8 | 3.7 / 9 |
+
+"ours + envelope": the spectrum-matched grain modulated by a slow random envelope (grain locally denser in places),
+its strength (0.05-0.15) fitted to the real, dust-masked clumping. AV1-style tiles show as visible seams and ~20x the
+real repetition. A physical disc model (lognormal discs, 50% cover) overshoots clumping (0.61-0.73) and is dropped.
