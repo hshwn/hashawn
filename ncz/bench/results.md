@@ -374,3 +374,44 @@ image (~1 GB at 12 MP) to a two-row ring, row-by-row encoder/decoder for progres
 
 All pixel-exact (decoded pixels compared). Browser: compressed and rebuilt files hash identical to native for RGB,
 RGBA, palette and 1-bit; kodim03 0.6 s each way. nczl.wasm grew 199 KB -> 539 KB (png crate + zlib).
+
+### Pixel mode v4: exact-colour contexts, a third mixer, a mixer prior (2026-10-21, NCZI v4)
+
+Path, fast mode (flags 0), dev = kodim01-04 mean / poster_ram (bpp), encode speed:
+
+| step | photos 4 | ram poster | MB/s |
+|---|---:|---:|---:|
+| start (NCZI v2, committed) | 7.906 | 5.473 | 2.91 |
+| + exact neighbour colours with the guess as contexts (W,N,guess and NW,NE,guess) | 7.877 | 5.294 | |
+| + third mixer keyed by where W and N sit vs the guess (17x17) + learned final layer over the three | 7.847 | 5.254 | 1.94 |
+| same without the third mixer (final layer over two) | 7.878 | 5.296 | |
+| ablation: six context sets individually worthless, removed (15 + 2 new = 17 -> 11) | 7.839 | 5.259 | 2.59 |
+| + mixer prior (below) | 7.833 | 5.258 | |
+
+Mixer prior: start mix, mix2 and the final layer from the median of their trained weights over 100 COCO photos
+(downsampled 2x); mix3 starts cold. Stored as i16 at half scale, 170 KB (`ncz/assets/img_mixer_prior.bin`), loaded
+by encoder and decoder alike. The full prior including mix3 was 4.4 MB for almost the same gain:
+
+| prior | photos 4 | ram | 8 thumbnails 96 px | 8 thumbnails 192 px |
+|---|---:|---:|---:|---:|
+| none | 7.839 | 5.259 | 11.448 | 10.257 |
+| full (mix, mix2, mix3, fin; i32, 4.4 MB) | 7.831 | 5.258 | 11.276 | 10.182 |
+| compact (mix, mix2, fin; i32) | 7.833 | 5.258 | 11.283 | 10.188 |
+| compact, i16 (shipped, 170 KB) | 7.833 | 5.258 | 11.282 | 10.189 |
+
+(Thumbnails: kodim05-12 downsampled.) Learned mode (flags 7) with the compact prior: photos 4 7.779 -> 7.773, 96 px
+11.417 -> 11.274, 192 px 10.198 -> 10.139.
+
+Held out (all OK, round trip verified):
+
+| set (bpp) | fast v2 | fast v4 | learned v2 | learned v4 | JPEG XL e9 |
+|---|---:|---:|---:|---:|---:|
+| 20 photos held out | 8.402 | 8.343 | 8.332 | 8.280 | 8.551 |
+| all 24 photos | | 8.258 | | 8.195 | 8.484 |
+| 3 posters | 3.768 | 3.647 | 3.730 | 3.611 | 4.116 |
+| 2 posters not tuned on (poupees, harvest) | | 2.503 | | 2.462 | 2.908 |
+
+Held out vs v2: fast -0.7% photos, -3.2% posters; learned -0.6% / -3.2%. Vs JPEG XL e9: fast -2.4% photos, -11.4%
+posters; learned -3.2% / -12.3%. Speed: under the same (loaded) conditions the v4 fast coder ran 2.18 MB/s vs 1.96-2.07
+for the committed v2; on a quiet machine the step table above applies (~2.6 MB/s). nczl.wasm 539 KB -> 725 KB (the prior).
+Browser build: compressed and rebuilt files hash identical to native (kodim03, RGBA, palette).

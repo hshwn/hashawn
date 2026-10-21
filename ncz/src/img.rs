@@ -15,7 +15,7 @@
 use crate::tables::{SQUASH, STRETCH};
 
 pub const MAGIC: &[u8; 4] = b"NCZI";
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 4;
 const HEADER: usize = 4 + 1 + 1 + 1 + 4 + 4;
 /// Header flags: how the stream was coded (the decoder must do the same).
 pub const F_PLANAR: u8 = 1; pub const F_LEARNED_COLOUR: u8 = 2; pub const F_LEARNED_GREEN: u8 = 4;
@@ -28,7 +28,7 @@ const ALL_FLAGS: u8 = F_PLANAR | F_LEARNED_COLOUR | F_LEARNED_GREEN | F_ALPHA;
 const NP: usize = 15;        // predictors
 const ND: usize = 74;        // binary decisions per sample: 0 zero?, 1..=7 size, 8..71 mantissa, 72 sign, 73 spare
 const D_SIGN: usize = 72;
-const NSETS: usize = 15;     // context sets feeding the mixer
+const NSETS: usize = 11;     // context sets feeding the mixer (six weak ones removed after ablation)
 const TBITS: u32 = 22;       // one shared hashed table of adaptive probabilities, 2^22 cells
 const N_IN: usize = NSETS + 1;
 const LIMIT: u32 = 255;
@@ -110,6 +110,9 @@ struct Model {
     sm: Vec<u32>,                      // hashed: (set, channel, context, decision, decoded-so-far) -> probability
     mix: Vec<i32>,                     // [ch][decision][activity 0..4][N_IN]
     mix2: Vec<i32>,                    // [ch][decision][expected error 0..16][N_IN]
+    mix3: Vec<i32>,                    // [ch][decision][where W and N point vs the guess, 17x17][N_IN]
+    offc: usize, pmix3: i32,
+    fin: Vec<i32>, fin_st: [i32; 3], fin_base: usize,      // second layer: learned weights over the three mixers
     eqc: usize, mixbase2: usize, pmix2: i32,
     apm: Apm, apm2: Apm,
     // per-sample context state
@@ -147,6 +150,8 @@ impl Mlp {
 static NET_RED: &[u8] = include_bytes!("../assets/color_red.bin");
 static NET_BLUE: &[u8] = include_bytes!("../assets/color_blue.bin");
 static NET_GREEN: &[u8] = include_bytes!("../assets/net_green_h64.bin");
+/// Initial weights for mix, mix2 and fin, in that order, i16 LE at half scale (see bench/results.md).
+static PRIOR: &[u8] = include_bytes!("../assets/img_mixer_prior.bin");
 /// Causal neighbours the green network reads (dy, dx), relative to the anchor (W + N) / 2.
 const GREEN_NB: [(isize, isize); 12] = [(0, -1), (0, -2), (-1, -2), (-1, -1), (-1, 0), (-1, 1), (-1, 2), (-2, -2), (-2, -1), (-2, 0), (-2, 1), (-2, 2)];
 
@@ -166,12 +171,18 @@ impl Model {
         let order: Vec<usize> = if nch == 4 { vec![3, 1, 0, 2] } else { CODE_ORDER.to_vec() };
         let n = w * h;
         let mut mix = vec![0i32; 4 * ND * 4 * N_IN];
-        for s in 0..4 * ND * 4 { for i in 0..NSETS { mix[s * N_IN + i] = 65536 / 4; } }
+        let mut mix3 = vec![0i32; 4 * ND * 289 * N_IN];
+        for s in 0..4 * ND * 289 { for i in 0..NSETS { mix3[s * N_IN + i] = 65536 / 4; } }
         let mut mix2 = vec![0i32; 4 * ND * 16 * N_IN];
-        for s in 0..4 * ND * 16 { for i in 0..NSETS { mix2[s * N_IN + i] = 65536 / 4; } }
         let nets = if flags & F_LEARNED_COLOUR != 0 && planar { Some([Mlp::load(NET_RED), Mlp::load(NET_BLUE)]) } else { None };
         let gnet = if flags & F_LEARNED_GREEN != 0 { Some(Mlp::load(NET_GREEN)) } else { None };
-        Model { w, h, k, planar, mix2, eqc: 0, mixbase2: 0, pmix2: 2048, nets, gnet,
+        let mut fin = vec![0i32; 4 * ND * 16 * 3];
+        // mix, mix2 and the final layer start from a prior (mix3 starts cold): the median of the trained
+        // weights over 100 photos, i16 at half scale; same start for encoder and decoder
+        assert_eq!(PRIOR.len(), 2 * (mix.len() + mix2.len() + fin.len()));
+        let mut it = PRIOR.chunks_exact(2).map(|b| (i16::from_le_bytes([b[0], b[1]]) as i32) << 1);
+        for v in mix.iter_mut().chain(mix2.iter_mut()).chain(fin.iter_mut()) { *v = it.next().unwrap(); }
+        Model { w, h, k, planar, mix2, mix3, offc: 0, pmix3: 2048, fin, fin_st: [0; 3], fin_base: 0, eqc: 0, mixbase2: 0, pmix2: 2048, nets, gnet,
             rec: vec![vec![0; n]; nch], res: vec![vec![0; n]; nch],
             err: vec![vec![0; 2 * w * NP]; nch], nch, order,
             bias_sum: vec![0; 4 * 16 * 27], bias_n: vec![0; 4 * 16 * 27],
@@ -194,11 +205,15 @@ impl Model {
         self.st[NSETS] = 256;
         let mb = ((ch * ND + d) * 4 + self.act) * N_IN; self.mixbase = mb;
         let mb2 = ((ch * ND + d) * 16 + self.eqc) * N_IN; self.mixbase2 = mb2;
-        let (mut dot, mut dot2): (i64, i64) = (0, 0);
-        for i in 0..N_IN { dot += self.mix[mb + i] as i64 * self.st[i] as i64; dot2 += self.mix2[mb2 + i] as i64 * self.st[i] as i64; }
-        let dot = ((dot >> 16) as i32).clamp(-2047, 2047); let dot2 = ((dot2 >> 16) as i32).clamp(-2047, 2047);
-        self.pmix2 = SQUASH[(dot2 + 2048) as usize];
-        self.pmix = SQUASH[(((dot + dot2) >> 1) + 2048) as usize];
+        let mb3 = ((ch * ND + d) * 289 + self.offc) * N_IN;
+        let (mut dot, mut dot2, mut dot3): (i64, i64, i64) = (0, 0, 0);
+        for i in 0..N_IN { let x = self.st[i] as i64; dot += self.mix[mb + i] as i64 * x; dot2 += self.mix2[mb2 + i] as i64 * x; }
+        for i in 0..N_IN { dot3 += self.mix3[mb3 + i] as i64 * self.st[i] as i64; }
+        let dot = ((dot >> 16) as i32).clamp(-2047, 2047); let dot2 = ((dot2 >> 16) as i32).clamp(-2047, 2047); let dot3 = ((dot3 >> 16) as i32).clamp(-2047, 2047);
+        self.pmix2 = SQUASH[(dot2 + 2048) as usize]; self.pmix3 = SQUASH[(dot3 + 2048) as usize];
+        self.fin_st = [dot, dot2, dot3]; let fb = ((ch * ND + d) * 16 + self.act * 4 + (self.eqc >> 2)) * 3; self.fin_base = fb;
+        let df = ((self.fin[fb] as i64 * dot as i64 + self.fin[fb + 1] as i64 * dot2 as i64 + self.fin[fb + 2] as i64 * dot3 as i64) >> 16) as i32;
+        self.pmix = SQUASH[(df.clamp(-2047, 2047) + 2048) as usize];
         let p1 = SQUASH[(dot + 2048) as usize];
         let a1 = self.apm.refine(self.pmix, self.apm_ctx * ND + d);
         let a2 = self.apm2.refine(self.pmix, self.apm2_ctx * ND + d);
@@ -208,6 +223,10 @@ impl Model {
         // learn
         let e = (((y as i32) << 12) - p1) * MIX_LR;
         let e2 = (((y as i32) << 12) - self.pmix2) * MIX_LR;
+        let e3 = (((y as i32) << 12) - self.pmix3) * MIX_LR;
+        let ef = (((y as i32) << 12) - self.pmix) * MIX_LR; let fb = self.fin_base;
+        for i in 0..3 { self.fin[fb + i] += (self.fin_st[i] * ef) >> (MIX_SHIFT + 1); }
+        for i in 0..N_IN { self.mix3[mb3 + i] += (self.st[i] * e3) >> MIX_SHIFT; }
         for i in 0..N_IN { self.mix[mb + i] += (self.st[i] * e) >> MIX_SHIFT; self.mix2[mb2 + i] += (self.st[i] * e2) >> MIX_SHIFT; }
         for s in 0..NSETS { let i = self.sidx[s]; self.sm[i] = sm_update(self.sm[i], y); }
         self.apm.update(y); self.apm2.update(y);
@@ -326,27 +345,26 @@ impl Model {
         let (xres, xres2) = match c { 0 => (self.res[1][pos] as i32, 0), 2 => (self.res[1][pos] as i32, self.res[0][pos] as i32), _ => (0, 0) };
         let xmag = q16(xres.abs() + xres2.abs());
         self.ch = c; self.act = (aq >> 2).min(3); self.eqc = eq;
+        { let qs2 = |v: i32| -> usize { let m = q16(v.abs()).min(8) as i32; (if v < 0 { 8 - m } else { 8 + m }) as usize };
+          self.offc = qs2(wv - pred) * 17 + qs2(nv - pred); }
         // where each predictor points relative to the final guess, signed and log-quantised: 0..16
         let qs = |v: i32| -> u32 { let m = q16(v.abs()).min(8) as i32; (if v < 0 { 8 - m } else { 8 + m }) as u32 };
         let off = |i: usize| qs(preds[i] - pred);
         self.ctx = [
-            aq as u32,
-            eq as u32,
-            q16(rw.abs() + rn.abs()) as u32,
             (if !colour(c) { q16(rne.abs() + (rw.abs() >> 1)) } else { xmag }) as u32,
-            ((aq >> 1) * 16 + q16(rw.abs() + rn.abs())) as u32,
             (sgn(rw) * 9 + sgn(rn) * 3 + sgn(xres) + 27 * if !colour(c) { 0 } else { 1 + (xres.abs() > 2) as usize }) as u32,
             (eq * 16 + if !colour(c) { q16(rne.abs()) } else { xmag }) as u32,
             off(0) * 17 + off(1),
             off(2) * 17 + off(7),
             off(8) * 17 + off(9) + 289 * (eq as u32 >> 2),
-            off(3) * 17 + off(4),
-            off(5) * 17 + off(6),
             off(10) * 17 + off(11),
             off(12) * 17 + off(13) + 289 * if colour(c) && self.planar {
                 let gc = g[pos] as i32; let ge = if x + 1 < w { g[pos + 1] as i32 } else { gc }; let gs = if y + 1 < self.h { g[pos + w] as i32 } else { gc };
                 q16((ge - gc).abs() + (gs - gc).abs()) as u32 + 1 } else { 0 },
             off(14) * 17 + lsig * 289,
+            // exact neighbour colours with the guess: on graphics the same local pattern repeats exactly
+            (wv as u32 & 255) | ((nv as u32 & 255) << 8) | ((pred as u32) << 16),
+            (nw as u32 & 255) | ((ne as u32 & 255) << 8) | ((pred as u32) << 16) | (1 << 24),
         ];
         self.apm_ctx = c * 16 + aq;
         self.apm2_ctx = c * 27 + sgn(rw) * 9 + sgn(rn) * 3 + sgn(xres);
@@ -414,7 +432,8 @@ impl ImgEncoder {
         let flags = if flags & F_LEARNED_COLOUR != 0 { flags | F_PLANAR } else { flags };
         let nch = if flags & F_ALPHA != 0 { 4 } else { 3 };
         assert_eq!(px.len(), w * h * nch);
-        ImgEncoder { m: Model::new(w, h, k as i32, flags), e: Enc { x1: 0, x2: 0xFFFF_FFFF, out: Vec::new() }, px, u: 0, k, flags }
+        let m = Model::new(w, h, k as i32, flags);
+        ImgEncoder { m, e: Enc { x1: 0, x2: 0xFFFF_FFFF, out: Vec::new() }, px, u: 0, k, flags }
     }
     pub fn units(&self) -> usize { self.m.units() }
     pub fn done(&self) -> usize { self.u }
@@ -442,7 +461,8 @@ impl ImgDecoder {
         let nch = if flags & F_ALPHA != 0 { 4 } else { 3 };
         let mut d = Dec { x1: 0, x2: 0xFFFF_FFFF, x: 0, buf: blob[HEADER..].to_vec(), pos: 0 };
         for _ in 0..4 { d.x = (d.x << 8) | d.next_in(); }
-        Some(ImgDecoder { m: Model::new(w, h, k as i32, flags), d, px: vec![0; w * h * nch], u: 0, w, h, k, flags })
+        let m = Model::new(w, h, k as i32, flags);
+        Some(ImgDecoder { m, d, px: vec![0; w * h * nch], u: 0, w, h, k, flags })
     }
     pub fn units(&self) -> usize { self.m.units() }
     pub fn done(&self) -> usize { self.u }
