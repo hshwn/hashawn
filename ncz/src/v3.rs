@@ -16,14 +16,17 @@ use crate::tables::{SQUASH, STRETCH};
 const SLIMIT: i32 = 2047;
 pub const MAGIC: &[u8; 4] = b"NCZ3";
 
-/// byte-history orders feeding the hash table (plus the word model if enabled)
-const ORDERS: [u32; 6] = [0, 1, 2, 3, 4, 6];
+/// Contexts are masks over the last 6 bytes of history (byte 1 = lowest). A plain
+/// order n is the low n bytes; a sparse context leaves holes.
+const MASKS: [u64; 6] = [0, 0xFF, 0xFFFF, 0xFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF_FFFF];
 pub const WORD_MODEL: bool = false;
-const NORD: usize = ORDERS.len() + if WORD_MODEL { 1 } else { 0 };
+pub const MIXER2: bool = false;
+const NORD: usize = MASKS.len() + if WORD_MODEL { 1 } else { 0 };
+const NMIX2: usize = 24;                    // second mixer: weight set by match state x previous byte class
 const TBITS: u32 = 22;                      // 2^22 buckets * 16 B = 64 MB, shared by all orders
 const TMASK: u32 = (1 << TBITS) - 1;
 const HISTMASK: u64 = (1u64 << 48) - 1;
-const PRIMES64: [u64; 7] = [0x9E37_79B9_7F4A_7C15, 0xBF58_476D_1CE4_E5B9, 0x94D0_49BB_1331_11EB, 0xC2B2_AE3D_27D4_EB4F, 0x1656_67B1_9E37_79F9, 0xD6E8_FEB8_6659_FD93, 0xA076_1D64_78BD_642F];
+const PRIMES64: [u64; 10] = [0x9E37_79B9_7F4A_7C15, 0xBF58_476D_1CE4_E5B9, 0x94D0_49BB_1331_11EB, 0xC2B2_AE3D_27D4_EB4F, 0x1656_67B1_9E37_79F9, 0xD6E8_FEB8_6659_FD93, 0xA076_1D64_78BD_642F, 0xE703_7ED1_A0B4_28DB, 0x8EBC_6AF0_9C88_C6E3, 0x5890_38F7_3A3D_BDF1];
 const MIN_MATCH: usize = 6;
 const MTBITS: u32 = 22;
 const MMASK: u32 = (1 << MTBITS) - 1;
@@ -94,7 +97,7 @@ pub struct Model {
     sm: Vec<u32>,                           // NORD * 256 state maps
     smi: [usize; NORD],                     // state-map index used by the last predict, per order
     msm: [u32; (MLEN_CAP as usize + 1) * 2], mt: Vec<u32>, buf: Vec<u8>,
-    weights: Vec<i32>, apm1: Apm, apm2: Apm,
+    weights: Vec<i32>, weights2: Vec<i32>, mxctx2: usize, pmix2: i32, apm1: Apm, apm2: Apm,
     c0: u32, nc0: u32, kbits: u32, cur_byte: u32, hist: u64,
     word: u32, prev_word: u32, a2base: u32,
     st: [i32; N_IN], pmix: i32, mxctx: usize, m_active: bool, midx: usize,
@@ -111,7 +114,7 @@ impl Model {
             sm, smi: [0; NORD],
             msm: [32768 << 16; (MLEN_CAP as usize + 1) * 2],
             mt: vec![0u32; MMASK as usize + 1], buf: Vec::new(),
-            weights: vec![W_INIT; NMIXCTX * N_IN],
+            weights: vec![W_INIT; NMIXCTX * N_IN], weights2: vec![W_INIT; NMIX2 * N_IN], mxctx2: 0, pmix2: 2048,
             apm1: Apm::new(65536), apm2: Apm::new(65536),
             c0: 1, nc0: 1, kbits: 0, cur_byte: 0, hist: 0, word: 0, prev_word: 0, a2base: 0,
             st: [0; N_IN], pmix: 2048, mxctx: 0, m_active: false, midx: 0,
@@ -124,9 +127,8 @@ impl Model {
 
     /// Context hashes for the coming byte, from the history.
     fn new_byte_contexts(&mut self) {
-        for i in 0..ORDERS.len() {
-            let order = ORDERS[i];
-            let cxt = if order == 0 { 0 } else { self.hist & ((1u64 << (8 * order)) - 1) };
+        for i in 0..MASKS.len() {
+            let cxt = self.hist & MASKS[i];
             // high half of a 64-bit product: every input bit reaches the hash (the low half
             // would only see the lowest 4 bytes, which made orders 5 and 6 behave as order 4)
             let x = cxt.wrapping_add(i as u64 * 0x9E37_79B9_7F4A_7C15).wrapping_mul(PRIMES64[i]);
@@ -201,9 +203,22 @@ impl Model {
         let base = mxctx * N_IN;
         let mut dot: i64 = 0;
         unsafe { for i in 0..N_IN { dot += *self.weights.get_unchecked(base + i) as i64 * self.st[i] as i64; } }
-        let dot = (dot >> 16).clamp(-SLIMIT as i64, SLIMIT as i64) as i32;
-        let pmix = SQUASH[(dot + 2048) as usize];
-        self.pmix = pmix;
+        let dot1 = (dot >> 16).clamp(-SLIMIT as i64, SLIMIT as i64) as i32;
+        let pmix = if MIXER2 {
+            // selector: match state (none / short / long, with the expected bit) x previous byte class
+            let ms = if !m_active { 0 } else { 1 + ((self.match_len.min(15) / 4) as usize) * 2 + ((self.st[NORD + 1] > 0) as usize) };
+            let pb = (self.hist & 0xFF) as u8;
+            let cls = if pb.is_ascii_alphabetic() { 0 } else if pb.is_ascii_digit() || pb == b' ' { 1 } else { 2 };
+            let m2 = ms * 3 + cls;
+            self.mxctx2 = m2;
+            let b2 = m2 * N_IN;
+            let mut d2: i64 = 0;
+            unsafe { for i in 0..N_IN { d2 += *self.weights2.get_unchecked(b2 + i) as i64 * self.st[i] as i64; } }
+            let dot2 = (d2 >> 16).clamp(-SLIMIT as i64, SLIMIT as i64) as i32;
+            self.pmix = SQUASH[(dot1 + 2048) as usize];
+            self.pmix2 = SQUASH[(dot2 + 2048) as usize];
+            SQUASH[(((dot1 + dot2) >> 1) + 2048) as usize]
+        } else { let p = SQUASH[(dot1 + 2048) as usize]; self.pmix = p; p };
         let a1 = (self.c0 | (((self.hist & 0xFF) as u32) << 8)) as usize;
         let a2 = (self.c0 ^ self.a2base) as usize;
         let pr = (pmix + self.apm1.refine(pmix, a1) * 3) >> 2;
@@ -215,6 +230,11 @@ impl Model {
         let err = (((y as i32) << 12) - self.pmix) * MIX_LR;
         let base = self.mxctx * N_IN;
         unsafe { for i in 0..N_IN { *self.weights.get_unchecked_mut(base + i) += (self.st[i] * err) >> 16; } }
+        if MIXER2 {
+            let err2 = (((y as i32) << 12) - self.pmix2) * MIX_LR;
+            let b2 = self.mxctx2 * N_IN;
+            unsafe { for i in 0..N_IN { *self.weights2.get_unchecked_mut(b2 + i) += (self.st[i] * err2) >> 16; } }
+        }
         let node = self.nc0 as usize;
         unsafe {
             for i in 0..NORD {
