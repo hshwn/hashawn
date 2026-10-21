@@ -62,11 +62,11 @@ static RECIP: [i32; SM_LIMIT as usize + 1] = { let mut t = [0i32; SM_LIMIT as us
     ((p as u32) << 16) | n
 }
 
-struct Apm { t: Vec<i32>, idx: usize }
+struct Apm { t: Vec<u16>, idx: usize }     // 16-bit cells: values are 0..65535, so this halves the footprint for free
 impl Apm {
     fn new(n: usize) -> Apm {
-        let mut t = vec![0i32; n * 33];
-        for j in 0..33 { let k = ((j as i32 - 16) * 128 + 2048).clamp(1, 4095) as usize; t[j] = SQUASH[k] * 16; }
+        let mut t = vec![0u16; n * 33];
+        for j in 0..33 { let k = ((j as i32 - 16) * 128 + 2048).clamp(1, 4095) as usize; t[j] = (SQUASH[k] * 16) as u16; }
         for i in 1..n { for j in 0..33 { t[i * 33 + j] = t[j]; } }
         Apm { t, idx: 0 }
     }
@@ -75,14 +75,14 @@ impl Apm {
         let w = s & 127;
         let i = (s >> 7) as usize + cxt * 33;
         self.idx = i;
-        unsafe { (*self.t.get_unchecked(i) * (128 - w) + *self.t.get_unchecked(i + 1) * w) >> 11 }
+        unsafe { (*self.t.get_unchecked(i) as i32 * (128 - w) + *self.t.get_unchecked(i + 1) as i32 * w) >> 11 }
     }
     #[inline(always)] fn update(&mut self, y: u32) {
-        let g = if y != 0 { 65535 } else { 0 };
+        let g: i32 = if y != 0 { 65535 } else { 0 };
         let i = self.idx;
         unsafe {
-            let a = self.t.get_unchecked_mut(i); *a += (g - *a) >> 7;
-            let b = self.t.get_unchecked_mut(i + 1); *b += (g - *b) >> 7;
+            let a = self.t.get_unchecked_mut(i); *a = (*a as i32 + ((g - *a as i32) >> 7)) as u16;
+            let b = self.t.get_unchecked_mut(i + 1); *b = (*b as i32 + ((g - *b as i32) >> 7)) as u16;
         }
     }
 }
