@@ -18,7 +18,7 @@ pub const MAGIC: &[u8; 4] = b"NCZ3";
 
 /// byte-history orders feeding the hash table (plus the word model if enabled)
 const ORDERS: [u32; 6] = [0, 1, 2, 3, 4, 6];
-pub const WORD_MODEL: bool = true;
+pub const WORD_MODEL: bool = false;
 const NORD: usize = ORDERS.len() + if WORD_MODEL { 1 } else { 0 };
 const TBITS: u32 = 22;                      // 2^22 buckets * 16 B = 64 MB, shared by all orders
 const TMASK: u32 = (1 << TBITS) - 1;

@@ -72,3 +72,18 @@ ncz vs xz on the total: +14.0% smaller
 
 ncz vs xz on the total: +14.0% smaller
 
+### v3 final: hash fix, 6 orders, mix16, sm255, no word  (2026-10-21 12:56)
+
+| file | sha | bytes | ncz | bpb | gzip -9 | xz -9 | enc MB/s | dec MB/s | ok |
+|---|---|---:|---:|---:|---:|---:|---:|---:|:-:|
+| binary-normal.webp | 720d88f2 | 301724 | 306405 | 8.124 | 301726 | 301796 | 0.70 | 1.39 | ✓ |
+| binary-pfp.png | 33f12f13 | 52947 | 53075 | 8.019 | 52974 | 53008 | 1.52 | 1.14 | ✓ |
+| code-js-py.txt | c563ff96 | 74227 | 20868 | 2.249 | 25600 | 23340 | 2.30 | 1.82 | ✓ |
+| code-swift.txt | 4026dbe3 | 1150795 | 200790 | 1.396 | 308956 | 243248 | 3.34 | 2.54 | ✓ |
+| text-enwik8-10mb.txt | 5985c81c | 10000000 | 2241529 | 1.793 | 3688458 | 2721280 | 2.90 | 2.23 | ✓ |
+| text-nardo-docs.md | 052e85ec | 300964 | 77022 | 2.047 | 109543 | 93596 | 2.68 | 2.13 | ✓ |
+| text-site-html.txt | c6e00939 | 15201 | 4439 | 2.336 | 5054 | 4916 | 1.13 | 1.04 | ✓ |
+| **total** | | 11895858 | **2904128** | **1.953** | 4492311 | 3441184 | | | |
+
+ncz vs xz on the total: +15.6% smaller
+
