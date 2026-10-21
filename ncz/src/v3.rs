@@ -30,10 +30,10 @@ const MMASK: u32 = (1 << MTBITS) - 1;
 const MHASH: u64 = 0x9E37_79B9_7F4A_7C15;
 const MLEN_CAP: u32 = 31;
 const N_IN: usize = NORD + 3;               // orders + match prob + match confidence + bias
-const NMIXCTX: usize = 256;
+const NMIXCTX: usize = 16;
 const MIX_LR: i32 = 3;
 const W_INIT: i32 = 65536 >> 2;
-const SM_LIMIT: u32 = 1023;
+const SM_LIMIT: u32 = 255;
 
 static RECIP: [i32; SM_LIMIT as usize + 1] = { let mut t = [0i32; SM_LIMIT as usize + 1]; let mut n = 0; while n <= SM_LIMIT as usize { let r = 65536 / (n as i32 + 2); t[n] = if r < 32 { 32 } else { r }; n += 1; } t };
 #[inline] fn recip(n: u32) -> i64 { RECIP[n as usize] as i64 }
@@ -193,7 +193,7 @@ impl Model {
         if !m_active { self.st[NORD] = 0; self.st[NORD + 1] = 0; }
         self.m_active = m_active;
         self.st[NORD + 2] = 256;
-        let mxctx = self.c0 as usize & 255;
+        let mxctx = (self.c0 as usize >> 4) & 15;
         self.mxctx = mxctx;
         let base = mxctx * N_IN;
         let mut dot: i64 = 0;
