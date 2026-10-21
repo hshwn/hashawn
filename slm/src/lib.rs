@@ -16,6 +16,7 @@ pub mod bpe;
 pub mod codec;
 pub mod pack;
 pub mod wasm;
+pub mod flags;
 use simd::{F8, fexp, fln, dot, dots, axpy};
 use pool::{Pool, Shelf, split};
 

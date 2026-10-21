@@ -186,3 +186,19 @@ Hugging Face's ids on Nardo docs and enwik8. Binary falls back to ncz alone or s
 Browser (tools/compress, nczl.wasm 199 KB + model pack 3.3 MB fetched once): byte-identical output to
 the native build (same SHA-256 on a 30 KB slice: NEON/3 threads vs simd128/1 thread), 12.6 KB/s each way
 with the simd128 int8 kernel (5.6 with the scalar one). Native single thread ~32 KB/s.
+
+### Mixed flag predictor (2026-10-21)
+
+The token-end flag was coded at the model's P(end) alone. `slm/src/flags.rs`: a six-input logistic mixer
+(model stretch, adaptive counters keyed by tail bytes / tail + byte before the token / tail length + last
+two bytes, an SSE cell by model bucket × length, bias), 32 weight sets by tail length × model bucket,
+weights start at "model only". Learning rate flat between 0.005 and 0.015; 0.06 undoes the gain.
+
+| file | model-only flags | mixed flags | change |
+|---|---:|---:|---:|
+| Nardo docs 100 KB | 22292 B, 1.7834 bpb | 22132 B, 1.7706 | -0.7% |
+| enwik8 1 MB (held out) | 177013 B, 1.4161 bpb | 176199 B, 1.4096 | -0.5% |
+
+About 5% of the flag cost. The rest is real uncertainty about the next character, which only the model
+sees. Also in this change: the bridge's stretch now uses our own `fln` instead of the platform `ln`, so
+native and wasm run identical code there too (browser output re-verified byte-identical).

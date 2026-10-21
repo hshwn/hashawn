@@ -57,7 +57,7 @@ pub struct Bridge<'a> {
     v: &'a Vocab,
     pre: Vec<f64>,          // prefix sums of token probabilities over dfs ranks, len V+1
     by_rank: Vec<f64>,
-    tail_node: usize, tail_len: usize,
+    tail_node: usize, tail_len: usize, tail: Vec<u8>, prev_byte: u8,
     pub tokens: usize,      // model steps so far
     pub p: [f64; 256],      // last next-byte distribution
     tree: [f64; 512],
@@ -65,7 +65,7 @@ pub struct Bridge<'a> {
 
 impl<'a> Bridge<'a> {
     pub fn new(m: Model<'a>, v: &'a Vocab) -> Bridge<'a> {
-        let mut b = Bridge { m, v, pre: vec![0f64; V + 1], by_rank: vec![0f64; V], tail_node: 0, tail_len: 0, tokens: 0, p: [0.0; 256], tree: [0.0; 512] };
+        let mut b = Bridge { m, v, pre: vec![0f64; V + 1], by_rank: vec![0f64; V], tail_node: 0, tail_len: 0, tail: Vec::with_capacity(16), prev_byte: 0, tokens: 0, p: [0.0; 256], tree: [0.0; 512] };
         b.step(EOT);
         b
     }
@@ -82,6 +82,9 @@ impl<'a> Bridge<'a> {
     #[inline] fn mass(&self, n: usize) -> f64 { let nd = &self.v.nodes[n]; self.pre[nd.hi] - self.pre[nd.lo] }
     #[inline] fn own(&self, n: usize) -> f64 { let t = self.v.nodes[n].tok; if t < 0 { 0.0 } else { self.by_rank[self.v.rank[t as usize]] } }
     pub fn in_token(&self) -> bool { self.tail_len > 0 }
+    /// Bytes of the current token so far, and the byte just before it (0 at the start).
+    pub fn tail(&self) -> &[u8] { &self.tail }
+    pub fn prev_byte(&self) -> u8 { self.prev_byte }
 
     /// P(the current token ends here), defined when the tail is non-empty. Deterministic given past bytes.
     pub fn p_end(&self) -> f64 {
@@ -91,7 +94,8 @@ impl<'a> Bridge<'a> {
     /// The encoder says the token ended: step the model on it.
     pub fn end_token(&mut self, tok: u32) {
         debug_assert_eq!(self.v.nodes[self.tail_node].tok, tok as i32, "tokenisation does not match the vocab trie");
-        self.tail_node = 0; self.tail_len = 0;
+        self.prev_byte = *self.tail.last().unwrap_or(&0);
+        self.tail_node = 0; self.tail_len = 0; self.tail.clear();
         self.step(tok);
     }
     /// Fill `self.p` with P(next byte | the token continues past the tail).
@@ -116,8 +120,8 @@ impl<'a> Bridge<'a> {
     /// Stretch for bit j (MSB first) given the j bits already known as `prefix`, in ncz units.
     #[inline] pub fn bit_stretch(&self, j: usize, prefix: u32) -> i16 {
         let n = (1usize << j) + prefix as usize;
-        let p1 = (self.tree[2 * n + 1] / self.tree[n]).clamp(1e-6, 1.0 - 1e-6);
-        (256.0 * (p1 / (1.0 - p1)).ln()).round().clamp(-2047.0, 2047.0) as i16
+        let p1 = (self.tree[2 * n + 1] / self.tree[n]).clamp(1e-6, 1.0 - 1e-6) as f32;
+        (256.0 * crate::simd::fln(p1 / (1.0 - p1))).round_ties_even().clamp(-2047.0, 2047.0) as i16
     }
     /// Per-bit predictions for byte `actual` (MSB first) as ncz stretch units, after `predict()`.
     pub fn bits(&mut self, actual: u8, out: &mut [i16; 8]) {
@@ -127,6 +131,6 @@ impl<'a> Bridge<'a> {
     }
     /// Consume the actual byte (the token continues through it). False if no token continues this way.
     pub fn observe(&mut self, b: u8) -> bool {
-        match self.v.child(self.tail_node, b) { Some(n) => { self.tail_node = n; self.tail_len += 1; true } None => false }
+        match self.v.child(self.tail_node, b) { Some(n) => { self.tail_node = n; self.tail_len += 1; self.tail.push(b); true } None => false }
     }
 }
