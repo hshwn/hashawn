@@ -33,6 +33,17 @@ mod imp {
         #[inline(always)] pub fn hmax(self) -> f32 { unsafe { vmaxvq_f32(vmaxq_f32(self.0, self.1)) } }
         /// lanes truncated to i32, written as 8 ints
         #[inline(always)] pub fn to_i32(self, out: &mut [i32]) { unsafe { vst1q_s32(out.as_mut_ptr(), vcvtq_s32_f32(self.0)); vst1q_s32(out.as_mut_ptr().add(4), vcvtq_s32_f32(self.1)); } }
+        /// unbiased exponent as f32 (x must be positive normal)
+        #[inline(always)] pub fn exponent(self) -> F8 { unsafe {
+            let e = |v: float32x4_t| vcvtq_f32_s32(vsubq_s32(vshrq_n_s32::<23>(vreinterpretq_s32_f32(v)), vdupq_n_s32(127)));
+            F8(e(self.0), e(self.1)) } }
+        /// mantissa in [1, 2)
+        #[inline(always)] pub fn mantissa(self) -> F8 { unsafe {
+            let m = |v: float32x4_t| vreinterpretq_f32_u32(vorrq_u32(vandq_u32(vreinterpretq_u32_f32(v), vdupq_n_u32(0x007f_ffff)), vdupq_n_u32(0x3f80_0000)));
+            F8(m(self.0), m(self.1)) } }
+        /// lanes where self > o pick a, else b
+        #[inline(always)] pub fn select_gt(self, o: F8, a: F8, b: F8) -> F8 { unsafe {
+            F8(vbslq_f32(vcgtq_f32(self.0, o.0), a.0, b.0), vbslq_f32(vcgtq_f32(self.1, o.1), a.1, b.1)) } }
     }
 }
 
@@ -67,6 +78,14 @@ mod imp {
             f32x4_extract_lane::<0>(t).max(f32x4_extract_lane::<1>(t)).max(f32x4_extract_lane::<2>(t)).max(f32x4_extract_lane::<3>(t))
         }
         #[inline(always)] pub fn to_i32(self, out: &mut [i32]) { unsafe { v128_store(out.as_mut_ptr() as *mut v128, i32x4_trunc_sat_f32x4(self.0)); v128_store(out.as_mut_ptr().add(4) as *mut v128, i32x4_trunc_sat_f32x4(self.1)); } }
+        #[inline(always)] pub fn exponent(self) -> F8 {
+            let e = |v: v128| f32x4_convert_i32x4(i32x4_sub(i32x4_shr(v, 23), i32x4_splat(127)));
+            F8(e(self.0), e(self.1)) }
+        #[inline(always)] pub fn mantissa(self) -> F8 {
+            let m = |v: v128| v128_or(v128_and(v, u32x4_splat(0x007f_ffff)), u32x4_splat(0x3f80_0000));
+            F8(m(self.0), m(self.1)) }
+        #[inline(always)] pub fn select_gt(self, o: F8, a: F8, b: F8) -> F8 {
+            F8(v128_bitselect(a.0, b.0, f32x4_gt(self.0, o.0)), v128_bitselect(a.1, b.1, f32x4_gt(self.1, o.1))) }
     }
 }
 
@@ -93,6 +112,9 @@ mod imp {
         #[inline(always)] pub fn hsum(self) -> f32 { let a = self.0; ((a[0] + a[4]) + (a[1] + a[5])) + ((a[2] + a[6]) + (a[3] + a[7])) }
         #[inline(always)] pub fn hmax(self) -> f32 { self.0.iter().cloned().fold(f32::NEG_INFINITY, f32::max) }
         #[inline(always)] pub fn to_i32(self, out: &mut [i32]) { for i in 0..8 { out[i] = self.0[i] as i32; } }
+        #[inline(always)] pub fn exponent(self) -> F8 { self.map(|v| (((v.to_bits() >> 23) & 0xff) as i32 - 127) as f32) }
+        #[inline(always)] pub fn mantissa(self) -> F8 { self.map(|v| f32::from_bits((v.to_bits() & 0x007f_ffff) | 0x3f80_0000)) }
+        #[inline(always)] pub fn select_gt(self, o: F8, a: F8, b: F8) -> F8 { let mut r = [0f32; 8]; for i in 0..8 { r[i] = if self.0[i] > o.0[i] { a.0[i] } else { b.0[i] }; } F8(r) }
     }
 }
 pub use imp::F8;
@@ -119,17 +141,32 @@ const LN2: f32 = 0.693_147_18_f32;
     let p = ((((((0.001_388_889 * r + 0.008_333_334) * r + 0.041_666_668) * r + 0.166_666_67) * r + 0.5) * r + 1.0) * r) + 1.0;
     f32::from_bits(((k as i32 + 127) << 23) as u32) * p
 }
-/// ln(x) for x > 0, ~1e-7 relative, no libm.
+/// ln on 8 lanes (x > 0, normal), ~1e-7 relative; same operations as `fln`.
+#[inline(always)] pub fn ln8(x: F8) -> F8 {
+    let e0 = x.exponent(); let m0 = x.mantissa();                                 // [1, 2)
+    let thr = F8::splat(1.414_213_6);
+    let m = m0.select_gt(thr, m0.mul(F8::splat(0.5)), m0);                        // [0.707, 1.414)
+    let e = m0.select_gt(thr, e0.add(F8::splat(1.0)), e0);
+    let one = F8::splat(1.0);
+    let t = m.sub(one).div(m.add(one));                                           // |t| <= 0.172
+    let t2 = t.mul(t);
+    let s = F8::splat(0.181_818_18).mul(t2).add(F8::splat(0.222_222_22)).mul(t2).add(F8::splat(0.285_714_3)).mul(t2)
+        .add(F8::splat(0.4)).mul(t2).add(F8::splat(0.666_666_7)).mul(t2).add(F8::splat(2.0)).mul(t);
+    e.mul(F8::splat(LN2)).add(s)
+}
+/// Scalar twin of `ln8`.
 #[inline] pub fn fln(x: f32) -> f32 {
     let bits = x.to_bits();
-    let mut e = ((bits >> 23) & 0xff) as i32 - 127;
-    let mut m = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);   // [1, 2)
-    if m > 1.414_213_6 { m *= 0.5; e += 1; }                               // [0.707, 1.414)
-    let t = (m - 1.0) / (m + 1.0);                                          // |t| <= 0.172
+    let mut e = (((bits >> 23) & 0xff) as i32 - 127) as f32;
+    let mut m = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);
+    if m > 1.414_213_6 { m *= 0.5; e += 1.0; }
+    let t = (m - 1.0) / (m + 1.0);
     let t2 = t * t;
-    let s = t * (2.0 + t2 * (0.666_666_7 + t2 * (0.4 + t2 * (0.285_714_3 + t2 * (0.222_222_22 + t2 * 0.181_818_18)))));
-    e as f32 * LN2 + s
+    let s = (((((0.181_818_18 * t2 + 0.222_222_22) * t2 + 0.285_714_3) * t2 + 0.4) * t2 + 0.666_666_7) * t2 + 2.0) * t;
+    e * LN2 + s
 }
+/// softplus(x) = max(x,0) + ln(1 + exp(-|x|)) on 8 lanes
+#[inline(always)] pub fn softplus8(x: F8) -> F8 { x.max(F8::zero()).add(ln8(F8::splat(1.0).add(exp8(x.abs().neg())))) }
 #[inline(always)] pub fn sigmoid8(x: F8) -> F8 { recip8(F8::splat(1.0).add(exp8(x.neg()))) }
 /// 1/x lane-wise; IEEE division is exact, so identical everywhere.
 #[inline(always)] pub fn recip8(x: F8) -> F8 { F8::splat(1.0).div(x) }
@@ -209,4 +246,54 @@ const LN2: f32 = 0.693_147_18_f32;
     let mut tmp = [0i32; 8]; i = 0;
     while i < n { F8::load(&x[i..]).mul(inv).round().to_i32(&mut tmp); for l in 0..8 { q[i + l] = tmp[l] as i8; } i += 8; }
     amax / 127.0
+}
+
+/// acc += p0 * v0 + p1 * v1 with two independent chains (fixed order: (acc + p0*v0) + p1*v1).
+#[inline] pub fn axpy2(acc: &mut [f32], p0: f32, v0: &[f32], p1: f32, v1: &[f32]) {
+    let n = acc.len(); debug_assert!(n % 8 == 0);
+    let (a, b) = (F8::splat(p0), F8::splat(p1)); let mut i = 0;
+    while i < n { F8::load(&acc[i..]).add(a.mul(F8::load(&v0[i..]))).add(b.mul(F8::load(&v1[i..]))).store(&mut acc[i..]); i += 8; }
+}
+
+/// Exact int8 dot products of one query against many keys: out[j] = (q . k_j) as f32 * (sq * ks[j]) * scale.
+/// Key length must be a multiple of 16.
+#[inline] pub fn qdots(q: &[i8], sq: f32, keys: &[i8], ks: &[f32], scale: f32, out: &mut [f32]) {
+    let d = q.len(); debug_assert!(d % 16 == 0);
+    #[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
+    { unsafe { qdots_neon(q, sq, keys, ks, scale, out) }; return; }
+    #[allow(unreachable_code)]
+    for (j, k) in keys.chunks_exact(d).enumerate().take(out.len()) {
+        let mut acc = [0i32; 4];
+        for (c, qc) in k.chunks_exact(4).zip(q.chunks_exact(4)) { for l in 0..4 { acc[l] += c[l] as i32 * qc[l] as i32; } }
+        out[j] = ((acc[0] + acc[1]) + (acc[2] + acc[3])) as f32 * (sq * ks[j]) * scale;
+    }
+}
+#[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn qdots_neon(q: &[i8], sq: f32, keys: &[i8], ks: &[f32], scale: f32, out: &mut [f32]) {
+    use std::arch::aarch64::*;
+    let d = q.len(); let m = out.len(); let kp = keys.as_ptr(); let qp = q.as_ptr();
+    let mut j = 0;
+    while j + 4 <= m {
+        let (k0, k1, k2, k3) = (kp.add(j * d), kp.add((j + 1) * d), kp.add((j + 2) * d), kp.add((j + 3) * d));
+        let (mut a0, mut a1, mut a2, mut a3) = (vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0));
+        let mut i = 0;
+        while i < d {
+            let qv = vld1q_s8(qp.add(i));
+            a0 = crate::sdot(a0, vld1q_s8(k0.add(i)), qv); a1 = crate::sdot(a1, vld1q_s8(k1.add(i)), qv);
+            a2 = crate::sdot(a2, vld1q_s8(k2.add(i)), qv); a3 = crate::sdot(a3, vld1q_s8(k3.add(i)), qv);
+            i += 16;
+        }
+        *out.get_unchecked_mut(j) = vaddvq_s32(a0) as f32 * (sq * ks[j]) * scale;
+        *out.get_unchecked_mut(j + 1) = vaddvq_s32(a1) as f32 * (sq * ks[j + 1]) * scale;
+        *out.get_unchecked_mut(j + 2) = vaddvq_s32(a2) as f32 * (sq * ks[j + 2]) * scale;
+        *out.get_unchecked_mut(j + 3) = vaddvq_s32(a3) as f32 * (sq * ks[j + 3]) * scale;
+        j += 4;
+    }
+    while j < m {
+        let k0 = kp.add(j * d); let mut a0 = vdupq_n_s32(0); let mut i = 0;
+        while i < d { a0 = crate::sdot(a0, vld1q_s8(k0.add(i)), vld1q_s8(qp.add(i))); i += 16; }
+        *out.get_unchecked_mut(j) = vaddvq_s32(a0) as f32 * (sq * ks[j]) * scale;
+        j += 1;
+    }
 }

@@ -30,7 +30,7 @@ fn main() {
         }
         Some("bpb") => {
             let toks = ids(&a[2]); let nbytes: f64 = a[3].parse().unwrap();
-            let (ctx, stride) = (slm::CTX, slm::CTX / 2);
+            let (ctx, stride) = (slm::CTX, env::var("SLM_STRIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(slm::CTX / 2));
             let mut m = slm::Model::new(&w);
             let mut bits = 16f64; let mut scored = 0usize; let t0 = Instant::now(); let mut hash = 0xcbf29ce484222325u64;
             let mut start = 0;
@@ -42,7 +42,7 @@ fn main() {
                     m.step(toks[i]);
                     for &l in &m.logits { hash = (hash ^ l.to_bits() as u64).wrapping_mul(0x100000001b3); }
                     let k = i - start;
-                    if k + 1 >= first && i + 1 < end { bits += -(slm::prof::t(11, || slm::log_prob(&m.logits, toks[i + 1] as usize)) as f64) / 2f64.ln(); scored += 1; }
+                    if k + 1 >= first && i + 1 < end { bits += -(slm::prof::t(7, || slm::log_prob(&m.logits, toks[i + 1] as usize)) as f64) / 2f64.ln(); scored += 1; }
                 }
                 if end == toks.len() { break; }
                 start += stride;
@@ -50,9 +50,24 @@ fn main() {
             let dt = t0.elapsed().as_secs_f64();
             slm::prof::report();
             println!("logits hash {hash:016x}");
-            println!("tokens {}  scored {scored}  bits per byte {:.4}  ({:.0} tok/s, {:.1} KB/s)", toks.len(), bits / nbytes, (end_steps(toks.len(), ctx, stride)) as f64 / dt, end_steps(toks.len(), ctx, stride) as f64 / dt * nbytes / toks.len() as f64 / 1000.0);
+            println!("tokens {}  scored {scored}  bits per byte {:.4}  ({:.0} tok/s, {:.1} KB/s, {} threads)", toks.len(), bits / nbytes, (end_steps(toks.len(), ctx, stride)) as f64 / dt, nbytes / dt / 1000.0, m.threads());
         }
-        _ => eprintln!("usage: slmcli check | slmcli bpb <ids.bin> <nbytes>"),
+        Some("micro") => {
+            // hot-cache int8 matvec throughput per matrix shape
+            let l = &w.layers[0];
+            let mut x = slm::QVec::zero(); let xs: Vec<f32> = (0..slm::FF).map(|i| ((i * 37) % 101) as f32 / 50.0 - 1.0).collect();
+            let mut out = vec![0f32; slm::V];
+            let mats: Vec<(&str, &slm::QMat)> = vec![("gu 704x144", &l.gu), ("down 144x352", &l.down), ("wte 4096x144", &w.wte),
+                ("gdn proj 1008x144", match &l.mixer { slm::Mixer::Gdn(g) => &g.proj, _ => unreachable!() })];
+            for (name, m) in mats {
+                x.set(&xs[..m.n_in]);
+                let iters = 20000; let t0 = Instant::now();
+                for _ in 0..iters { slm::qmatvec(m, &x, &mut out[..m.n_out]); std::hint::black_box(&out); }
+                let dt = t0.elapsed().as_secs_f64() / iters as f64;
+                println!("{name:>20}: {:7.0} ns  {:5.1} GMAC/s  {:5.1} GB/s weights", dt * 1e9, (m.n_in * m.n_out) as f64 / dt / 1e9, (m.n_in * m.n_out) as f64 / dt / 1e9);
+            }
+        }
+        _ => eprintln!("usage: slmcli check | slmcli bpb <ids.bin> <nbytes> | slmcli micro"),
     }
 }
 /// number of model steps the windowed pass performs (windows overlap by ctx-stride)

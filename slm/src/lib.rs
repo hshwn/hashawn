@@ -10,7 +10,9 @@
 #![allow(clippy::needless_range_loop)]
 
 pub mod simd;
+pub mod pool;
 use simd::{F8, fexp, fln, dot, dots, axpy};
+use pool::{Pool, Shelf, split};
 
 pub const V: usize = 4096;
 pub const H: usize = 144;        // hidden
@@ -29,16 +31,16 @@ pub const fn is_attn(l: usize) -> bool { (l + 1) % 4 == 0 }
 
 /// Section timers (feature `prof`): zero cost when off.
 pub mod prof {
-    pub const NAMES: [&str; 18] = ["attn_res", "rmsnorm", "gdn_proj", "gdn_conv", "gdn_state", "gdn_o", "attn_proj", "attn_scores", "attn_o", "mlp", "lm_head", "log_prob", "att_dots", "att_exp", "att_val", "gdn_coef", "gdn_erase", "gdn_upd"];
-    #[cfg(feature = "prof")] pub static ACC: [std::sync::atomic::AtomicU64; 18] = [const { std::sync::atomic::AtomicU64::new(0) }; 18];
-    #[cfg(feature = "prof")] pub static CNT: [std::sync::atomic::AtomicU64; 18] = [const { std::sync::atomic::AtomicU64::new(0) }; 18];
+    pub const NAMES: [&str; 8] = ["gdn_head", "attn_head", "o_proj", "serial", "mlp_gu", "mlp_down", "lm_head", "log_prob"];
+    #[cfg(feature = "prof")] pub static ACC: [std::sync::atomic::AtomicU64; 8] = [const { std::sync::atomic::AtomicU64::new(0) }; 8];
+    #[cfg(feature = "prof")] pub static CNT: [std::sync::atomic::AtomicU64; 8] = [const { std::sync::atomic::AtomicU64::new(0) }; 8];
     #[inline(always)] pub fn t<R>(i: usize, f: impl FnOnce() -> R) -> R {
         #[cfg(feature = "prof")] { let t0 = std::time::Instant::now(); let r = f(); ACC[i].fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); CNT[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed); r }
         #[cfg(not(feature = "prof"))] { let _ = i; f() }
     }
     pub fn report() {
         #[cfg(feature = "prof")] {
-            let tot: u64 = ACC[..12].iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).sum();
+            let tot: u64 = ACC[..7].iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).sum();
             for i in 0..NAMES.len() { let a = ACC[i].load(std::sync::atomic::Ordering::Relaxed); let c = CNT[i].load(std::sync::atomic::Ordering::Relaxed); if c > 0 { eprintln!("{:>12} {:6.1}%  {:8.0} ns/call  x{}", NAMES[i], 100.0 * a as f64 / tot as f64, a as f64 / c as f64, c); } }
         }
     }
@@ -47,7 +49,6 @@ pub mod prof {
 // ---------------------------------------------------------------------------
 // small maths
 // ---------------------------------------------------------------------------
-#[inline] fn softplus(x: f32) -> f32 { x.max(0.0) + fln(1.0 + fexp(-x.abs())) }
 #[inline] fn rms(x: &[f32], eps: f32) -> f32 { 1.0 / (dot(x, x) / x.len() as f32 + eps).sqrt() }
 #[inline] fn rmsnorm(x: &[f32], w: &[f32], out: &mut [f32]) { simd::scale_mul(x, rms(x, RMS_EPS), w, out); }
 #[inline] fn offset_rmsnorm(x: &mut [f32], w1: &[f32] /* 1 + w */) { let r = rms(x, RMS_EPS); let mut t = [0f32; HD]; simd::scale_mul(x, r, w1, &mut t); x.copy_from_slice(&t); }
@@ -83,20 +84,23 @@ impl QVec {
 }
 
 /// out[r] = (sum_i w[r][i] * x[i]) * (x.scale * w.scale[r]); the i32 sum is exact in every path.
-#[inline] pub fn qmatvec(m: &QMat, x: &QVec, out: &mut [f32]) {
-    debug_assert_eq!(x.n, m.n_in);
+#[inline] pub fn qmatvec(m: &QMat, x: &QVec, out: &mut [f32]) { qmatvec_rows(m, x, 0, m.n_out, out) }
+/// Rows [r0, r1) of the product into out[0..r1-r0]. Each row's result is independent of who computes it.
+#[inline] pub fn qmatvec_rows(m: &QMat, x: &QVec, r0: usize, r1: usize, out: &mut [f32]) {
+    debug_assert_eq!(x.n, m.n_in); debug_assert!(r1 <= m.n_out && out.len() >= r1 - r0);
     #[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
     {
-        if neon_dotprod() { unsafe { qmatvec_neon(m, x, out) }; return; }
+        if neon_dotprod() { unsafe { qmatvec_neon(m, x, r0, r1, out) }; return; }
     }
-    qmatvec_scalar(m, x, out)
+    qmatvec_scalar(m, x, r0, r1, out)
 }
-fn qmatvec_scalar(m: &QMat, x: &QVec, out: &mut [f32]) {
+fn qmatvec_scalar(m: &QMat, x: &QVec, r0: usize, r1: usize, out: &mut [f32]) {
     let n = m.n_in;
-    for (r, row) in m.w.chunks_exact(n).enumerate() {
+    for r in r0..r1 {
+        let row = &m.w[r * n..(r + 1) * n];
         let mut acc = [0i32; 4];
         for (c, xc) in row.chunks_exact(4).zip(x.q[..n].chunks_exact(4)) { for l in 0..4 { acc[l] += c[l] as i32 * xc[l] as i32; } }
-        out[r] = ((acc[0] + acc[1]) + (acc[2] + acc[3])) as f32 * (x.scale * m.scale[r]);
+        out[r - r0] = ((acc[0] + acc[1]) + (acc[2] + acc[3])) as f32 * (x.scale * m.scale[r]);
     }
 }
 #[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
@@ -107,39 +111,35 @@ fn neon_dotprod() -> bool {
 /// `sdot`: 16 int8 products summed into 4 int32 lanes. The intrinsic is nightly-only, the instruction is not.
 #[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
 #[inline(always)]
-unsafe fn sdot(acc: std::arch::aarch64::int32x4_t, a: std::arch::aarch64::int8x16_t, b: std::arch::aarch64::int8x16_t) -> std::arch::aarch64::int32x4_t {
+pub(crate) unsafe fn sdot(acc: std::arch::aarch64::int32x4_t, a: std::arch::aarch64::int8x16_t, b: std::arch::aarch64::int8x16_t) -> std::arch::aarch64::int32x4_t {
     let mut r = acc;
     std::arch::asm!("sdot {r:v}.4s, {a:v}.16b, {b:v}.16b", r = inout(vreg) r, a = in(vreg) a, b = in(vreg) b, options(pure, nomem, nostack));
     r
 }
 #[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
 #[target_feature(enable = "neon,dotprod")]
-unsafe fn qmatvec_neon(m: &QMat, x: &QVec, out: &mut [f32]) {
+unsafe fn qmatvec_neon(m: &QMat, x: &QVec, r0: usize, r1: usize, out: &mut [f32]) {
     use std::arch::aarch64::*;
-    let n = m.n_in; let xs = x.q.as_ptr(); let w = m.w.as_ptr();
-    let mut r = 0;
-    while r + 4 <= m.n_out {
-        let (w0, w1, w2, w3) = (w.add(r * n), w.add((r + 1) * n), w.add((r + 2) * n), w.add((r + 3) * n));
-        let (mut a0, mut a1, mut a2, mut a3) = (vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0));
+    let n = m.n_in; let xs = x.q.as_ptr(); let w = m.w.as_ptr(); let xsc = x.scale;
+    let out = out.as_mut_ptr().sub(r0);   // so out[r] addresses row r
+    let mut r = r0;
+    // eight rows in flight: eight independent sdot chains hide the ~3-cycle sdot latency
+    while r + 8 <= r1 {
+        let base = w.add(r * n);
+        let mut acc = [vdupq_n_s32(0); 8];
         let mut i = 0;
         while i < n {
             let xv = vld1q_s8(xs.add(i));
-            a0 = sdot(a0, vld1q_s8(w0.add(i)), xv);
-            a1 = sdot(a1, vld1q_s8(w1.add(i)), xv);
-            a2 = sdot(a2, vld1q_s8(w2.add(i)), xv);
-            a3 = sdot(a3, vld1q_s8(w3.add(i)), xv);
+            for l in 0..8 { acc[l] = sdot(acc[l], vld1q_s8(base.add(l * n + i)), xv); }
             i += 16;
         }
-        *out.get_unchecked_mut(r) = vaddvq_s32(a0) as f32 * (x.scale * m.scale[r]);
-        *out.get_unchecked_mut(r + 1) = vaddvq_s32(a1) as f32 * (x.scale * m.scale[r + 1]);
-        *out.get_unchecked_mut(r + 2) = vaddvq_s32(a2) as f32 * (x.scale * m.scale[r + 2]);
-        *out.get_unchecked_mut(r + 3) = vaddvq_s32(a3) as f32 * (x.scale * m.scale[r + 3]);
-        r += 4;
+        for l in 0..8 { *out.add(r + l) = vaddvq_s32(acc[l]) as f32 * (xsc * m.scale[r + l]); }
+        r += 8;
     }
-    while r < m.n_out {
+    while r < r1 {
         let w0 = w.add(r * n); let mut a0 = vdupq_n_s32(0); let mut i = 0;
         while i < n { a0 = sdot(a0, vld1q_s8(w0.add(i)), vld1q_s8(xs.add(i))); i += 16; }
-        *out.get_unchecked_mut(r) = vaddvq_s32(a0) as f32 * (x.scale * m.scale[r]);
+        *out.add(r) = vaddvq_s32(a0) as f32 * (xsc * m.scale[r]);
         r += 1;
     }
 }
@@ -149,7 +149,7 @@ unsafe fn qmatvec_neon(m: &QMat, x: &QVec, out: &mut [f32]) {
 // ---------------------------------------------------------------------------
 pub struct AttnRes { pub q: Vec<f32> /* query * key_norm_weight */ }
 pub struct Gdn {
-    pub proj: QMat,   // rows: q(H) k(H) v(H) f(H) b(H) w(H) g(H)
+    pub proj: QMat,   // head-major rows: for each head [q k v f b w g] x HD  (7*HD = 336 rows per head)
     pub g_bias: Vec<f32>, pub conv_q: Vec<f32>, pub conv_k: Vec<f32>, pub conv_v: Vec<f32>,   // conv: [CONV][H] (tap-major)
     pub a_log: Vec<f32>, pub dt_bias: Vec<f32>, pub o_norm: Vec<f32>, pub o: QMat,
 }
@@ -185,8 +185,10 @@ impl Weights {
             } else {
                 let k = format!("{p}.attn.kernel");
                 let parts = ["q", "k", "v", "f", "b", "w", "g"].map(|n| get(&format!("{k}.{n}_proj.weight")));
+                let mut hm = Vec::with_capacity(7 * H * H);
+                for hh in 0..NH { for p in &parts { hm.extend_from_slice(&p[hh * HD * H..(hh + 1) * HD * H]); } }
                 Mixer::Gdn(Gdn {
-                    proj: QMat::concat(&parts.iter().map(|v| v.as_slice()).collect::<Vec<_>>(), H),
+                    proj: QMat::from_f32(&hm, H),
                     g_bias: get(&format!("{k}.g_proj.bias")),
                     conv_q: conv(&format!("{k}.q_conv1d.weight")), conv_k: conv(&format!("{k}.k_conv1d.weight")), conv_v: conv(&format!("{k}.v_conv1d.weight")),
                     a_log: get(&format!("{k}.A_log")), dt_bias: get(&format!("{k}.dt_bias")), o_norm: get(&format!("{k}.o_norm.weight")),
@@ -202,31 +204,42 @@ impl Weights {
 // ---------------------------------------------------------------------------
 // streaming state
 // ---------------------------------------------------------------------------
-struct GdnState { conv_q: [[f32; H]; CONV - 1], conv_k: [[f32; H]; CONV - 1], conv_v: [[f32; H]; CONV - 1], s: Vec<f32> /* NH*HD*HD */ }
-struct AttnState { kc: Vec<f32>, vc: Vec<f32>, n: usize }   // caches [n][HD]
-enum MixState { Gdn(GdnState), Attn(AttnState) }
+pub const GP: usize = 7 * HD;   // GDN projection rows per head
+struct GdnState { conv: Vec<f32> /* [3 inputs][CONV-1 taps][H] */, s: Vec<f32> /* [NH][HD][HD] */ }
+/// One head's own copy of the attention cache (every thread appends the same k, v: no sharing needed).
+struct AttnHead { kq: Vec<i8>, ks: Vec<f32>, vc: Vec<f32>, n: usize }
+enum MixState { Gdn(GdnState), Attn(Vec<AttnHead>) }
+/// Per-head scratch owned by whichever thread runs that head.
+struct HeadScratch { p: Vec<f32>, sc: Vec<f32> }
 
 pub struct Model<'a> {
     w: &'a Weights,
     st: Vec<MixState>,
     pos: usize,
+    pool: Pool,
     src: Vec<[f32; H]>, src_r: Vec<f32>,
-    xq: QVec, sc: Vec<f32>,
+    xq: QVec,
+    heads: Vec<HeadScratch>,
+    mix: Vec<f32>, y: Vec<f32>, gu: Vec<f32>,
     pub logits: Vec<f32>,
 }
 
 impl<'a> Model<'a> {
-    pub fn new(w: &'a Weights) -> Model<'a> {
-        let mut m = Model { w, st: Vec::new(), pos: 0, src: Vec::with_capacity(2 * NL + 1), src_r: Vec::with_capacity(2 * NL + 1), xq: QVec::zero(), sc: vec![0f32; CTX + 8], logits: vec![0f32; V] };
+    pub fn new(w: &'a Weights) -> Model<'a> { Model::with_threads(w, std::env::var("SLM_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(NH)) }
+    pub fn with_threads(w: &'a Weights, threads: usize) -> Model<'a> {
+        let mut m = Model { w, st: Vec::new(), pos: 0, pool: Pool::new(threads), src: Vec::with_capacity(2 * NL + 1), src_r: Vec::with_capacity(2 * NL + 1), xq: QVec::zero(),
+            heads: (0..NH).map(|_| HeadScratch { p: vec![0f32; GP], sc: vec![0f32; CTX + 8] }).collect(),
+            mix: vec![0f32; H], y: vec![0f32; H], gu: vec![0f32; 2 * FF], logits: vec![0f32; V] };
         m.reset();
         m
     }
+    pub fn threads(&self) -> usize { self.pool.threads() }
     /// Forget everything (start of a new context window).
     pub fn reset(&mut self) {
         self.st.clear(); self.pos = 0;
         for l in 0..NL {
-            self.st.push(if is_attn(l) { MixState::Attn(AttnState { kc: Vec::with_capacity(CTX * HD), vc: Vec::with_capacity(CTX * HD), n: 0 }) }
-                else { MixState::Gdn(GdnState { conv_q: [[0.0; H]; CONV - 1], conv_k: [[0.0; H]; CONV - 1], conv_v: [[0.0; H]; CONV - 1], s: vec![0f32; NH * HD * HD] }) });
+            self.st.push(if is_attn(l) { MixState::Attn((0..NH).map(|_| AttnHead { kq: Vec::with_capacity(CTX * HD), ks: Vec::with_capacity(CTX), vc: Vec::with_capacity(CTX * HD), n: 0 }).collect()) }
+                else { MixState::Gdn(GdnState { conv: vec![0f32; 3 * (CONV - 1) * H], s: vec![0f32; NH * HD * HD] }) });
         }
     }
     pub fn pos(&self) -> usize { self.pos }
@@ -243,133 +256,146 @@ impl<'a> Model<'a> {
         *out = [0f32; H];
         for s in 0..n { axpy(out, lg[s] * inv, &self.src[s]); }
     }
-    fn push_src(&mut self, v: [f32; H]) { self.src_r.push(rms(&v, ATTN_RES_EPS)); self.src.push(v); }
+    fn push_src(&mut self, v: &[f32]) { let mut a = [0f32; H]; a.copy_from_slice(v); self.src_r.push(rms(&a, ATTN_RES_EPS)); self.src.push(a); }
 
     /// Feed one token; `self.logits` then holds the next-token logits. Panics past CTX tokens: reset first.
     pub fn step(&mut self, tok: u32) {
         assert!(self.pos < CTX, "context full: call reset()");
-        let w = self.w;
+        let w = self.w; let t = self.pool.threads(); let pos = self.pos;
         self.src.clear(); self.src_r.clear();
         let mut x = [0f32; H]; w.wte.row_f32(tok as usize, &mut x);
-        self.push_src(x);
+        self.push_src(&x);
         let mut h = [0f32; H]; let mut hn = [0f32; H];
+        let (mix, y, gu, logits) = (Shelf::new(&mut self.mix), Shelf::new(&mut self.y), Shelf::new(&mut self.gu), Shelf::new(&mut self.logits));
+        let heads = Shelf::new(&mut self.heads);
         for l in 0..NL {
             let lw = &w.layers[l];
-            prof::t(0, || self.attn_res(&lw.res1, &mut h));
-            prof::t(1, || rmsnorm(&h, &lw.ln1, &mut hn));
-            self.xq.set(&hn);
-            let out = match (&lw.mixer, &mut self.st[l]) {
-                (Mixer::Gdn(g), MixState::Gdn(s)) => gdn_step(g, s, &self.xq),
-                (Mixer::Attn(a), MixState::Attn(s)) => attn_step(a, s, &self.xq, self.pos, &w.rope_cos, &w.rope_sin, &mut self.sc),
+            prof::t(3, || { self.attn_res(&lw.res1, &mut h); rmsnorm(&h, &lw.ln1, &mut hn); self.xq.set(&hn); });
+            let xq = &self.xq;
+            // phase A: one head per thread (threads beyond NH idle here)
+            match (&lw.mixer, &mut self.st[l]) {
+                (Mixer::Gdn(g), MixState::Gdn(s)) => {
+                    let (conv, st) = (Shelf::new(&mut s.conv), Shelf::new(&mut s.s));
+                    prof::t(0, || self.pool.run(&|tid| { let mut hh = tid; while hh < NH { unsafe { gdn_head(g, hh, xq, conv, st, &mut heads.range(hh, hh + 1)[0], mix.range(hh * HD, (hh + 1) * HD)) }; hh += t; } }));
+                }
+                (Mixer::Attn(a), MixState::Attn(hs)) => {
+                    let hs = Shelf::new(hs);
+                    prof::t(1, || self.pool.run(&|tid| { let mut hh = tid; while hh < NH { unsafe { attn_head(a, hh, xq, pos, &w.rope_cos, &w.rope_sin, &mut hs.range(hh, hh + 1)[0], &mut heads.range(hh, hh + 1)[0], mix.range(hh * HD, (hh + 1) * HD)) }; hh += t; } }));
+                }
                 _ => unreachable!(),
-            };
-            self.push_src(out);
-            prof::t(0, || self.attn_res(&lw.res2, &mut h));
-            prof::t(1, || rmsnorm(&h, &lw.ln2, &mut hn));
-            self.xq.set(&hn);
-            let y = prof::t(9, || {
-                let mut gu = [0f32; 2 * FF]; qmatvec(&lw.gu, &self.xq, &mut gu);
-                let (g, u) = gu.split_at_mut(FF);
+            }
+            // phase B: output projection, rows split
+            let o = match &lw.mixer { Mixer::Gdn(g) => &g.o, Mixer::Attn(a) => &a.o };
+            prof::t(2, || self.pool.run(&|tid| { let mut q = QVec::zero(); q.set(mix.all()); let (a, b) = split(H, t, tid, 8); if a < b { qmatvec_rows(o, &q, a, b, unsafe { y.range(a, b) }); } }));
+            prof::t(3, || { let yv: [f32; H] = y.all().try_into().unwrap(); self.push_src(&yv); self.attn_res(&lw.res2, &mut h); rmsnorm(&h, &lw.ln2, &mut hn); self.xq.set(&hn); });
+            let xq = &self.xq;
+            // phase C: gate/up rows split over the FF axis, silu(g)*u for the same range
+            prof::t(4, || self.pool.run(&|tid| {
+                let (a, b) = split(FF, t, tid, 8); if a >= b { return; }
+                let g = unsafe { gu.range(a, b) }; qmatvec_rows(&lw.gu, xq, a, b, g);
+                let u = unsafe { gu.range(FF + a, FF + b) }; qmatvec_rows(&lw.gu, xq, FF + a, FF + b, u);
                 simd::silu_inplace(g);
-                let mut i = 0; while i < FF { F8::load(&g[i..]).mul(F8::load(&u[i..])).store(&mut g[i..]); i += 8; }
-                let mut q = QVec::zero(); q.set(g);
-                let mut y = [0f32; H]; qmatvec(&lw.down, &q, &mut y); y
-            });
-            self.push_src(y);
+                let mut i = 0; while i < b - a { F8::load(&g[i..]).mul(F8::load(&u[i..])).store(&mut g[i..]); i += 8; }
+            }));
+            // phase D: down projection, rows split
+            prof::t(5, || self.pool.run(&|tid| { let mut q = QVec::zero(); q.set(&gu.all()[..FF]); let (a, b) = split(H, t, tid, 8); if a < b { qmatvec_rows(&lw.down, &q, a, b, unsafe { y.range(a, b) }); } }));
+            let yv: [f32; H] = y.all().try_into().unwrap(); self.push_src(&yv);
         }
-        prof::t(0, || self.attn_res(&w.res_f, &mut h));
-        prof::t(1, || rmsnorm(&h, &w.ln_f, &mut hn));
-        self.xq.set(&hn);
-        prof::t(10, || qmatvec(&w.wte, &self.xq, &mut self.logits));
+        prof::t(3, || { self.attn_res(&w.res_f, &mut h); rmsnorm(&h, &w.ln_f, &mut hn); self.xq.set(&hn); });
+        let xq = &self.xq;
+        prof::t(6, || self.pool.run(&|tid| { let (a, b) = split(V, t, tid, 8); if a < b { qmatvec_rows(&w.wte, xq, a, b, unsafe { logits.range(a, b) }); } }));
         self.pos += 1;
     }
 }
 
-/// depthwise causal conv over [x_{t-3}, x_{t-2}, x_{t-1}, x_t] (taps cw[j*H + c]), then SiLU
-fn short_conv(cw: &[f32], state: &mut [[f32; H]; CONV - 1], x: &[f32]) -> [f32; H] {
-    let mut y = [0f32; H];
-    let mut i = 0;
-    while i < H {
-        let mut s = F8::load(&cw[3 * H + i..]).mul(F8::load(&x[i..]));
-        for j in 0..CONV - 1 { s = s.add(F8::load(&cw[j * H + i..]).mul(F8::load(&state[j][i..]))); }
-        s.store(&mut y[i..]);
-        i += 8;
+/// depthwise causal conv over [x_{t-3}, x_{t-2}, x_{t-1}, x_t] for channels [r, r+HD), taps cw[j*H + c], then SiLU.
+/// `state` is this input's [CONV-1][H] history (only the head's channels are touched).
+#[inline] fn short_conv(cw: &[f32], state: &mut [f32], r: usize, x: &[f32], y: &mut [f32]) {
+    let mut c = 0;
+    while c < HD {
+        let mut s = F8::load(&cw[3 * H + r + c..]).mul(F8::load(&x[c..]));
+        for j in 0..CONV - 1 { s = s.add(F8::load(&cw[j * H + r + c..]).mul(F8::load(&state[j * H + r + c..]))); }
+        s.store(&mut y[c..]);
+        c += 8;
     }
-    simd::silu_inplace(&mut y);
-    state[0] = state[1]; state[1] = state[2]; state[2].copy_from_slice(x);
-    y
+    simd::silu_inplace(y);
+    for j in 0..CONV - 2 { let (lo, hi) = state.split_at_mut((j + 1) * H); lo[j * H + r..j * H + r + HD].copy_from_slice(&hi[r..r + HD]); }
+    state[(CONV - 2) * H + r..(CONV - 2) * H + r + HD].copy_from_slice(x);
 }
 
-fn gdn_step(g: &Gdn, s: &mut GdnState, x: &QVec) -> [f32; H] {
-    let mut p = [0f32; 7 * H];
-    prof::t(2, || qmatvec(&g.proj, x, &mut p));
-    let (qi, rest) = p.split_at(H); let (ki, rest) = rest.split_at(H); let (vi, rest) = rest.split_at(H);
-    let (gg, rest) = rest.split_at(H); let (bb, rest) = rest.split_at(H); let (ww, gate) = rest.split_at(H);
-    let (mut q, mut k, v) = prof::t(3, || (short_conv(&g.conv_q, &mut s.conv_q, qi), short_conv(&g.conv_k, &mut s.conv_k, ki), short_conv(&g.conv_v, &mut s.conv_v, vi)));
+/// One GDN head for one token: projections for this head, conv, gates, the delta-rule state update, gated norm -> out[0..HD].
+unsafe fn gdn_head(g: &Gdn, hh: usize, x: &QVec, conv: Shelf<f32>, st: Shelf<f32>, hs: &mut HeadScratch, out: &mut [f32]) {
+    let r = hh * HD;
+    let p = &mut hs.p[..];
+    qmatvec_rows(&g.proj, x, hh * GP, (hh + 1) * GP, p);
+    let (qi, rest) = p.split_at_mut(HD); let (ki, rest) = rest.split_at_mut(HD); let (vi, rest) = rest.split_at_mut(HD);
+    let (gg, rest) = rest.split_at_mut(HD); let (bb, rest) = rest.split_at_mut(HD); let (ww, gate) = rest.split_at_mut(HD);
+    let (mut q, mut k, mut v) = ([0f32; HD], [0f32; HD], [0f32; HD]);
+    let cs = conv.range(0, 3 * (CONV - 1) * H);
+    let (cq, rest) = cs.split_at_mut((CONV - 1) * H); let (ck, cv) = rest.split_at_mut((CONV - 1) * H);
+    short_conv(&g.conv_q, cq, r, qi, &mut q); short_conv(&g.conv_k, ck, r, ki, &mut k); short_conv(&g.conv_v, cv, r, vi, &mut v);
+    l2norm(&mut q); l2norm(&mut k);
+    let (mut sb, mut sw, mut sg) = ([0f32; HD], [0f32; HD], [0f32; HD]);
+    simd::sigmoid_into(bb, &mut sb); simd::sigmoid_into(ww, &mut sw);
+    { let mut i = 0; while i < HD { F8::load(&gate[i..]).add(F8::load(&g.g_bias[r + i..])).store(&mut gate[i..]); i += 8; } }
+    simd::sigmoid_into(gate, &mut sg);
+    let decay = F8::splat(-fexp(g.a_log[hh]));
     let scale = 1.0 / (HD as f32).sqrt();
-    let mut o = [0f32; H];
-    // gate coefficients for the whole layer at once
-    let mut sb = [0f32; H]; let mut sw = [0f32; H]; let mut sg = [0f32; H];
-    prof::t(15, || { simd::sigmoid_into(bb, &mut sb); simd::sigmoid_into(ww, &mut sw);
-        let mut t = [0f32; H]; let mut i = 0; while i < H { F8::load(&gate[i..]).add(F8::load(&g.g_bias[i..])).store(&mut t[i..]); i += 8; } simd::sigmoid_into(&t, &mut sg); });
-    prof::t(4, || for hh in 0..NH {
-        let r = hh * HD;
-        l2norm(&mut q[r..r + HD]); l2norm(&mut k[r..r + HD]);
-        let decay = -fexp(g.a_log[hh]);
-        let st = &mut s.s[hh * HD * HD..(hh + 1) * HD * HD];     // [k][v]
-        // state *= exp(g) per k row; erase = (b*k)^T state; v_new = w*v - erase; state += k v_new^T; o = (q*scale)^T state
-        let mut dk = [0f32; HD]; let mut bk = [0f32; HD]; let mut wv = [0f32; HD];
-        for kk in 0..HD { dk[kk] = fexp(decay * softplus(gg[r + kk] + g.dt_bias[r + kk])); }
-        for kk in 0..HD { bk[kk] = sb[r + kk] * k[r + kk]; }
-        for vv in 0..HD { wv[vv] = sw[r + vv] * v[r + vv]; }
-        let mut e = [F8::zero(); HD / 8];
-        prof::t(16, || for kk in 0..HD {
-            let (d, b) = (F8::splat(dk[kk]), F8::splat(bk[kk]));
-            let row = &mut st[kk * HD..(kk + 1) * HD];
-            for c in 0..HD / 8 { let rv = F8::load(&row[c * 8..]).mul(d); rv.store(&mut row[c * 8..]); e[c] = e[c].add(b.mul(rv)); }
-        });
-        let mut vn = [F8::zero(); HD / 8]; for c in 0..HD / 8 { vn[c] = F8::load(&wv[c * 8..]).sub(e[c]); }
-        let mut oh = [F8::zero(); HD / 8];
-        prof::t(17, || for kk in 0..HD {
-            let (kv, qs) = (F8::splat(k[r + kk]), F8::splat(q[r + kk] * scale));
-            let row = &mut st[kk * HD..(kk + 1) * HD];
-            for c in 0..HD / 8 { let rv = F8::load(&row[c * 8..]).add(kv.mul(vn[c])); rv.store(&mut row[c * 8..]); oh[c] = oh[c].add(qs.mul(rv)); }
-        });
-        // gated RMSNorm per head
-        let mut ohf = [0f32; HD]; for c in 0..HD / 8 { oh[c].store(&mut ohf[c * 8..]); }
-        let rr = F8::splat(rms(&ohf, GDN_EPS));
-        for c in 0..HD / 8 { oh[c].mul(rr).mul(F8::load(&g.o_norm[c * 8..])).mul(F8::load(&sg[r + c * 8..])).store(&mut o[r + c * 8..]); }
-    });
-    prof::t(5, || { let mut q = QVec::zero(); q.set(&o); let mut y = [0f32; H]; qmatvec(&g.o, &q, &mut y); y })
+    let s = st.range(hh * HD * HD, (hh + 1) * HD * HD);     // [k][v]
+    // state *= exp(g) per k row; erase = (b*k)^T state; v_new = w*v - erase; state += k v_new^T; o = (q*scale)^T state
+    let (mut dk, mut bk, mut wv) = ([0f32; HD], [0f32; HD], [0f32; HD]);
+    for c in 0..HD / 8 {
+        let i = c * 8;
+        simd::exp8(decay.mul(simd::softplus8(F8::load(&gg[i..]).add(F8::load(&g.dt_bias[r + i..]))))).store(&mut dk[i..]);
+        F8::load(&sb[i..]).mul(F8::load(&k[i..])).store(&mut bk[i..]);
+        F8::load(&sw[i..]).mul(F8::load(&v[i..])).store(&mut wv[i..]);
+    }
+    let mut e = [F8::zero(); HD / 8];
+    for kk in 0..HD {
+        let (d, b) = (F8::splat(dk[kk]), F8::splat(bk[kk]));
+        let row = &mut s[kk * HD..(kk + 1) * HD];
+        for c in 0..HD / 8 { let rv = F8::load(&row[c * 8..]).mul(d); rv.store(&mut row[c * 8..]); e[c] = e[c].add(b.mul(rv)); }
+    }
+    let mut vn = [F8::zero(); HD / 8]; for c in 0..HD / 8 { vn[c] = F8::load(&wv[c * 8..]).sub(e[c]); }
+    let mut oh = [F8::zero(); HD / 8];
+    for kk in 0..HD {
+        let (kv, qs) = (F8::splat(k[kk]), F8::splat(q[kk] * scale));
+        let row = &mut s[kk * HD..(kk + 1) * HD];
+        for c in 0..HD / 8 { let rv = F8::load(&row[c * 8..]).add(kv.mul(vn[c])); rv.store(&mut row[c * 8..]); oh[c] = oh[c].add(qs.mul(rv)); }
+    }
+    // gated RMSNorm per head
+    let mut ohf = [0f32; HD]; for c in 0..HD / 8 { oh[c].store(&mut ohf[c * 8..]); }
+    let rr = F8::splat(rms(&ohf, GDN_EPS));
+    for c in 0..HD / 8 { oh[c].mul(rr).mul(F8::load(&g.o_norm[c * 8..])).mul(F8::load(&sg[c * 8..])).store(&mut out[c * 8..]); }
 }
 
-fn attn_step(a: &Attn, s: &mut AttnState, x: &QVec, pos: usize, rope_cos: &[f32], rope_sin: &[f32], sc: &mut [f32]) -> [f32; H] {
-    let mut p = [0f32; 2 * NH * HD + 2 * HD];
-    prof::t(6, || qmatvec(&a.proj, x, &mut p));
-    let (qg, kv) = p.split_at_mut(2 * NH * HD); let (k, v) = kv.split_at_mut(HD);
-    offset_rmsnorm(k, &a.k_norm1);
+/// One attention head for one token. Every head recomputes k and v (96 rows, identical bits) and keeps its own cache copy.
+unsafe fn attn_head(a: &Attn, hh: usize, x: &QVec, pos: usize, rope_cos: &[f32], rope_sin: &[f32], st: &mut AttnHead, hs: &mut HeadScratch, out: &mut [f32]) {
+    let p = &mut hs.p[..];
+    let (qg, rest) = p.split_at_mut(2 * HD); let (k, rest) = rest.split_at_mut(HD); let v = &mut rest[..HD];
+    qmatvec_rows(&a.proj, x, hh * 2 * HD, (hh + 1) * 2 * HD, qg);
+    qmatvec_rows(&a.proj, x, 2 * NH * HD, 2 * NH * HD + HD, k);
+    qmatvec_rows(&a.proj, x, 2 * NH * HD + HD, 2 * NH * HD + 2 * HD, v);
+    let (q, gate) = qg.split_at_mut(HD);
     let rope = |t: &mut [f32]| { for i in 0..ROT / 2 { let (c, sn) = (rope_cos[pos * ROT / 2 + i], rope_sin[pos * ROT / 2 + i]); let (e, o) = (t[2 * i], t[2 * i + 1]); t[2 * i] = e * c - o * sn; t[2 * i + 1] = e * sn + o * c; } };
-    rope(k);
-    s.kc.extend_from_slice(k); s.vc.extend_from_slice(v); s.n += 1;
+    offset_rmsnorm(k, &a.k_norm1); rope(k);
+    let mut kq = [0i8; HD]; let ksc = simd::quantize(k, &mut kq);
+    st.kq.extend_from_slice(&kq); st.ks.push(ksc); st.vc.extend_from_slice(v); st.n += 1;
+    let n = st.n; let n8 = (n + 7) & !7;
+    let sc = &mut hs.sc[..n8];
+    offset_rmsnorm(q, &a.q_norm1); rope(q);
+    let mut qq = [0i8; HD]; let sq = simd::quantize(q, &mut qq);
     let scale = 1.0 / (HD as f32).sqrt();
-    let mut y = [0f32; NH * HD];
-    let n = s.n; let n8 = (n + 7) & !7;
-    let sc = &mut sc[..n8];
-    prof::t(7, || for hh in 0..NH {
-        let (q, gate) = qg[hh * 2 * HD..(hh + 1) * 2 * HD].split_at_mut(HD);
-        offset_rmsnorm(q, &a.q_norm1);
-        rope(q);
-        prof::t(12, || dots(q, &s.kc[..n * HD], scale, &mut sc[..n]));
-        let inv = prof::t(13, || {
-            for j in n..n8 { sc[j] = f32::NEG_INFINITY; }
-            let mx = simd::max(sc);
-            1.0 / simd::exp_sub_sum(sc, mx) });
-        let mut acc = [0f32; HD];
-        prof::t(14, || for (j, vj) in s.vc.chunks_exact(HD).enumerate() { axpy(&mut acc, sc[j] * inv, vj); });
-        let mut gs = [0f32; HD]; simd::sigmoid_into(gate, &mut gs);
-        for i in 0..HD { y[hh * HD + i] = acc[i] * gs[i]; }
-    });
-    prof::t(8, || { let mut q = QVec::zero(); q.set(&y); let mut out = [0f32; H]; qmatvec(&a.o, &q, &mut out); out })
+    simd::qdots(&qq, sq, &st.kq[..n * HD], &st.ks[..n], scale, &mut sc[..n]);
+    for j in n..n8 { sc[j] = f32::NEG_INFINITY; }
+    let mx = simd::max(sc);
+    let inv = 1.0 / simd::exp_sub_sum(sc, mx);
+    let mut acc = [0f32; HD];
+    let mut j = 0;
+    while j + 2 <= n { simd::axpy2(&mut acc, sc[j] * inv, &st.vc[j * HD..], sc[j + 1] * inv, &st.vc[(j + 1) * HD..]); j += 2; }
+    if j < n { axpy(&mut acc, sc[j] * inv, &st.vc[j * HD..(j + 1) * HD]); }
+    let mut gs = [0f32; HD]; simd::sigmoid_into(gate, &mut gs);
+    for i in 0..HD { out[i] = acc[i] * gs[i]; }
 }
 
 /// log-softmax of the logits at index `t` (natural log). Leaves `logits` untouched.
