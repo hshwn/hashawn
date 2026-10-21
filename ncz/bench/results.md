@@ -327,3 +327,21 @@ Header gains a flags byte: 1 = green plane first (red/blue then see all of brigh
 
 Held out: hand-made -1.8%, learned another -0.8%; overall 2.6% under JPEG XL e9 on photos, 9.4% on posters.
 Speed: ~2.7-3.2 MB/s without the nets, ~1 MB/s with them (each net runs for every sample).
+
+### Does a pretrained vision encoder help? (2026-10-21, probe only)
+
+`bench/img/kanana_probe.py`, rig 3090. Setup: coarse-first coding, the quarter image (every second pixel) known, the
+other 3/4 of the samples predicted from it. A small head (64x64 MLP, Laplace mean + scale) gets the 4x4 quarter-image
+neighbourhood; four arms differ only in one extra input, same seed/steps/size. Train COCO (downsampled 2x), test Kodak.
+
+| extra input | Kodak bits per fill-in sample | vs local only |
+|---|---:|---:|
+| A: none (local neighbourhood) | 4.3795 | |
+| B: Kanana-2 vision encoder tiny (98.7M, released 2026-10-21), features of the quarter image | 4.4133 | +0.77% |
+| C: same architecture, random weights | 4.4115 | +0.73% |
+| D: raw 4x4x3 thumbnail of the same block | 4.3781 | -0.03% |
+
+Pretrained features are no better than random ones, and even the raw coarse block adds nothing: the immediate
+neighbours already carry what a 64x64-pixel summary could. Same law as EG2's vision test: these encoders know
+what is in the picture, not how the next pixel value behaves. Not pursued further. (LILIE, a 1.5M-32M invertible
+language-informed encoder, was looked at but not run after this result.)
