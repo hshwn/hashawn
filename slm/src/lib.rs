@@ -82,11 +82,16 @@ impl QMat {
     pub fn row_f32(&self, r: usize, out: &mut [f32]) { let s = self.scale[r]; for i in 0..self.n_in { out[i] = self.w[r * self.n_in + i] as f32 * s; } }
 }
 
+/// Activations are 7-bit, [-63, 63], on every path: that is what makes wasm's relaxed int8 dot product
+/// deterministic (its second operand must fit in 7 bits). Measured cost: +0.1% bytes on Nardo docs.
+pub const ACT_LIM: f32 = 63.0;
+#[inline] pub fn act_lim() -> f32 { ACT_LIM }
+
 /// An activation vector quantised to int8 with one scale.
 pub struct QVec { pub q: [i8; FF], pub n: usize, pub scale: f32 }
 impl QVec {
     pub fn zero() -> QVec { QVec { q: [0; FF], n: 0, scale: 1.0 } }
-    #[inline] pub fn set(&mut self, x: &[f32]) { self.n = x.len(); self.scale = simd::quantize(x, &mut self.q[..x.len()]); }
+    #[inline] pub fn set(&mut self, x: &[f32]) { self.n = x.len(); self.scale = simd::quantize_lim(x, &mut self.q[..x.len()], act_lim()); }
 }
 
 /// out[r] = (sum_i w[r][i] * x[i]) * (x.scale * w.scale[r]); the i32 sum is exact in every path.
@@ -98,36 +103,84 @@ impl QVec {
     {
         if neon_dotprod() { unsafe { qmatvec_neon(m, x, r0, r1, out) }; return; }
     }
-    #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "scalar")))]
+    #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd", not(feature = "scalar")))]
+    { qmatvec_relaxed(m, x, r0, r1, out); return; }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(target_feature = "relaxed-simd"), not(feature = "scalar")))]
     { qmatvec_wasm(m, x, r0, r1, out); return; }
     #[allow(unreachable_code)]
     qmatvec_scalar(m, x, r0, r1, out)
 }
-/// wasm simd128: int8 widened to int16 lanes, `i32x4.dot_i16x8_s` pairs them into exact i32 sums. Four rows in flight.
-#[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "scalar")))]
-fn qmatvec_wasm(m: &QMat, x: &QVec, r0: usize, r1: usize, out: &mut [f32]) {
+/// wasm relaxed SIMD: `i32x4.relaxed_dot_i8x16_i7x16_add_s`, which V8 turns into one `sdot` on ARM.
+/// Deterministic because activations are 7-bit (`ACT_LIM` = 63): the i7 operand never leaves its range.
+#[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd", not(feature = "scalar")))]
+fn qmatvec_relaxed(m: &QMat, x: &QVec, r0: usize, r1: usize, out: &mut [f32]) {
     use std::arch::wasm32::*;
     let n = m.n_in; let nv = n / 16;
-    let mut xw = [i16x8_splat(0); FF / 8];
-    for c in 0..nv { let v = unsafe { v128_load(x.q.as_ptr().add(c * 16) as *const v128) }; xw[2 * c] = i16x8_extend_low_i8x16(v); xw[2 * c + 1] = i16x8_extend_high_i8x16(v); }
+    let mut xv = [i32x4_splat(0); FF / 16];
+    for c in 0..nv { xv[c] = unsafe { v128_load(x.q.as_ptr().add(c * 16) as *const v128) }; }
     let w = m.w.as_ptr();
-    #[inline(always)] fn row(w: *const i8, xw: &[v128], nv: usize) -> i32 {
-        let mut acc = i32x4_splat(0);
+    #[inline(always)] fn hsum(a: v128) -> i32 { (i32x4_extract_lane::<0>(a) + i32x4_extract_lane::<1>(a)) + (i32x4_extract_lane::<2>(a) + i32x4_extract_lane::<3>(a)) }
+    let mut r = r0;
+    while r + 4 <= r1 {
+        let (p0, p1, p2, p3) = unsafe { (w.add(r * n), w.add((r + 1) * n), w.add((r + 2) * n), w.add((r + 3) * n)) };
+        let z = i32x4_splat(0); let (mut a0, mut a1, mut a2, mut a3) = (z, z, z, z);
         for c in 0..nv {
-            let v = unsafe { v128_load(w.add(c * 16) as *const v128) };
-            acc = i32x4_add(acc, i32x4_dot_i16x8(i16x8_extend_low_i8x16(v), xw[2 * c]));
-            acc = i32x4_add(acc, i32x4_dot_i16x8(i16x8_extend_high_i8x16(v), xw[2 * c + 1]));
+            let xc = xv[c];
+            unsafe {
+                a0 = i32x4_relaxed_dot_i8x16_i7x16_add(v128_load(p0.add(c * 16) as *const v128), xc, a0);
+                a1 = i32x4_relaxed_dot_i8x16_i7x16_add(v128_load(p1.add(c * 16) as *const v128), xc, a1);
+                a2 = i32x4_relaxed_dot_i8x16_i7x16_add(v128_load(p2.add(c * 16) as *const v128), xc, a2);
+                a3 = i32x4_relaxed_dot_i8x16_i7x16_add(v128_load(p3.add(c * 16) as *const v128), xc, a3);
+            }
+        }
+        out[r - r0] = hsum(a0) as f32 * (x.scale * m.scale[r]);
+        out[r + 1 - r0] = hsum(a1) as f32 * (x.scale * m.scale[r + 1]);
+        out[r + 2 - r0] = hsum(a2) as f32 * (x.scale * m.scale[r + 2]);
+        out[r + 3 - r0] = hsum(a3) as f32 * (x.scale * m.scale[r + 3]);
+        r += 4;
+    }
+    while r < r1 {
+        let p0 = unsafe { w.add(r * n) }; let mut a = i32x4_splat(0);
+        for c in 0..nv { a = unsafe { i32x4_relaxed_dot_i8x16_i7x16_add(v128_load(p0.add(c * 16) as *const v128), xv[c], a) }; }
+        out[r - r0] = hsum(a) as f32 * (x.scale * m.scale[r]);
+        r += 1;
+    }
+}
+
+/// wasm simd128 without relaxed SIMD: int8 weights and 7-bit activations widened to int16. Each product is
+/// at most 127*63 = 8001 in size, so four of them sum exactly in int16 lanes; then one pairwise widen to int32.
+/// About 7 instructions per 16 weights instead of 11 with `dot_i16x8`.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(target_feature = "relaxed-simd"), not(feature = "scalar")))]
+fn qmatvec_wasm(m: &QMat, x: &QVec, r0: usize, r1: usize, out: &mut [f32]) {
+    use std::arch::wasm32::*;
+    let n = m.n_in; let nv = n / 16;            // n is 144 or 352: nv = 9 or 22
+    let mut xl = [i16x8_splat(0); FF / 16]; let mut xh = [i16x8_splat(0); FF / 16];
+    for c in 0..nv { let v = unsafe { v128_load(x.q.as_ptr().add(c * 16) as *const v128) }; xl[c] = i16x8_extend_low_i8x16(v); xh[c] = i16x8_extend_high_i8x16(v); }
+    let w = m.w.as_ptr();
+    #[inline(always)] fn hsum(a: v128) -> i32 { (i32x4_extract_lane::<0>(a) + i32x4_extract_lane::<1>(a)) + (i32x4_extract_lane::<2>(a) + i32x4_extract_lane::<3>(a)) }
+    #[inline(always)] fn row(p: *const i8, xl: &[v128], xh: &[v128], nv: usize) -> i32 {
+        let mut acc = i32x4_splat(0);
+        let mut c = 0;
+        while c + 2 <= nv {
+            // 32 weights: four int16 product vectors, summed in int16 (|sum| <= 4*8001 < 32768), widened once
+            let (v0, v1) = unsafe { (v128_load(p.add(c * 16) as *const v128), v128_load(p.add(c * 16 + 16) as *const v128)) };
+            let s = i16x8_add(i16x8_add(i16x8_mul(i16x8_extend_low_i8x16(v0), xl[c]), i16x8_mul(i16x8_extend_high_i8x16(v0), xh[c])),
+                              i16x8_add(i16x8_mul(i16x8_extend_low_i8x16(v1), xl[c + 1]), i16x8_mul(i16x8_extend_high_i8x16(v1), xh[c + 1])));
+            acc = i32x4_add(acc, i32x4_extadd_pairwise_i16x8(s));
+            c += 2;
+        }
+        if c < nv {
+            let v0 = unsafe { v128_load(p.add(c * 16) as *const v128) };
+            let s = i16x8_add(i16x8_mul(i16x8_extend_low_i8x16(v0), xl[c]), i16x8_mul(i16x8_extend_high_i8x16(v0), xh[c]));
+            acc = i32x4_add(acc, i32x4_extadd_pairwise_i16x8(s));
         }
         (i32x4_extract_lane::<0>(acc) + i32x4_extract_lane::<1>(acc)) + (i32x4_extract_lane::<2>(acc) + i32x4_extract_lane::<3>(acc))
     }
-    let mut r = r0;
-    while r + 4 <= r1 {
-        let (a0, a1, a2, a3) = unsafe { (row(w.add(r * n), &xw, nv), row(w.add((r + 1) * n), &xw, nv), row(w.add((r + 2) * n), &xw, nv), row(w.add((r + 3) * n), &xw, nv)) };
-        out[r - r0] = a0 as f32 * (x.scale * m.scale[r]); out[r + 1 - r0] = a1 as f32 * (x.scale * m.scale[r + 1]);
-        out[r + 2 - r0] = a2 as f32 * (x.scale * m.scale[r + 2]); out[r + 3 - r0] = a3 as f32 * (x.scale * m.scale[r + 3]);
-        r += 4;
+    let _ = hsum;
+    for r in r0..r1 {
+        let a = row(unsafe { w.add(r * n) }, &xl, &xh, nv);
+        out[r - r0] = a as f32 * (x.scale * m.scale[r]);
     }
-    while r < r1 { let a = unsafe { row(w.add(r * n), &xw, nv) }; out[r - r0] = a as f32 * (x.scale * m.scale[r]); r += 1; }
 }
 fn qmatvec_scalar(m: &QMat, x: &QVec, r0: usize, r1: usize, out: &mut [f32]) {
     let n = m.n_in;
@@ -191,9 +244,18 @@ pub struct Gdn {
 pub struct Attn { pub proj: QMat /* rows: q_gate(2*NH*HD) k(HD) v(HD) */, pub o: QMat, pub q_norm1: Vec<f32>, pub k_norm1: Vec<f32> /* 1 + weight */ }
 pub enum Mixer { Gdn(Gdn), Attn(Attn) }
 pub struct Layer { pub ln1: Vec<f32>, pub ln2: Vec<f32>, pub res1: AttnRes, pub res2: AttnRes, pub mixer: Mixer, pub gu: QMat /* gate(FF) up(FF) */, pub down: QMat }
-pub struct Weights { pub wte: QMat, pub layers: Vec<Layer>, pub ln_f: Vec<f32>, pub res_f: AttnRes, pub rope_cos: Vec<f32>, pub rope_sin: Vec<f32>, pub rope_ccos: Vec<f32>, pub rope_csin: Vec<f32> }
+/// `tok_row[t]` = the wte row of token t (identity unless `permute_vocab` reordered the rows).
+pub struct Weights { pub wte: QMat, pub tok_row: Vec<u32>, pub layers: Vec<Layer>, pub ln_f: Vec<f32>, pub res_f: AttnRes, pub rope_cos: Vec<f32>, pub rope_sin: Vec<f32>, pub rope_ccos: Vec<f32>, pub rope_csin: Vec<f32> }
 
 impl Weights {
+    /// Reorder the tied embedding so logits come out in `rank` order (rank[t] = new position of token t).
+    /// The model's numbers per token are unchanged; only where they sit in `logits` moves.
+    pub fn permute_vocab(&mut self, rank: &[usize]) {
+        let n = self.wte.n_in; let mut w = vec![0i8; self.wte.w.len()]; let mut sc = vec![0f32; V];
+        for t in 0..V { let r = rank[t]; let o = self.tok_row[t] as usize; w[r * n..(r + 1) * n].copy_from_slice(&self.wte.w[o * n..(o + 1) * n]); sc[r] = self.wte.scale[o]; }
+        self.wte.w = w; self.wte.scale = sc;
+        for t in 0..V { self.tok_row[t] = rank[t] as u32; }
+    }
     /// cos/sin of pos*theta_i for the 12 rotary pairs, any position < 2^20: angle = coarse(pos>>10) + fine(pos&1023).
     /// For pos < 1024 the coarse part is (1, 0) and the result equals the fine table bit for bit.
     pub fn rope(&self, pos: usize, cos: &mut [f32; ROT / 2], sin: &mut [f32; ROT / 2]) {
@@ -241,7 +303,7 @@ impl Weights {
             layers.push(Layer { ln1: get(&format!("{p}.ln_1.weight")), ln2: get(&format!("{p}.ln_2.weight")), res1: res(&format!("{p}.attn_res_1")), res2: res(&format!("{p}.attn_res_2")), mixer,
                 gu: QMat::concat(&[&get(&format!("{p}.mlp.w_gate.weight")), &get(&format!("{p}.mlp.w_up.weight"))], H), down: QMat::from_f32(&get(&format!("{p}.mlp.w_down.weight")), FF) });
         }
-        Weights { wte: QMat::from_f32(&get("transformer.wte.weight"), H), layers, ln_f: get("transformer.ln_f.weight"), res_f: res("transformer.attn_res_f"), rope_cos: get("rope.cos"), rope_sin: get("rope.sin"), rope_ccos: get("rope.ccos"), rope_csin: get("rope.csin") }
+        Weights { wte: QMat::from_f32(&get("transformer.wte.weight"), H), tok_row: (0..V as u32).collect(), layers, ln_f: get("transformer.ln_f.weight"), res_f: res("transformer.attn_res_f"), rope_cos: get("rope.cos"), rope_sin: get("rope.sin"), rope_ccos: get("rope.ccos"), rope_csin: get("rope.csin") }
     }
 }
 
@@ -255,7 +317,8 @@ pub const GP: usize = 7 * HD;   // GDN projection rows per head
 /// Tuned on Nardo docs, checked held-out on enwik8; flat between 0.999 and 0.9993. SLM_GDN_DECAY overrides.
 pub const EXTRA_DECAY: f32 = 0.999;
 fn extra_decay() -> f32 { static D: std::sync::OnceLock<f32> = std::sync::OnceLock::new(); *D.get_or_init(|| std::env::var("SLM_GDN_DECAY").ok().and_then(|v| v.parse().ok()).unwrap_or(EXTRA_DECAY)) }
-struct GdnState { conv: Vec<f32> /* [3 inputs][CONV-1 taps][H] */, s: Vec<f32> /* [NH][HD][HD] */ }
+/// Double-buffered: a step reads buffer `cur` and writes the other, then flips. Undoing a step is a flip back.
+struct GdnState { conv: [Vec<f32>; 2] /* [3 inputs][CONV-1 taps][H] */, s: [Vec<f32>; 2] /* [NH][HD][HD] */, cur: usize }
 /// One head's own copy of the attention cache (every thread appends the same k, v: no sharing needed).
 struct AttnHead { kq: Vec<i8>, ks: Vec<f32>, vc: Vec<f32>, total: usize }   // CTX slots; slot = total % CTX; live = min(total, CTX)
 enum MixState { Gdn(GdnState), Attn(Vec<AttnHead>) }
@@ -264,7 +327,7 @@ struct HeadScratch { p: Vec<f32>, sc: Vec<f32> }
 
 /// The model's recurrent state at one point in time (see `Model::snapshot_into`).
 #[derive(Default)]
-pub struct Snapshot { pos: usize, gdn: Vec<(Vec<f32>, Vec<f32>)>, attn: Vec<Vec<usize>> }
+pub struct Snapshot { pos: usize, gdn: Vec<usize>, attn: Vec<Vec<usize>> }
 
 pub struct Model<'a> {
     w: &'a Weights,
@@ -294,16 +357,16 @@ impl<'a> Model<'a> {
         self.st.clear(); self.pos = 0;
         for l in 0..NL {
             self.st.push(if is_attn(l) { MixState::Attn((0..NH).map(|_| AttnHead { kq: vec![0; CTX * HD], ks: vec![0f32; CTX], vc: vec![0f32; CTX * HD], total: 0 }).collect()) }
-                else { MixState::Gdn(GdnState { conv: vec![0f32; 3 * (CONV - 1) * H], s: vec![0f32; NH * HD * HD] }) });
+                else { MixState::Gdn(GdnState { conv: [vec![0f32; 3 * (CONV - 1) * H], vec![0f32; 3 * (CONV - 1) * H]], s: [vec![0f32; NH * HD * HD], vec![0f32; NH * HD * HD]], cur: 0 }) });
         }
     }
     pub fn pos(&self) -> usize { self.pos }
     /// Copy the recurrent state so a speculative step can be undone. Reuses `snap`'s buffers.
     pub fn snapshot_into(&self, snap: &mut Snapshot) {
         snap.pos = self.pos;
-        snap.gdn.resize(NL, (Vec::new(), Vec::new())); snap.attn.resize(NL, Vec::new());
+        snap.gdn.resize(NL, 0); snap.attn.resize(NL, Vec::new());
         for l in 0..NL { match &self.st[l] {
-            MixState::Gdn(g) => { let (c, s) = &mut snap.gdn[l]; c.clear(); c.extend_from_slice(&g.conv); s.clear(); s.extend_from_slice(&g.s); }
+            MixState::Gdn(g) => { snap.gdn[l] = g.cur; }
             MixState::Attn(hs) => { let t = &mut snap.attn[l]; t.clear(); t.extend(hs.iter().map(|h| h.total)); }
         } }
     }
@@ -311,16 +374,16 @@ impl<'a> Model<'a> {
     pub fn restore(&mut self, snap: &Snapshot) {
         self.pos = snap.pos;
         for l in 0..NL { match &mut self.st[l] {
-            MixState::Gdn(g) => { let (c, s) = &snap.gdn[l]; g.conv.copy_from_slice(c); g.s.copy_from_slice(s); }
+            MixState::Gdn(g) => { g.cur = snap.gdn[l]; }
             MixState::Attn(hs) => { for (h, &t) in hs.iter_mut().zip(&snap.attn[l]) { h.total = t; } }
         } }
     }
     /// Experiment knobs: forget only the recurrent (GDN) state, or only the attention cache.
     /// Forget the recurrent state of one GDN layer only.
-    pub fn reset_gdn_layer(&mut self, l: usize) { if let MixState::Gdn(g) = &mut self.st[l] { g.conv.iter_mut().for_each(|v| *v = 0.0); g.s.iter_mut().for_each(|v| *v = 0.0); } }
+    pub fn reset_gdn_layer(&mut self, l: usize) { if let MixState::Gdn(g) = &mut self.st[l] { let c = g.cur; g.conv[c].iter_mut().for_each(|v| *v = 0.0); g.s[c].iter_mut().for_each(|v| *v = 0.0); } }
     /// Experiment: shrink every GDN state by `f` instead of zeroing it.
-    pub fn soften_gdn(&mut self, f: f32) { for st in self.st.iter_mut() { if let MixState::Gdn(g) = st { g.s.iter_mut().for_each(|v| *v *= f); } } }
-    pub fn reset_gdn(&mut self) { for st in self.st.iter_mut() { if let MixState::Gdn(g) = st { g.conv.iter_mut().for_each(|v| *v = 0.0); g.s.iter_mut().for_each(|v| *v = 0.0); } } }
+    pub fn soften_gdn(&mut self, f: f32) { for st in self.st.iter_mut() { if let MixState::Gdn(g) = st { let c = g.cur; g.s[c].iter_mut().for_each(|v| *v *= f); } } }
+    pub fn reset_gdn(&mut self) { for l in 0..NL { self.reset_gdn_layer(l); } }
     pub fn reset_attn(&mut self) { for st in self.st.iter_mut() { if let MixState::Attn(hs) = st { for h in hs { h.total = 0; } } } }
     pub fn set_attn_window(&mut self, w: usize) { self.attn_win = w.clamp(1, CTX); }
 
@@ -342,7 +405,7 @@ impl<'a> Model<'a> {
     pub fn step(&mut self, tok: u32) {
         let w = self.w; let t = self.pool.threads(); let pos = self.pos;
         self.src.clear(); self.src_r.clear();
-        let mut x = [0f32; H]; w.wte.row_f32(tok as usize, &mut x);
+        let mut x = [0f32; H]; w.wte.row_f32(w.tok_row[tok as usize] as usize, &mut x);
         self.push_src(&x);
         let mut h = [0f32; H]; let mut hn = [0f32; H];
         let (mix, y, gu, logits) = (Shelf::new(&mut self.mix), Shelf::new(&mut self.y), Shelf::new(&mut self.gu), Shelf::new(&mut self.logits));
@@ -354,8 +417,11 @@ impl<'a> Model<'a> {
             // phase A: one head per thread (threads beyond NH idle here)
             match (&lw.mixer, &mut self.st[l]) {
                 (Mixer::Gdn(g), MixState::Gdn(s)) => {
-                    let (conv, st) = (Shelf::new(&mut s.conv), Shelf::new(&mut s.s));
-                    prof::t(0, || self.pool.run(&|tid| { let mut hh = tid; while hh < NH { unsafe { gdn_head(g, hh, xq, conv, st, &mut heads.range(hh, hh + 1)[0], mix.range(hh * HD, (hh + 1) * HD)) }; hh += t; } }));
+                    let (c0, c1) = s.conv.split_at_mut(1); let (s0, s1) = s.s.split_at_mut(1);
+                    let (co, cn, so, sn) = if s.cur == 0 { (&c0[0], &mut c1[0], &s0[0], &mut s1[0]) } else { (&c1[0], &mut c0[0], &s1[0], &mut s0[0]) };
+                    let (co, cn, so, sn) = (&co[..], Shelf::new(cn), &so[..], Shelf::new(sn));
+                    prof::t(0, || self.pool.run(&|tid| { let mut hh = tid; while hh < NH { unsafe { gdn_head(g, hh, xq, co, cn, so, sn, &mut heads.range(hh, hh + 1)[0], mix.range(hh * HD, (hh + 1) * HD)) }; hh += t; } }));
+                    s.cur ^= 1;
                 }
                 (Mixer::Attn(a), MixState::Attn(hs)) => {
                     let hs = Shelf::new(hs);
@@ -391,30 +457,32 @@ impl<'a> Model<'a> {
 
 /// depthwise causal conv over [x_{t-3}, x_{t-2}, x_{t-1}, x_t] for channels [r, r+HD), taps cw[j*H + c], then SiLU.
 /// `state` is this input's [CONV-1][H] history (only the head's channels are touched).
-#[inline] fn short_conv(cw: &[f32], state: &mut [f32], r: usize, x: &[f32], y: &mut [f32]) {
+#[inline] fn short_conv(cw: &[f32], old: &[f32], new: &mut [f32], r: usize, x: &[f32], y: &mut [f32]) {
     let mut c = 0;
     while c < HD {
         let mut s = F8::load(&cw[3 * H + r + c..]).mul(F8::load(&x[c..]));
-        for j in 0..CONV - 1 { s = s.add(F8::load(&cw[j * H + r + c..]).mul(F8::load(&state[j * H + r + c..]))); }
+        for j in 0..CONV - 1 { s = s.add(F8::load(&cw[j * H + r + c..]).mul(F8::load(&old[j * H + r + c..]))); }
         s.store(&mut y[c..]);
         c += 8;
     }
     simd::silu_inplace(y);
-    for j in 0..CONV - 2 { let (lo, hi) = state.split_at_mut((j + 1) * H); lo[j * H + r..j * H + r + HD].copy_from_slice(&hi[r..r + HD]); }
-    state[(CONV - 2) * H + r..(CONV - 2) * H + r + HD].copy_from_slice(x);
+    for j in 0..CONV - 2 { new[j * H + r..j * H + r + HD].copy_from_slice(&old[(j + 1) * H + r..(j + 1) * H + r + HD]); }
+    new[(CONV - 2) * H + r..(CONV - 2) * H + r + HD].copy_from_slice(x);
 }
 
 /// One GDN head for one token: projections for this head, conv, gates, the delta-rule state update, gated norm -> out[0..HD].
-unsafe fn gdn_head(g: &Gdn, hh: usize, x: &QVec, conv: Shelf<f32>, st: Shelf<f32>, hs: &mut HeadScratch, out: &mut [f32]) {
+/// Reads the previous state from `co`/`so`, writes this head's part of the next one into `cn`/`sn`.
+unsafe fn gdn_head(g: &Gdn, hh: usize, x: &QVec, co: &[f32], cn: Shelf<f32>, so: &[f32], sn: Shelf<f32>, hs: &mut HeadScratch, out: &mut [f32]) {
     let r = hh * HD;
     let p = &mut hs.p[..];
     qmatvec_rows(&g.proj, x, hh * GP, (hh + 1) * GP, p);
     let (qi, rest) = p.split_at_mut(HD); let (ki, rest) = rest.split_at_mut(HD); let (vi, rest) = rest.split_at_mut(HD);
     let (gg, rest) = rest.split_at_mut(HD); let (bb, rest) = rest.split_at_mut(HD); let (ww, gate) = rest.split_at_mut(HD);
     let (mut q, mut k, mut v) = ([0f32; HD], [0f32; HD], [0f32; HD]);
-    let cs = conv.range(0, 3 * (CONV - 1) * H);
-    let (cq, rest) = cs.split_at_mut((CONV - 1) * H); let (ck, cv) = rest.split_at_mut((CONV - 1) * H);
-    short_conv(&g.conv_q, cq, r, qi, &mut q); short_conv(&g.conv_k, ck, r, ki, &mut k); short_conv(&g.conv_v, cv, r, vi, &mut v);
+    // each head touches only its own channels [r, r+HD) of the conv state, so heads never overlap
+    let cs = cn.range(0, 3 * (CONV - 1) * H); const CL: usize = (CONV - 1) * H;
+    let (cq, rest) = cs.split_at_mut(CL); let (ck, cv) = rest.split_at_mut(CL);
+    short_conv(&g.conv_q, &co[..CL], cq, r, qi, &mut q); short_conv(&g.conv_k, &co[CL..2 * CL], ck, r, ki, &mut k); short_conv(&g.conv_v, &co[2 * CL..], cv, r, vi, &mut v);
     l2norm(&mut q); l2norm(&mut k);
     let (mut sb, mut sw, mut sg) = ([0f32; HD], [0f32; HD], [0f32; HD]);
     simd::sigmoid_into(bb, &mut sb); simd::sigmoid_into(ww, &mut sw);
@@ -423,7 +491,8 @@ unsafe fn gdn_head(g: &Gdn, hh: usize, x: &QVec, conv: Shelf<f32>, st: Shelf<f32
     let decay = F8::splat(-fexp(g.a_log[hh]));
     let extra = F8::splat(extra_decay());
     let scale = 1.0 / (HD as f32).sqrt();
-    let s = st.range(hh * HD * HD, (hh + 1) * HD * HD);     // [k][v]
+    let s = sn.range(hh * HD * HD, (hh + 1) * HD * HD);     // [k][v], next state
+    let s_old = &so[hh * HD * HD..(hh + 1) * HD * HD];
     // state *= exp(g) per k row; erase = (b*k)^T state; v_new = w*v - erase; state += k v_new^T; o = (q*scale)^T state
     let (mut dk, mut bk, mut wv) = ([0f32; HD], [0f32; HD], [0f32; HD]);
     for c in 0..HD / 8 {
@@ -435,8 +504,8 @@ unsafe fn gdn_head(g: &Gdn, hh: usize, x: &QVec, conv: Shelf<f32>, st: Shelf<f32
     let mut e = [F8::zero(); HD / 8];
     for kk in 0..HD {
         let (d, b) = (F8::splat(dk[kk]), F8::splat(bk[kk]));
-        let row = &mut s[kk * HD..(kk + 1) * HD];
-        for c in 0..HD / 8 { let rv = F8::load(&row[c * 8..]).mul(d); rv.store(&mut row[c * 8..]); e[c] = e[c].add(b.mul(rv)); }
+        let (ro, row) = (&s_old[kk * HD..(kk + 1) * HD], &mut s[kk * HD..(kk + 1) * HD]);
+        for c in 0..HD / 8 { let rv = F8::load(&ro[c * 8..]).mul(d); rv.store(&mut row[c * 8..]); e[c] = e[c].add(b.mul(rv)); }
     }
     let mut vn = [F8::zero(); HD / 8]; for c in 0..HD / 8 { vn[c] = F8::load(&wv[c * 8..]).sub(e[c]); }
     let mut oh = [F8::zero(); HD / 8];
@@ -467,7 +536,7 @@ unsafe fn attn_head(a: &Attn, hh: usize, x: &QVec, rc: &[f32; ROT / 2], rs: &[f3
     let n = st.total.min(win); let n8 = (n + 7) & !7;
     let sc = &mut hs.sc[..n8];
     offset_rmsnorm(q, &a.q_norm1); rope(q);
-    let mut qq = [0i8; HD]; let sq = simd::quantize(q, &mut qq);
+    let mut qq = [0i8; HD]; let sq = simd::quantize_lim(q, &mut qq, act_lim());
     let scale = 1.0 / (HD as f32).sqrt();
     simd::qdots(&qq, sq, &st.kq[..n * HD], &st.ks[..n], scale, &mut sc[..n]);
     for j in n..n8 { sc[j] = f32::NEG_INFINITY; }

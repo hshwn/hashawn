@@ -26,7 +26,7 @@ pub const EOT: u32 = 0;           // <|endoftext|>: start token
 
 struct Node { children: Vec<(u8, u32)>, tok: i32, lo: usize, hi: usize }   // tokens in this subtree = dfs ranks [lo, hi)
 
-pub struct Vocab { nodes: Vec<Node>, rank: Vec<usize> /* token id -> dfs rank */, pub bytes: Vec<Vec<u8>> }
+pub struct Vocab { nodes: Vec<Node>, pub rank: Vec<usize> /* token id -> dfs rank */, pub bytes: Vec<Vec<u8>> }
 
 impl Vocab {
     /// `vocab.bin`: for each id, u16 LE length then the bytes.
@@ -73,6 +73,7 @@ pub struct Bridge<'a> {
     snap: crate::Snapshot, spec: bool, q: f64,
     pc: [f64; 256], pn: [f64; 256],              // continue / new-token byte distributions behind `p`
     tail_node: usize, tail_len: usize, tail: Vec<u8>, prev_byte: u8,
+    ebuf: Vec<f32>,
     fb: Vec<f64>,           // [last byte of a token][first byte of the next] counts: the fallback when not speculating
     pub tokens: usize,      // model steps so far (speculative ones included)
     pub spec_steps: usize,
@@ -83,20 +84,21 @@ pub struct Bridge<'a> {
 impl<'a> Bridge<'a> {
     pub fn new(m: Model<'a>, v: &'a Vocab) -> Bridge<'a> {
         let mut b = Bridge { m, v, pre: vec![0f64; V + 1], by_rank: vec![0f64; V], pre_s: vec![0f64; V + 1], by_rank_s: vec![0f64; V], snap: crate::Snapshot::default(), spec: false, q: 0.0,
-            pc: [0.0; 256], pn: [0.0; 256], tail_node: 0, tail_len: 0, tail: Vec::with_capacity(16), prev_byte: 0, fb: vec![0.0; 256 * 256], tokens: 0, spec_steps: 0, p: [0.0; 256], tree: [0.0; 512] };
+            pc: [0.0; 256], pn: [0.0; 256], tail_node: 0, tail_len: 0, tail: Vec::with_capacity(16), prev_byte: 0, ebuf: vec![0f32; V], fb: vec![0.0; 256 * 256], tokens: 0, spec_steps: 0, p: [0.0; 256], tree: [0.0; 512] };
         b.step(EOT, false);
         b
     }
+    /// The model's weights must have been permuted to trie order (`Weights::permute_vocab`), so logits
+    /// arrive by rank: softmax in SIMD, prefix sums straight through, no scatter.
     fn step(&mut self, tok: u32, speculative: bool) {
         self.m.step(tok); self.tokens += 1;
-        let lg = &self.m.logits;
-        let mx = crate::simd::max(lg);
-        let mut sum = 0f64; let mut e = vec![0f32; V];
-        for i in 0..V { e[i] = crate::simd::fexp(lg[i] - mx); sum += e[i] as f64; }
-        let inv = 1.0 / sum;
+        let e = &mut self.ebuf; e.copy_from_slice(&self.m.logits);
+        let mx = crate::simd::max(e);
+        let inv = 1.0 / crate::simd::exp_sub_sum(e, mx) as f64;
         let (pre, by_rank) = if speculative { (&mut self.pre_s, &mut self.by_rank_s) } else { (&mut self.pre, &mut self.by_rank) };
-        for i in 0..V { by_rank[self.v.rank[i]] = e[i] as f64 * inv; }
-        pre[0] = 0.0; for r in 0..V { pre[r + 1] = pre[r] + by_rank[r]; }
+        pre[0] = 0.0;
+        let mut acc = 0f64;
+        for r in 0..V { let p = e[r] as f64 * inv; by_rank[r] = p; acc += p; pre[r + 1] = acc; }
     }
     #[inline] fn mass_in(pre: &[f64], nd: &Node) -> f64 { pre[nd.hi] - pre[nd.lo] }
     #[inline] fn mass(&self, n: usize) -> f64 { Self::mass_in(&self.pre, &self.v.nodes[n]) }
@@ -177,9 +179,18 @@ impl<'a> Bridge<'a> {
         self.tail.clear(); self.tail_len = 0; self.tail_node = 0;
         self.observe(b)
     }
-    /// The token continues through `b`.
+    /// Flag-first path: the token ends here, before its next byte is known. Steps the model for real.
+    pub fn end_now(&mut self) -> bool {
+        let t = match self.tail_token() { Some(t) => t, None => return false };
+        self.step(t, false);
+        self.prev_byte = *self.tail.last().unwrap_or(&0);
+        self.tail.clear(); self.tail_len = 0; self.tail_node = 0;
+        true
+    }
+    /// The token continues through `b` (or `b` starts a token after `end_now` / at the start).
     pub fn commit_continue(&mut self, b: u8) -> bool {
         if self.spec { self.m.restore(&self.snap); self.spec = false; }
+        if self.tail_len == 0 { self.fb[self.prev_byte as usize * 256 + b as usize] += 1.0; }
         self.observe(b)
     }
     /// Build the binary tree over `self.p` so bits can be predicted one at a time (after `begin()`).

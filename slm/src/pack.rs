@@ -1,7 +1,7 @@
 //! One file for the web: the quantised weights exactly as the model uses them, plus the tokenizer.
 //! "SLMQ" | version u8 | sections in a fixed order. The model id is the hash of this file, so a stream
 //! made natively from weights.bin and one made in the browser from the pack agree on the id and the bits.
-use crate::{AttnRes, Attn, Gdn, Layer, Mixer, QMat, Weights, NL, is_attn};
+use crate::{AttnRes, Attn, Gdn, Layer, Mixer, QMat, Weights, NL, V, is_attn};
 
 pub const MAGIC: &[u8; 4] = b"SLMQ";
 pub const VERSION: u8 = 1;
@@ -25,6 +25,7 @@ impl<'a> R<'a> {
 
 /// Weights + vocab.bin + merges.bin -> pack bytes.
 pub fn pack(w: &Weights, vocab: &[u8], merges: &[u8]) -> Vec<u8> {
+    assert!(w.tok_row.iter().enumerate().all(|(i, &r)| r as usize == i), "pack the weights before permuting them");
     let mut o = W(Vec::with_capacity(4 << 20));
     o.0.extend_from_slice(MAGIC); o.0.push(VERSION);
     o.qmat(&w.wte); o.f32s(&w.ln_f); o.res(&w.res_f);
@@ -54,7 +55,7 @@ pub fn unpack(b: &[u8]) -> Option<(Weights, Vec<u8>, Vec<u8>)> {
         layers.push(Layer { ln1, ln2, res1, res2, mixer, gu, down });
     }
     let vocab = r.bytes(); let merges = r.bytes();
-    Some((Weights { wte, layers, ln_f, res_f, rope_cos, rope_sin, rope_ccos, rope_csin }, vocab, merges))
+    Some((Weights { wte, tok_row: (0..V as u32).collect(), layers, ln_f, res_f, rope_cos, rope_sin, rope_ccos, rope_csin }, vocab, merges))
 }
 
 /// FNV-1a over the pack, folded to 32 bits: the model id in every NCZL header.

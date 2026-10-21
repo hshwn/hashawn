@@ -31,6 +31,15 @@ fn main() {
             if ours != r { let k = ours.iter().zip(&r).position(|(x, y)| x != y).unwrap_or(ours.len().min(r.len())); let show = |t: &[u32]| t[k.saturating_sub(3)..(k + 5).min(t.len())].iter().map(|&i| String::from_utf8_lossy(&v.bytes[i as usize]).to_string()).collect::<Vec<_>>(); println!("  first difference at token {k}: ours {:?}  hf {:?}", show(&ours), show(&r)); }
             return;
         }
+        Some("steps") => {
+            // slmcli steps <file>: how many model steps the text codec spends
+            let assets = slm::codec::Assets::from_dir(&model_dir());
+            let data = fs::read(&a[2]).unwrap();
+            let mut e = slm::codec::LmEncoder::new(&assets, &data, threads()); while e.step(1 << 16) > 0 {}
+            let (t, steps, spec) = e.steps();
+            println!("tokens {t}  model steps {steps}  speculative {spec}  ({:.2} steps per token, {:.2} per byte)", steps as f64 / t as f64, steps as f64 / data.len() as f64);
+            return;
+        }
         Some("pack") => {
             // slmcli pack <out.slmq>: quantised weights + tokenizer in one file for the browser; prints the model id
             let dir = model_dir();

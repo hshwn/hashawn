@@ -6,11 +6,16 @@ let wasm = null, modelId = null;
 const STEP_LM = 4096, STEP = 64 * 1024;
 const bytes = () => new Uint8Array(wasm.memory.buffer);   // re-read after every call: memory can grow and detach
 
+// nczl.wasm uses relaxed SIMD (one int8 dot instruction, 2x faster); nczl-base.wasm is plain SIMD for
+// browsers without it. Both produce the same bytes.
+async function compile(url) {
+  const bytes = await (await fetch(url)).arrayBuffer();
+  return (await WebAssembly.instantiate(bytes, {})).instance;
+}
 async function load() {
   if (wasm) return;
   let instance;
-  try { ({ instance } = await WebAssembly.instantiateStreaming(fetch('nczl.wasm'), {})); }
-  catch { ({ instance } = await WebAssembly.instantiate(await (await fetch('nczl.wasm')).arrayBuffer(), {})); }   // server without the wasm MIME type
+  try { instance = await compile('nczl.wasm'); } catch { instance = await compile('nczl-base.wasm'); }
   wasm = instance.exports;
 }
 async function loadModel(id) {

@@ -17,9 +17,12 @@ use crate::flags::FlagModel;
 fn flag_model() -> FlagModel { match std::env::var("SLM_FLAG_LR").ok().and_then(|v| v.parse().ok()) { Some(lr) => FlagModel::with_lr(lr), None => FlagModel::new() } }
 
 pub const MAGIC: &[u8; 4] = b"NCZL";
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 5;
 /// Below this P(end) the speculative model step is skipped (SLM_SPEC_MIN overrides).
 pub const SPEC_MIN: f64 = 0.02;
+/// Below this P(end) the flag is coded first (no speculative step needed); at or above it, byte first.
+pub const FLAG_FIRST_BELOW: f64 = 0.2;
+fn ff_below() -> f64 { std::env::var("SLM_FF").ok().and_then(|v| v.parse().ok()).unwrap_or(FLAG_FIRST_BELOW) }
 fn spec_min() -> f64 { std::env::var("SLM_SPEC_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(SPEC_MIN) }
 pub(crate) const HEADER: usize = 4 + 1 + 1 + 4 + 8;
 pub const MODE_STORE: u8 = 0; pub const MODE_NCZ: u8 = 1; pub const MODE_LM: u8 = 2;
@@ -38,8 +41,9 @@ impl Assets {
         let (w, vocab, merges) = crate::pack::unpack(pack)?;
         Some(Assets::build(w, &vocab, &merges, crate::pack::id(pack)))
     }
-    fn build(weights: Weights, vocab: &[u8], merges: &[u8], model_id: u32) -> Assets {
+    fn build(mut weights: Weights, vocab: &[u8], merges: &[u8], model_id: u32) -> Assets {
         let v = Vocab::load(vocab);
+        weights.permute_vocab(&v.rank);
         let bpe = Bpe::load(merges, &v.bytes);
         Assets { weights, vocab: v, bpe, model_id }
     }
@@ -76,14 +80,16 @@ pub(crate) fn header(mode: u8, model_id: u32, total: usize, payload: &[u8]) -> V
 pub struct LmEncoder<'a> {
     a: &'a Assets, data: Vec<u8>, toks: Vec<u32>,
     ti: usize, bi: usize, pos: usize, prev: Option<u32>,
-    br: Bridge<'a>, enc: Encoder, fm: FlagModel, spec_min: f64,
+    br: Bridge<'a>, enc: Encoder, fm: FlagModel, spec_min: f64, ff: f64,
 }
 impl<'a> LmEncoder<'a> {
     pub fn new(a: &'a Assets, data: &[u8], threads: usize) -> LmEncoder<'a> {
-        LmEncoder { a, data: data.to_vec(), toks: a.bpe.encode(data), ti: 0, bi: 0, pos: 0, prev: None, br: Bridge::new(Model::with_threads(&a.weights, threads), &a.vocab), enc: Encoder::new(), fm: flag_model(), spec_min: spec_min() }
+        LmEncoder { a, data: data.to_vec(), toks: a.bpe.encode(data), ti: 0, bi: 0, pos: 0, prev: None, br: Bridge::new(Model::with_threads(&a.weights, threads), &a.vocab), enc: Encoder::new(), fm: flag_model(), spec_min: spec_min(), ff: ff_below() }
     }
     pub fn done(&self) -> usize { self.pos }
     pub fn total(&self) -> usize { self.data.len() }
+    /// (tokens, model steps, speculative steps) so far.
+    pub fn steps(&self) -> (usize, usize, usize) { (self.toks.len(), self.br.tokens, self.br.spec_steps) }
     /// Code up to `n` more bytes; returns how many were coded (0 when finished).
     pub fn step(&mut self, n: usize) -> usize {
         let mut side = [0i16; 8]; let mut k = 0;
@@ -93,6 +99,17 @@ impl<'a> LmEncoder<'a> {
             let ended = self.bi == 0 && self.br.in_token();
             let asked = self.br.in_token() && self.br.tail_token().is_some();
             let q = if asked { self.fm.p(self.br.p_end(), self.br.tail(), self.br.prev_byte()) } else { 0.0 };
+            if asked && q < self.ff {
+                // flag first: no speculation; if it ends, the real step happens now
+                self.enc.encode_bit(ended as u32, p12(q)); self.fm.update(ended);
+                if ended { assert!(self.br.end_now()); }
+                self.br.begin(0.0, false); self.br.bits(b, &mut side);
+                self.enc.encode_byte(b, Some(&side));
+                assert!(self.br.commit_continue(b), "tokenizer produced a token the vocab trie does not know");
+                self.bi += 1; self.pos += 1; k += 1;
+                if self.bi == tb.len() { self.prev = Some(tok); self.ti += 1; self.bi = 0; }
+                continue;
+            }
             self.br.begin(q, q >= self.spec_min);
             self.br.bits(b, &mut side);
             self.enc.encode_byte(b, Some(&side));
@@ -112,7 +129,7 @@ impl<'a> LmEncoder<'a> {
     }
 }
 
-pub struct LmDecoder<'a> { mode: u8, total: usize, out: Vec<u8>, dec: Option<Decoder>, br: Option<Bridge<'a>>, fm: FlagModel, spec_min: f64, failed: bool }
+pub struct LmDecoder<'a> { mode: u8, total: usize, out: Vec<u8>, dec: Option<Decoder>, br: Option<Bridge<'a>>, fm: FlagModel, spec_min: f64, ff: f64, failed: bool }
 impl<'a> LmDecoder<'a> {
     /// None when the header is wrong, or the stream needs a model that is missing or different.
     pub fn new(a: Option<&'a Assets>, blob: &[u8], threads: usize) -> Option<LmDecoder<'a>> {
@@ -120,7 +137,7 @@ impl<'a> LmDecoder<'a> {
         let mode = blob[5];
         let id = u32::from_le_bytes(blob[6..10].try_into().ok()?);
         let total = u64::from_le_bytes(blob[10..18].try_into().ok()?) as usize;
-        let mut d = LmDecoder { mode, total, out: Vec::with_capacity(total), dec: None, br: None, fm: flag_model(), spec_min: spec_min(), failed: false };
+        let mut d = LmDecoder { mode, total, out: Vec::with_capacity(total), dec: None, br: None, fm: flag_model(), spec_min: spec_min(), ff: ff_below(), failed: false };
         match mode {
             MODE_STORE => { if blob.len() != HEADER + total { return None; } d.out.extend_from_slice(&blob[HEADER..]); }
             MODE_NCZ => { d.dec = Some(Decoder::from_payload(blob[HEADER..].to_vec(), total as u64)); }
@@ -138,10 +155,19 @@ impl<'a> LmDecoder<'a> {
         match self.mode {
             MODE_NCZ => { let dec = self.dec.as_mut().unwrap(); let chunk = dec.next(n); self.out.extend_from_slice(&chunk); n }
             MODE_LM => {
-                let (dec, br, fm, spec_min) = (self.dec.as_mut().unwrap(), self.br.as_mut().unwrap(), &mut self.fm, self.spec_min);
+                let (dec, br, fm, spec_min, ff) = (self.dec.as_mut().unwrap(), self.br.as_mut().unwrap(), &mut self.fm, self.spec_min, self.ff);
                 for k in 0..n {
                     let asked = br.in_token() && br.tail_token().is_some();
                     let q = if asked { fm.p(br.p_end(), br.tail(), br.prev_byte()) } else { 0.0 };
+                    if asked && q < ff {
+                        let ended = dec.decode_bit(p12(q)) == 1; fm.update(ended);
+                        if ended && !br.end_now() { self.failed = true; return k; }
+                        br.begin(0.0, false); br.begin_byte();
+                        let b = dec.decode_byte(|j, prefix| br.bit_stretch(j, prefix));
+                        self.out.push(b);
+                        if !br.commit_continue(b) { self.failed = true; return k + 1; }
+                        continue;
+                    }
                     br.begin(q, q >= spec_min);
                     br.begin_byte();
                     let b = dec.decode_byte(|j, prefix| br.bit_stretch(j, prefix));

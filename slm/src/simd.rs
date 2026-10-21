@@ -236,16 +236,18 @@ const LN2: f32 = 0.693_147_18_f32;
     while i < n { F8::load(&x[i..]).mul(rv).mul(F8::load(&w[i..])).store(&mut out[i..]); i += 8; }
 }
 /// Quantise to int8 with scale amax/127 (round to nearest even). Returns the scale.
-#[inline] pub fn quantize(x: &[f32], q: &mut [i8]) -> f32 {
+#[inline] pub fn quantize(x: &[f32], q: &mut [i8]) -> f32 { quantize_lim(x, q, 127.0) }
+/// Quantise to integers in [-lim, lim] with scale amax/lim (round to nearest even). Returns the scale.
+#[inline] pub fn quantize_lim(x: &[f32], q: &mut [i8], lim: f32) -> f32 {
     let n = x.len(); debug_assert!(n % 8 == 0);
     let mut m = F8::zero(); let mut i = 0;
     while i < n { m = m.max(F8::load(&x[i..]).abs()); i += 8; }
     let amax = m.hmax();
     if amax == 0.0 { for v in q[..n].iter_mut() { *v = 0; } return 0.0; }
-    let inv = F8::splat(127.0 / amax);
+    let inv = F8::splat(lim / amax);
     let mut tmp = [0i32; 8]; i = 0;
     while i < n { F8::load(&x[i..]).mul(inv).round().to_i32(&mut tmp); for l in 0..8 { q[i + l] = tmp[l] as i8; } i += 8; }
-    amax / 127.0
+    amax / lim
 }
 
 /// acc += p0 * v0 + p1 * v1 with two independent chains (fixed order: (acc + p0*v0) + p1*v1).
@@ -261,7 +263,34 @@ const LN2: f32 = 0.693_147_18_f32;
     let d = q.len(); debug_assert!(d % 16 == 0);
     #[cfg(all(target_arch = "aarch64", not(feature = "scalar")))]
     { unsafe { qdots_neon(q, sq, keys, ks, scale, out) }; return; }
-    #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "scalar")))]
+    #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd", not(feature = "scalar")))]
+    {
+        use std::arch::wasm32::*;
+        let nv = d / 16; let mut qv = [i32x4_splat(0); 4];
+        for c in 0..nv { qv[c] = unsafe { v128_load(q.as_ptr().add(c * 16) as *const v128) }; }
+        let m = out.len(); let mut j = 0;
+        let hs = |a: v128| (i32x4_extract_lane::<0>(a) + i32x4_extract_lane::<1>(a)) + (i32x4_extract_lane::<2>(a) + i32x4_extract_lane::<3>(a));
+        while j + 4 <= m {
+            let z = i32x4_splat(0); let (mut a0, mut a1, mut a2, mut a3) = (z, z, z, z);
+            for c in 0..nv { unsafe {
+                let kp = keys.as_ptr().add(j * d + c * 16);
+                a0 = i32x4_relaxed_dot_i8x16_i7x16_add(v128_load(kp as *const v128), qv[c], a0);
+                a1 = i32x4_relaxed_dot_i8x16_i7x16_add(v128_load(kp.add(d) as *const v128), qv[c], a1);
+                a2 = i32x4_relaxed_dot_i8x16_i7x16_add(v128_load(kp.add(2 * d) as *const v128), qv[c], a2);
+                a3 = i32x4_relaxed_dot_i8x16_i7x16_add(v128_load(kp.add(3 * d) as *const v128), qv[c], a3);
+            } }
+            out[j] = hs(a0) as f32 * (sq * ks[j]) * scale; out[j + 1] = hs(a1) as f32 * (sq * ks[j + 1]) * scale;
+            out[j + 2] = hs(a2) as f32 * (sq * ks[j + 2]) * scale; out[j + 3] = hs(a3) as f32 * (sq * ks[j + 3]) * scale;
+            j += 4;
+        }
+        while j < m {
+            let mut a = i32x4_splat(0);
+            for c in 0..nv { a = unsafe { i32x4_relaxed_dot_i8x16_i7x16_add(v128_load(keys.as_ptr().add(j * d + c * 16) as *const v128), qv[c], a) }; }
+            out[j] = hs(a) as f32 * (sq * ks[j]) * scale; j += 1;
+        }
+        return;
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(target_feature = "relaxed-simd"), not(feature = "scalar")))]
     {
         use std::arch::wasm32::*;
         let nv = d / 16; let mut qw = [i16x8_splat(0); 8];
