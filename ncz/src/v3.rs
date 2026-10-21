@@ -34,7 +34,7 @@ const MTBITS: u32 = 22;
 const MMASK: u32 = (1 << MTBITS) - 1;
 const MHASH: u64 = 0x9E37_79B9_7F4A_7C15;
 const MLEN_CAP: u32 = 31;
-const N_IN: usize = NORD + 3;               // orders + match prob + match confidence + bias
+const N_IN: usize = NORD + 4;               // orders + match prob + match confidence + bias + side input (0 when unused)
 const NMIXCTX: usize = 16;
 const MIX_LR: i32 = 3;
 const W_INIT: i32 = 65536 >> 2;
@@ -104,6 +104,7 @@ pub struct Model {
     word: u32, prev_word: u32, a2base: u32,
     st: [i32; N_IN], pmix: i32, pfinal: i32, mxctx: usize, m_active: bool, midx: usize,
     match_ptr: usize, match_len: u32, match_byte: i32,
+    pub side: i32,                          // external per-bit prediction in stretch units (a language model, say); 0 = none
 }
 
 impl Model {
@@ -120,7 +121,7 @@ impl Model {
             apm1: Apm::new(65536), apm2: Apm::new(65536),
             c0: 1, nc0: 1, kbits: 0, cur_byte: 0, hist: 0, word: 0, prev_word: 0, a2base: 0,
             st: [0; N_IN], pmix: 2048, pfinal: 2048, mxctx: 0, m_active: false, midx: 0,
-            match_ptr: 0, match_len: 0, match_byte: -1,
+            match_ptr: 0, match_len: 0, match_byte: -1, side: 0,
         };
         m.new_byte_contexts();
         m.lookup_nibble();
@@ -200,6 +201,7 @@ impl Model {
         if !m_active { self.st[NORD] = 0; self.st[NORD + 1] = 0; }
         self.m_active = m_active;
         self.st[NORD + 2] = 256;
+        self.st[NORD + 3] = self.side;
         let mxctx = (self.c0 as usize >> 4) & 15;
         self.mxctx = mxctx;
         let base = mxctx * N_IN;
@@ -308,10 +310,13 @@ impl Default for Model { fn default() -> Self { Model::new() } }
 pub struct Encoder { m: Model, x1: u32, x2: u32, pub out: Vec<u8>, pub total: u64 }
 impl Encoder {
     pub fn new() -> Encoder { Encoder { m: Model::new(), x1: 0, x2: 0xFFFF_FFFF, out: Vec::new(), total: 0 } }
-    pub fn push(&mut self, data: &[u8]) {
-        for &byte in data {
+    pub fn push(&mut self, data: &[u8]) { self.push_side(data, None) }
+    /// `side`: one stretch value per bit of `data` (MSB first), fed to the mixer as an extra input.
+    pub fn push_side(&mut self, data: &[u8], side: Option<&[i16]>) {
+        for (bi, &byte) in data.iter().enumerate() {
             for shift in (0..8).rev() {
                 let y = ((byte >> shift) & 1) as u32;
+                if let Some(s) = side { self.m.side = s[bi * 8 + (7 - shift)] as i32; }
                 let p = self.m.predict() as u32;
                 let xmid = self.x1 + ((self.x2 - self.x1) >> 12) * p;
                 if y != 0 { self.x2 = xmid; } else { self.x1 = xmid + 1; }
