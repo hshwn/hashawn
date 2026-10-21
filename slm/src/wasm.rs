@@ -19,7 +19,7 @@ impl AnyEncoder {
     pub fn new(data: &[u8], threads: usize) -> AnyEncoder {
         match assets() {
             Some(a) if looks_like_text(data) => AnyEncoder::Lm(LmEncoder::new(a, data, threads)),
-            a => AnyEncoder::Ncz { data: data.to_vec(), pos: 0, enc: Encoder::new(), id: a.map_or(0, |a| a.model_id) },
+            _ => AnyEncoder::Ncz { data: data.to_vec(), pos: 0, enc: Encoder::new(), id: 0 },
         }
     }
     pub fn step(&mut self, n: usize) -> usize {
@@ -76,3 +76,15 @@ impl AnyDecoder {
 #[no_mangle] pub unsafe extern "C" fn nczl_is_text(p: *const u8, n: usize) -> u32 { looks_like_text(std::slice::from_raw_parts(p, n)) as u32 }
 
 fn leak(mut v: Vec<u8>) -> *mut u8 { v.shrink_to_fit(); unsafe { OUT_LEN = v.len(); } let p = v.as_mut_ptr(); std::mem::forget(v); p }
+
+/// Segment plan for big inputs (same function as native, so both write the same container):
+/// writes up to `max` exclusive end offsets as u32 to `out`, returns how many.
+#[no_mangle] pub unsafe extern "C" fn nczl_split(p: *const u8, n: usize, out: *mut u32, max: usize) -> usize {
+    let ends = crate::codec::split_points(std::slice::from_raw_parts(p, n), crate::codec::seg_len(n, crate::codec::SEG_MIN));
+    let k = ends.len().min(max);
+    for i in 0..k { *out.add(i) = ends[i] as u32; }
+    k
+}
+#[no_mangle] pub extern "C" fn nczl_seg_size() -> usize { crate::codec::SEG_MIN }
+#[no_mangle] pub extern "C" fn nczl_version() -> u32 { crate::codec::VERSION as u32 }
+#[no_mangle] pub extern "C" fn nczl_mode_seg() -> u32 { crate::codec::MODE_SEG as u32 }

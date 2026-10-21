@@ -44,23 +44,89 @@
   const progress = (label, done, total) => render(`<div class="job"><p class="label">${label}</p><div class="bar"><i style="width:${total ? (done / total * 100).toFixed(1) : 0}%"></i></div><p class="sub">${fmt(done)} of ${fmt(total)}</p></div>`);
   const download = (u8, name) => { const url = URL.createObjectURL(new Blob([u8])); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000); };
 
+  // ---------- the codec, across workers ----------
+  // Big files are split into independent segments (where: decided by the codec itself, so the bytes match
+  // the native build) and compressed by several workers at once. Small files go through one worker.
+  const POOL = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 1));
+  const pool = [worker];
+  const getWorker = (i) => pool[i] || (pool[i] = new Worker('worker.js'));
+  const call = (w, msg, transfer, onProgress) => new Promise((resolve) => {
+    const id = ++jobId;
+    const on = (e) => { const m = e.data; if (m.id !== id) return; if (m.type === 'progress' || m.type === 'model') { if (onProgress) onProgress(m); return; } w.removeEventListener('message', on); resolve(m); };
+    w.addEventListener('message', on); w.postMessage({ ...msg, id }, transfer || []);
+  });
+  // run jobs[i] on up to `k` workers; each job gets (worker, report(done)) and returns a result
+  const fanOut = async (n, k, job) => {
+    const results = new Array(n); let next = 0;
+    await Promise.all(Array.from({ length: Math.min(k, n) }, async (_, wi) => {
+      const w = getWorker(wi);
+      for (;;) { const i = next++; if (i >= n) return; results[i] = await job(w, i); if (results[i].type === 'error') throw new Error(results[i].message); }
+    }));
+    return results;
+  };
+  const u32le = (v, n) => { const b = new Uint8Array(n); let x = BigInt(v); for (let i = 0; i < n; i++) { b[i] = Number(x & 255n); x >>= 8n; } return b; };
+
+  const compressAll = async (u8, onProgress) => {
+    const t0 = performance.now();
+    const pl = await call(pool[0], { type: 'plan', buf: u8.slice().buffer });
+    if (pl.ends.length <= 1) {
+      const buf = u8.slice().buffer;
+      const m = await call(pool[0], { type: 'compress', buf }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.done, brain: p.brain, k: 1 }));
+      return m;
+    }
+    const starts = [0, ...pl.ends.slice(0, -1)];
+    const done = new Array(pl.ends.length).fill(0); let brain = false;
+    const k = Math.min(POOL, pl.ends.length);
+    const gzP = call(pool[0], { type: 'gzip', buf: u8.slice().buffer });
+    const res = await fanOut(pl.ends.length, k, (w, i) => {
+      const part = u8.slice(starts[i], pl.ends[i]).buffer;
+      return call(w, { type: 'compress', buf: part, gz: false }, [part], (p) => {
+        if (p.type === 'model') { if (i === 0) onProgress({ model: p }); return; }
+        done[i] = p.done; brain = brain || p.brain; onProgress({ done: done.reduce((a, b) => a + b, 0), brain, k });
+      });
+    });
+    const streams = res.map((m) => new Uint8Array(m.buf));
+    const head = 18 + 4 + 4 * streams.length, size = head + streams.reduce((a, s) => a + s.length, 0);
+    const out = new Uint8Array(size);
+    out.set([78, 67, 90, 76, pl.version, pl.modeSeg], 0);        // "NCZL" | version | segmented; model id 0 (each segment has its own)
+    out.set(u32le(0, 4), 6); out.set(u32le(u8.length, 8), 10); out.set(u32le(streams.length, 4), 18);
+    let off = head; streams.forEach((s, i) => { out.set(u32le(s.length, 4), 22 + 4 * i); out.set(s, off); off += s.length; });
+    return { type: 'done', buf: out.buffer, ms: performance.now() - t0, gz: (await gzP).gz, k };
+  };
+
+  const decompressAll = async (u8, onProgress) => {
+    const t0 = performance.now();
+    const seg = u8.length >= 22 && u8[0] === 78 && u8[1] === 67 && u8[2] === 90 && u8[3] === 76 && u8[5] === 3;
+    if (!seg) { const buf = u8.slice().buffer; return call(pool[0], { type: 'decompress', buf }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.done, k: 1 })); }
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const total = Number(dv.getBigUint64(10, true)), n = dv.getUint32(18, true);
+    const lens = Array.from({ length: n }, (_, i) => dv.getUint32(22 + 4 * i, true));
+    const offs = []; let off = 22 + 4 * n; for (const l of lens) { offs.push(off); off += l; }
+    const done = new Array(n).fill(0); const k = Math.min(POOL, n);
+    const res = await fanOut(n, k, (w, i) => {
+      const part = u8.slice(offs[i], offs[i] + lens[i]).buffer;
+      return call(w, { type: 'decompress', buf: part }, [part], (p) => { if (p.type === 'model') { if (i === 0) onProgress({ model: p }); return; } done[i] = p.done; onProgress({ done: done.reduce((a, b) => a + b, 0), k }); });
+    });
+    const out = new Uint8Array(total); let o = 0;
+    for (const m of res) { const b = new Uint8Array(m.buf); out.set(b, o); o += b.length; }
+    if (o !== total) return { type: 'error', message: 'the file is damaged' };
+    return { type: 'done', buf: out.buffer, ms: performance.now() - t0, k };
+  };
+
   const run = async (file) => {
     if (busy) return; busy = true; drop.classList.add('busy');
-    const id = ++jobId;
     const isNcz = /\.ncz$/i.test(file.name);
-    const buf = await file.arrayBuffer();
-    const total = buf.byteLength;
+    const u8 = new Uint8Array(await file.arrayBuffer());
+    const total = u8.length;
     progress(isNcz ? 'unpacking' : 'compressing', 0, total);
-    const done = await new Promise((resolve) => {
-      const onMsg = (e) => {
-        const m = e.data; if (m.id !== id) return;
-        if (m.type === 'progress') progress(isNcz ? 'unpacking' : (m.brain ? 'compressing, with the brain' : 'compressing'), m.done, m.total);
-        else if (m.type === 'model') render(`<div class="job"><p class="label">fetching the brain</p><div class="bar"><i style="width:${m.total ? (m.done / m.total * 100).toFixed(1) : 0}%"></i></div><p class="sub">3 MB, once</p></div>`);
-        else { worker.removeEventListener('message', onMsg); resolve(m); }
-      };
-      worker.addEventListener('message', onMsg);
-      worker.postMessage({ id, type: isNcz ? 'decompress' : 'compress', buf }, [buf]);
-    });
+    const onProgress = (p) => {
+      if (p.model) { render(`<div class="job"><p class="label">fetching the brain</p><div class="bar"><i style="width:${p.model.total ? (p.model.done / p.model.total * 100).toFixed(1) : 0}%"></i></div><p class="sub">3 MB, once</p></div>`); return; }
+      const label = isNcz ? 'unpacking' : (p.brain ? 'compressing, with the brain' : 'compressing');
+      progress(p.k > 1 ? `${label} · ${p.k} at once` : label, p.done, total);
+    };
+    let done;
+    try { done = await (isNcz ? decompressAll(u8, onProgress) : compressAll(u8, onProgress)); }
+    catch (err) { done = { type: 'error', message: String(err && err.message || err) }; }
     busy = false; drop.classList.remove('busy');
     if (done.type === 'error') { render(`<div class="job"><p class="label">couldn't do that</p><p class="sub">${esc(done.message)}</p></div>`); say("that's not one of mine."); return; }
     const out = new Uint8Array(done.buf);
@@ -94,5 +160,5 @@
   drop.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f) run(f); });
   drop.addEventListener('click', () => input.click());
   input.addEventListener('change', () => { if (input.files[0]) run(input.files[0]); input.value = ''; });
-  window.__compress = run; window.__face = face;   // for testing
+  window.__compress = run; window.__face = face; window.__codec = { compressAll, decompressAll, POOL };   // for testing
 })();

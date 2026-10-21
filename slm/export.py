@@ -16,7 +16,7 @@ for name in sorted(sd):
     manifest.append({"name": name, "shape": list(t.shape), "offset": off, "count": int(t.size)})
     blob += t.tobytes(); off += t.size * 4
 # rotary tables, so the Rust side needs no libm: fine table for pos & 1023, coarse table for (pos >> 10) * 1024;
-# angle = coarse + fine, combined with the angle-sum identities (positions up to 2^20)
+# angle = coarse2 + coarse + fine, combined with the angle-sum identities (positions up to 2^30)
 import math
 ROT, TH = 24, 10000.0
 def table(name, angles):
@@ -27,6 +27,7 @@ def table(name, angles):
         blob.extend(t.tobytes()); off += t.size * 4
 table("", [p * (1.0 / TH ** ((2 * i) / ROT)) for p in range(1024) for i in range(ROT // 2)])
 table("c", [(k * 1024) * (1.0 / TH ** ((2 * i) / ROT)) for k in range(1024) for i in range(ROT // 2)])
+table("c2", [(k * (1 << 20)) * (1.0 / TH ** ((2 * i) / ROT)) for k in range(1024) for i in range(ROT // 2)])
 open("model/weights.bin", "wb").write(blob)
 json.dump({"tensors": manifest, "config": json.load(open(f"{mdir}/config.json"))}, open("model/manifest.json", "w"), indent=1)
 with open("model/manifest.txt", "w") as f:

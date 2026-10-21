@@ -244,3 +244,26 @@ the state lives in L1); interleaving rows in the old wasm kernel (no gain, it wa
 
 Where a single thread stands: the int8 matvecs read ~3 MB of weights per model step, ~30 µs at L2
 bandwidth, which is about what they take. More single-thread speed needs fewer weights read per byte.
+
+### Segments in parallel (2026-10-21, NCZL v5 + MODE_SEG)
+
+Big inputs are split into independent NCZL streams inside one container ("NCZL" | version | 3 | 0 | total |
+n | lengths | streams), compressed and decompressed on separate cores/workers. The split depends only on the
+input: at least 1 MiB per segment, at most 8, cut after a newline near each boundary. Same bytes on every
+machine and any worker count (native threads, Node worker_threads and browser workers all hash identical).
+
+Cost of starting cold, enwik8 1 MB / Swift 1.15 MB, 8 workers (one stream: 1.4032 / 1.2442 bpb):
+
+| segment | enwik8 | Swift | enwik8 KB/s |
+|---|---:|---:|---:|
+| 1 MiB | | +1.8% | |
+| 512 KiB | +1.4% | +5.2% | 48 |
+| 256 KiB | +3.0% | +8.7% | 95 |
+| 128 KiB | +5.0% | +12.5% | 157 |
+| 64 KiB | +7.6% | +17.6% | 150 |
+
+enwik8 10 MB under the policy (8 x 1.25 MB): one stream 1.4347 bpb at 31.7 KB/s; segmented 1.4852 (+3.5%)
+at 156 KB/s compress / 146 decompress (4.9x). Workers: 4 -> 92 KB/s, 8 -> 150, 12 -> 147 (8 segments).
+The cost grows with file size: one stream keeps learning across the whole file, segments restart.
+wasm (Node, 2 workers, 3 MB = 2 segments): 43.8 KB/s. Also: rope tables gained a third level (positions
+up to 2^30; the 10 MB one-stream run crashed at 2^20), pack v2, model id 1d4f6388.

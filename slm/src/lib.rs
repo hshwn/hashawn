@@ -245,7 +245,7 @@ pub struct Attn { pub proj: QMat /* rows: q_gate(2*NH*HD) k(HD) v(HD) */, pub o:
 pub enum Mixer { Gdn(Gdn), Attn(Attn) }
 pub struct Layer { pub ln1: Vec<f32>, pub ln2: Vec<f32>, pub res1: AttnRes, pub res2: AttnRes, pub mixer: Mixer, pub gu: QMat /* gate(FF) up(FF) */, pub down: QMat }
 /// `tok_row[t]` = the wte row of token t (identity unless `permute_vocab` reordered the rows).
-pub struct Weights { pub wte: QMat, pub tok_row: Vec<u32>, pub layers: Vec<Layer>, pub ln_f: Vec<f32>, pub res_f: AttnRes, pub rope_cos: Vec<f32>, pub rope_sin: Vec<f32>, pub rope_ccos: Vec<f32>, pub rope_csin: Vec<f32> }
+pub struct Weights { pub wte: QMat, pub tok_row: Vec<u32>, pub layers: Vec<Layer>, pub ln_f: Vec<f32>, pub res_f: AttnRes, pub rope_cos: Vec<f32>, pub rope_sin: Vec<f32>, pub rope_ccos: Vec<f32>, pub rope_csin: Vec<f32>, pub rope_c2cos: Vec<f32>, pub rope_c2sin: Vec<f32> }
 
 impl Weights {
     /// Reorder the tied embedding so logits come out in `rank` order (rank[t] = new position of token t).
@@ -256,12 +256,17 @@ impl Weights {
         self.wte.w = w; self.wte.scale = sc;
         for t in 0..V { self.tok_row[t] = rank[t] as u32; }
     }
-    /// cos/sin of pos*theta_i for the 12 rotary pairs, any position < 2^20: angle = coarse(pos>>10) + fine(pos&1023).
-    /// For pos < 1024 the coarse part is (1, 0) and the result equals the fine table bit for bit.
+    /// cos/sin of pos*theta_i for the 12 rotary pairs, any position < 2^30:
+    /// angle = coarse2(pos>>20) + coarse(pos>>10 & 1023) + fine(pos & 1023), by the angle-sum identities.
+    /// Below 2^20 the coarse2 factor is exactly (1, 0) and the result is bit-identical to two levels.
     pub fn rope(&self, pos: usize, cos: &mut [f32; ROT / 2], sin: &mut [f32; ROT / 2]) {
-        let (c, f) = ((pos >> 10) * ROT / 2, (pos & 1023) * ROT / 2);
+        assert!(pos < 1 << 30, "position beyond the rope tables");
+        let (c2, c, f) = ((pos >> 20) * ROT / 2, ((pos >> 10) & 1023) * ROT / 2, (pos & 1023) * ROT / 2);
         for i in 0..ROT / 2 {
-            let (ca, sa, cb, sb) = (self.rope_ccos[c + i], self.rope_csin[c + i], self.rope_cos[f + i], self.rope_sin[f + i]);
+            let (ka, kb) = (self.rope_c2cos[c2 + i], self.rope_c2sin[c2 + i]);
+            let (ca0, sa0) = (self.rope_ccos[c + i], self.rope_csin[c + i]);
+            let (ca, sa) = (ka * ca0 - kb * sa0, kb * ca0 + ka * sa0);
+            let (cb, sb) = (self.rope_cos[f + i], self.rope_sin[f + i]);
             cos[i] = ca * cb - sa * sb; sin[i] = sa * cb + ca * sb;
         }
     }
@@ -303,7 +308,7 @@ impl Weights {
             layers.push(Layer { ln1: get(&format!("{p}.ln_1.weight")), ln2: get(&format!("{p}.ln_2.weight")), res1: res(&format!("{p}.attn_res_1")), res2: res(&format!("{p}.attn_res_2")), mixer,
                 gu: QMat::concat(&[&get(&format!("{p}.mlp.w_gate.weight")), &get(&format!("{p}.mlp.w_up.weight"))], H), down: QMat::from_f32(&get(&format!("{p}.mlp.w_down.weight")), FF) });
         }
-        Weights { wte: QMat::from_f32(&get("transformer.wte.weight"), H), tok_row: (0..V as u32).collect(), layers, ln_f: get("transformer.ln_f.weight"), res_f: res("transformer.attn_res_f"), rope_cos: get("rope.cos"), rope_sin: get("rope.sin"), rope_ccos: get("rope.ccos"), rope_csin: get("rope.csin") }
+        Weights { wte: QMat::from_f32(&get("transformer.wte.weight"), H), tok_row: (0..V as u32).collect(), layers, ln_f: get("transformer.ln_f.weight"), res_f: res("transformer.attn_res_f"), rope_cos: get("rope.cos"), rope_sin: get("rope.sin"), rope_ccos: get("rope.ccos"), rope_csin: get("rope.csin"), rope_c2cos: get("rope.c2cos"), rope_c2sin: get("rope.c2sin") }
     }
 }
 

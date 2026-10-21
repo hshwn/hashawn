@@ -84,15 +84,30 @@ async function decompress(u8, id) {
   return takeOut(ptr);
 }
 
+// segment plan for big inputs: the split comes from the same Rust function the native build uses
+async function plan(u8) {
+  await load();
+  const max = Math.ceil(u8.length / 1024) + 2;
+  const p = put(u8), out = wasm.nczl_alloc(4 * max);
+  const n = wasm.nczl_split(p, u8.length, out, max);
+  const ends = Array.from(new Uint32Array(wasm.memory.buffer, out, n));
+  wasm.nczl_free(p, u8.length); wasm.nczl_free(out, 4 * max);
+  return { ends, seg: wasm.nczl_seg_size(), version: wasm.nczl_version(), modeSeg: wasm.nczl_mode_seg() };
+}
+
 onmessage = async (e) => {
-  const { id, type, buf } = e.data;
+  const { id, type, buf, gz: wantGz = true } = e.data;
   const u8 = new Uint8Array(buf);
   try {
-    if (type === 'compress') {
+    if (type === 'plan') {
+      postMessage({ id, type: 'done', ...(await plan(u8)) });
+    } else if (type === 'gzip') {
+      postMessage({ id, type: 'done', gz: await gzipSize(u8) });
+    } else if (type === 'compress') {
       const t = performance.now();
       const out = await compress(u8, id);
       const ms = performance.now() - t;
-      const gz = await gzipSize(u8);
+      const gz = wantGz ? await gzipSize(u8) : null;
       postMessage({ id, type: 'done', buf: out.buffer, ms, gz }, [out.buffer]);
     } else {
       const t = performance.now();

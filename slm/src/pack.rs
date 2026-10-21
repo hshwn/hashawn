@@ -4,7 +4,7 @@
 use crate::{AttnRes, Attn, Gdn, Layer, Mixer, QMat, Weights, NL, V, is_attn};
 
 pub const MAGIC: &[u8; 4] = b"SLMQ";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 
 struct W(Vec<u8>);
 impl W {
@@ -29,7 +29,7 @@ pub fn pack(w: &Weights, vocab: &[u8], merges: &[u8]) -> Vec<u8> {
     let mut o = W(Vec::with_capacity(4 << 20));
     o.0.extend_from_slice(MAGIC); o.0.push(VERSION);
     o.qmat(&w.wte); o.f32s(&w.ln_f); o.res(&w.res_f);
-    o.f32s(&w.rope_cos); o.f32s(&w.rope_sin); o.f32s(&w.rope_ccos); o.f32s(&w.rope_csin);
+    o.f32s(&w.rope_cos); o.f32s(&w.rope_sin); o.f32s(&w.rope_ccos); o.f32s(&w.rope_csin); o.f32s(&w.rope_c2cos); o.f32s(&w.rope_c2sin);
     for l in &w.layers {
         o.f32s(&l.ln1); o.f32s(&l.ln2); o.res(&l.res1); o.res(&l.res2); o.qmat(&l.gu); o.qmat(&l.down);
         match &l.mixer {
@@ -46,7 +46,7 @@ pub fn unpack(b: &[u8]) -> Option<(Weights, Vec<u8>, Vec<u8>)> {
     if b.len() < 5 || &b[..4] != MAGIC || b[4] != VERSION { return None; }
     let mut r = R { b, p: 5 };
     let wte = r.qmat(); let ln_f = r.f32s(); let res_f = r.res();
-    let rope_cos = r.f32s(); let rope_sin = r.f32s(); let rope_ccos = r.f32s(); let rope_csin = r.f32s();
+    let rope_cos = r.f32s(); let rope_sin = r.f32s(); let rope_ccos = r.f32s(); let rope_csin = r.f32s(); let rope_c2cos = r.f32s(); let rope_c2sin = r.f32s();
     let mut layers = Vec::with_capacity(NL);
     for l in 0..NL {
         let ln1 = r.f32s(); let ln2 = r.f32s(); let res1 = r.res(); let res2 = r.res(); let gu = r.qmat(); let down = r.qmat();
@@ -55,7 +55,7 @@ pub fn unpack(b: &[u8]) -> Option<(Weights, Vec<u8>, Vec<u8>)> {
         layers.push(Layer { ln1, ln2, res1, res2, mixer, gu, down });
     }
     let vocab = r.bytes(); let merges = r.bytes();
-    Some((Weights { wte, tok_row: (0..V as u32).collect(), layers, ln_f, res_f, rope_cos, rope_sin, rope_ccos, rope_csin }, vocab, merges))
+    Some((Weights { wte, tok_row: (0..V as u32).collect(), layers, ln_f, res_f, rope_cos, rope_sin, rope_ccos, rope_csin, rope_c2cos, rope_c2sin }, vocab, merges))
 }
 
 /// FNV-1a over the pack, folded to 32 bits: the model id in every NCZL header.

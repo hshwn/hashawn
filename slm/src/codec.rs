@@ -125,7 +125,7 @@ impl<'a> LmEncoder<'a> {
     pub fn finish(self) -> Vec<u8> {
         let (a, total, data) = (self.a, self.data.len(), self.data);
         let out = header(MODE_LM, a.model_id, total, &self.enc.finish_payload());
-        if out.len() >= HEADER + total { header(MODE_STORE, a.model_id, total, &data) } else { out }
+        if out.len() >= HEADER + total { header(MODE_STORE, 0, total, &data) } else { out }
     }
 }
 
@@ -186,21 +186,125 @@ impl<'a> LmDecoder<'a> {
     pub fn finish(self) -> Option<Vec<u8>> { if self.failed || self.out.len() != self.total { None } else { Some(self.out) } }
 }
 
-pub fn compress(a: &Assets, data: &[u8], threads: usize) -> Vec<u8> {
+/// One independent stream (no segmenting).
+pub fn compress_one(a: &Assets, data: &[u8], threads: usize) -> Vec<u8> {
     if looks_like_text(data) {
         let mut e = LmEncoder::new(a, data, threads);
         while e.step(1 << 16) > 0 {}
         e.finish()
     } else {
+        // the model id goes only into streams that need the model, so a browser without it writes the same bytes
         let mut e = Encoder::new(); e.push(data);
-        let out = header(MODE_NCZ, a.model_id, data.len(), &e.finish_payload());
-        if out.len() >= HEADER + data.len() { header(MODE_STORE, a.model_id, data.len(), data) } else { out }
+        let out = header(MODE_NCZ, 0, data.len(), &e.finish_payload());
+        if out.len() >= HEADER + data.len() { header(MODE_STORE, 0, data.len(), data) } else { out }
     }
 }
 
 /// None when the header is wrong, the model differs, or the stream is inconsistent.
-pub fn decompress(a: &Assets, blob: &[u8], threads: usize) -> Option<Vec<u8>> {
+pub fn decompress_one(a: &Assets, blob: &[u8], threads: usize) -> Option<Vec<u8>> {
     let mut d = LmDecoder::new(Some(a), blob, threads)?;
     while d.step(1 << 16) > 0 {}
     d.finish()
+}
+
+// ---------------------------------------------------------------------------
+// segments: big inputs become independent streams that compress and decompress in parallel
+// ---------------------------------------------------------------------------
+/// Container: "NCZL" | version | MODE_SEG | model id u32 | total u64 | n u32 | n x stream length u32 | streams.
+/// Each stream is a complete NCZL stream of one segment. The split depends only on the input, never on
+/// the machine, so every device writes the same bytes.
+pub const MODE_SEG: u8 = 3;
+/// Every segment starts cold, which costs ~1.4% (prose) to ~5% (code) at 512 KiB and ~1-2% at 1 MiB, so
+/// segments are at least `SEG_MIN` and there are at most `MAX_SEGS`: n = clamp(len / SEG_MIN, 1, 8).
+pub const SEG_MIN: usize = 1 << 20;
+pub const MAX_SEGS: usize = 8;
+fn seg_min() -> usize { std::env::var("SLM_SEG").ok().and_then(|v| v.parse().ok()).unwrap_or(SEG_MIN) }
+/// Segment length for an input of `len` bytes under the policy (len itself when it stays one stream).
+pub fn seg_len(len: usize, seg_min: usize) -> usize { let n = (len / seg_min).clamp(1, MAX_SEGS); (len + n - 1) / n }
+
+/// Segment boundaries (exclusive ends): near every multiple of `seg`, just after a newline within the
+/// 4 KB before it, else at a UTF-8 character start.
+pub fn split_points(data: &[u8], seg: usize) -> Vec<usize> {
+    let mut ends = Vec::new(); let mut prev = 0usize; let mut k = 1usize;
+    while k * seg < data.len() {
+        let t = k * seg;
+        let lo = t.saturating_sub(4096).max(prev + 1);
+        let mut cut = (lo..t).rev().find(|&i| data[i] == b'\n').map(|i| i + 1);
+        if cut.is_none() { let mut c = t; while c > prev + 1 && (data[c] & 0xC0) == 0x80 { c -= 1; } cut = Some(c); }
+        let c = cut.unwrap();
+        if c > prev && c < data.len() { ends.push(c); prev = c; }
+        k += 1;
+    }
+    ends.push(data.len());
+    ends
+}
+
+fn workers() -> usize { std::env::var("SLM_WORKERS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get())) }
+
+/// Run `f` over `items` with up to `w` at a time, results in order.
+fn par_map<T: Sync, R: Send>(items: &[T], w: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    #[cfg(target_arch = "wasm32")] { let _ = w; return items.iter().map(&f).collect(); }
+    #[allow(unreachable_code)]
+    {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let out: Vec<std::sync::Mutex<Option<R>>> = items.iter().map(|_| std::sync::Mutex::new(None)).collect();
+        std::thread::scope(|sc| {
+            for _ in 0..w.min(items.len()).max(1) {
+                sc.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= items.len() { break; }
+                    let r = f(&items[i]); *out[i].lock().unwrap() = Some(r);
+                });
+            }
+        });
+        out.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect()
+    }
+}
+
+/// Assemble a segmented container from per-segment streams.
+pub fn container(model_id: u32, total: usize, streams: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(MAGIC); out.push(VERSION); out.push(MODE_SEG);
+    out.extend_from_slice(&model_id.to_le_bytes()); out.extend_from_slice(&(total as u64).to_le_bytes());
+    out.extend_from_slice(&(streams.len() as u32).to_le_bytes());
+    for st in streams { out.extend_from_slice(&(st.len() as u32).to_le_bytes()); }
+    for st in streams { out.extend_from_slice(st); }
+    out
+}
+/// The streams inside a segmented container, or None if `blob` is not one.
+pub fn segments(blob: &[u8]) -> Option<Vec<&[u8]>> {
+    if blob.len() < HEADER + 4 || &blob[..4] != MAGIC || blob[4] != VERSION || blob[5] != MODE_SEG { return None; }
+    let n = u32::from_le_bytes(blob[HEADER..HEADER + 4].try_into().ok()?) as usize;
+    let mut off = HEADER + 4 + 4 * n; if off > blob.len() { return None; }
+    let mut v = Vec::with_capacity(n);
+    for i in 0..n {
+        let l = u32::from_le_bytes(blob[HEADER + 4 + 4 * i..HEADER + 8 + 4 * i].try_into().ok()?) as usize;
+        if off + l > blob.len() { return None; }
+        v.push(&blob[off..off + l]); off += l;
+    }
+    Some(v)
+}
+
+/// Inputs above one segment are split and compressed in parallel (one model per segment, `threads` is
+/// then unused); smaller ones are a single stream using `threads` inside each token.
+pub fn compress(a: &Assets, data: &[u8], threads: usize) -> Vec<u8> {
+    let seg = seg_len(data.len(), seg_min());
+    if seg >= data.len() { return compress_one(a, data, threads); }
+    let ends = split_points(data, seg);
+    let parts: Vec<&[u8]> = ends.iter().scan(0usize, |st, &e| { let p = &data[*st..e]; *st = e; Some(p) }).collect();
+    let streams = par_map(&parts, workers(), |p| compress_one(a, p, 1));
+    container(0, data.len(), &streams)
+}
+
+pub fn decompress(a: &Assets, blob: &[u8], threads: usize) -> Option<Vec<u8>> {
+    match segments(blob) {
+        None => decompress_one(a, blob, threads),
+        Some(parts) => {
+            let total = u64::from_le_bytes(blob[10..18].try_into().ok()?) as usize;
+            let outs = par_map(&parts, workers(), |p| decompress_one(a, p, 1));
+            let mut out = Vec::with_capacity(total);
+            for o in outs { out.extend_from_slice(&o?); }
+            if out.len() == total { Some(out) } else { None }
+        }
+    }
 }
