@@ -19,6 +19,11 @@ pub const VERSION: u8 = 2;
 const HEADER: usize = 4 + 1 + 1 + 1 + 4 + 4;
 /// Header flags: how the stream was coded (the decoder must do the same).
 pub const F_PLANAR: u8 = 1; pub const F_LEARNED_COLOUR: u8 = 2; pub const F_LEARNED_GREEN: u8 = 4;
+/// The pixels carry a fourth channel, alpha (RGBA): coded first, from its own neighbours only.
+pub const F_ALPHA: u8 = 8;
+const ALL_FLAGS: u8 = F_PLANAR | F_LEARNED_COLOUR | F_LEARNED_GREEN | F_ALPHA;
+/// Red and blue lean on green; green and alpha only on their own neighbours.
+#[inline(always)] fn colour(c: usize) -> bool { c == 0 || c == 2 }
 
 const NP: usize = 15;        // predictors
 const ND: usize = 74;        // binary decisions per sample: 0 zero?, 1..=7 size, 8..71 mantissa, 72 sign, 73 spare
@@ -44,9 +49,9 @@ impl BitIo for Enc {
         y
     }
 }
-struct Dec<'a> { x1: u32, x2: u32, x: u32, buf: &'a [u8], pos: usize }
-impl Dec<'_> { #[inline(always)] fn next_in(&mut self) -> u32 { let b = *self.buf.get(self.pos).unwrap_or(&0); self.pos += 1; b as u32 } }
-impl BitIo for Dec<'_> {
+struct Dec { x1: u32, x2: u32, x: u32, buf: Vec<u8>, pos: usize }
+impl Dec { #[inline(always)] fn next_in(&mut self) -> u32 { let b = *self.buf.get(self.pos).unwrap_or(&0); self.pos += 1; b as u32 } }
+impl BitIo for Dec {
     #[inline(always)] fn bit(&mut self, p12: u32, _want: u32) -> u32 {
         let p = p12.clamp(1, 4095);
         let xmid = self.x1 + ((self.x2 - self.x1) >> 12) * p;
@@ -97,9 +102,10 @@ impl Apm {
 
 struct Model {
     w: usize, h: usize, k: i32, planar: bool,
-    rec: [Vec<u8>; 3],                 // reconstructed samples per channel (R, G, B)
-    res: [Vec<i16>; 3],                // quantised residual per sample
-    err: [Vec<u16>; 3],                // per predictor abs error (x8) at each pixel: [pos * NP + i]
+    rec: Vec<Vec<u8>>,                 // reconstructed samples per channel (R, G, B, alpha)
+    res: Vec<Vec<i16>>,                // quantised residual per sample
+    err: Vec<Vec<u16>>,                // per predictor abs error (x8), a two-row ring: [(pos % 2w) * NP + i]
+    nch: usize, order: Vec<usize>,
     bias_sum: Vec<i32>, bias_n: Vec<i32>,
     sm: Vec<u32>,                      // hashed: (set, channel, context, decision, decoded-so-far) -> probability
     mix: Vec<i32>,                     // [ch][decision][activity 0..4][N_IN]
@@ -156,19 +162,21 @@ const CODE_ORDER: [usize; 3] = [1, 0, 2];   // green first, then red, then blue 
 impl Model {
     fn new(w: usize, h: usize, k: i32, flags: u8) -> Model {
         let planar = flags & F_PLANAR != 0;
+        let nch = if flags & F_ALPHA != 0 { 4 } else { 3 };
+        let order: Vec<usize> = if nch == 4 { vec![3, 1, 0, 2] } else { CODE_ORDER.to_vec() };
         let n = w * h;
-        let mut mix = vec![0i32; 3 * ND * 4 * N_IN];
-        for s in 0..3 * ND * 4 { for i in 0..NSETS { mix[s * N_IN + i] = 65536 / 4; } }
-        let mut mix2 = vec![0i32; 3 * ND * 16 * N_IN];
-        for s in 0..3 * ND * 16 { for i in 0..NSETS { mix2[s * N_IN + i] = 65536 / 4; } }
+        let mut mix = vec![0i32; 4 * ND * 4 * N_IN];
+        for s in 0..4 * ND * 4 { for i in 0..NSETS { mix[s * N_IN + i] = 65536 / 4; } }
+        let mut mix2 = vec![0i32; 4 * ND * 16 * N_IN];
+        for s in 0..4 * ND * 16 { for i in 0..NSETS { mix2[s * N_IN + i] = 65536 / 4; } }
         let nets = if flags & F_LEARNED_COLOUR != 0 && planar { Some([Mlp::load(NET_RED), Mlp::load(NET_BLUE)]) } else { None };
         let gnet = if flags & F_LEARNED_GREEN != 0 { Some(Mlp::load(NET_GREEN)) } else { None };
         Model { w, h, k, planar, mix2, eqc: 0, mixbase2: 0, pmix2: 2048, nets, gnet,
-            rec: [vec![0; n], vec![0; n], vec![0; n]], res: [vec![0; n], vec![0; n], vec![0; n]],
-            err: [vec![0; n * NP], vec![0; n * NP], vec![0; n * NP]],
-            bias_sum: vec![0; 3 * 16 * 27], bias_n: vec![0; 3 * 16 * 27],
+            rec: vec![vec![0; n]; nch], res: vec![vec![0; n]; nch],
+            err: vec![vec![0; 2 * w * NP]; nch], nch, order,
+            bias_sum: vec![0; 4 * 16 * 27], bias_n: vec![0; 4 * 16 * 27],
             sm: vec![SM_INIT; 1 << TBITS], mix,
-            apm: Apm::new(3 * ND * 16), apm2: Apm::new(3 * ND * 27),
+            apm: Apm::new(4 * ND * 16), apm2: Apm::new(4 * ND * 27),
             ch: 0, ctx: [0; NSETS], act: 0, st: [0; N_IN], sidx: [0; NSETS], mixbase: 0, pmix: 2048, apm_ctx: 0, apm2_ctx: 0 }
     }
 
@@ -222,7 +230,7 @@ impl Model {
 
         // the green change at this pixel and its neighbours, for "colour from brightness"
         let g = &self.rec[1]; let gi = |p: usize| g[p] as i32;
-        let (cross, cross_w, cross_n, cross_grad) = if c != 1 {
+        let (cross, cross_w, cross_n, cross_grad) = if colour(c) {
             let gw = if x > 0 { gi(pos - 1) } else if y > 0 { gi(pos - w) } else { 128 };
             let gn = if y > 0 { gi(pos - w) } else { gw };
             let gnw = if x > 0 && y > 0 { gi(pos - w - 1) } else { gn };
@@ -231,7 +239,7 @@ impl Model {
         } else { (false, 0, 0, 0) };
         // nearby (green, this channel) pairs: copy the colour offset of the neighbour closest in brightness,
         // and fit colour = a * green + b over them (chroma from luma)
-        let (bilat, cfl) = if c != 1 {
+        let (bilat, cfl) = if colour(c) {
             let gc = g[pos] as i32; let rc = &self.rec[c];
             let mut cand: [(i32, i32); 6] = [(0, 0); 6]; let mut n = 0usize;
             let mut add = |p: Option<usize>| if let Some(p) = p { cand[n] = (g[p] as i32, rc[p] as i32); n += 1; };
@@ -290,7 +298,8 @@ impl Model {
         ];
         // weights from each predictor's recent error around this pixel
         let e = &self.err[c];
-        let ebuf = |p: Option<usize>, i: usize| -> u32 { p.map_or(0, |p| e[p * NP + i] as u32) };
+        let ring = 2 * w;
+        let ebuf = |p: Option<usize>, i: usize| -> u32 { p.map_or(0, |p| e[(p % ring) * NP + i] as u32) };
         let pw = if x > 0 { Some(pos - 1) } else { None };
         let pn = if y > 0 { Some(pos - w) } else { None };
         let pnw = if x > 0 && y > 0 { Some(pos - w - 1) } else { None };
@@ -324,17 +333,17 @@ impl Model {
             aq as u32,
             eq as u32,
             q16(rw.abs() + rn.abs()) as u32,
-            (if c == 1 { q16(rne.abs() + (rw.abs() >> 1)) } else { xmag }) as u32,
+            (if !colour(c) { q16(rne.abs() + (rw.abs() >> 1)) } else { xmag }) as u32,
             ((aq >> 1) * 16 + q16(rw.abs() + rn.abs())) as u32,
-            (sgn(rw) * 9 + sgn(rn) * 3 + sgn(xres) + 27 * if c == 1 { 0 } else { 1 + (xres.abs() > 2) as usize }) as u32,
-            (eq * 16 + if c == 1 { q16(rne.abs()) } else { xmag }) as u32,
+            (sgn(rw) * 9 + sgn(rn) * 3 + sgn(xres) + 27 * if !colour(c) { 0 } else { 1 + (xres.abs() > 2) as usize }) as u32,
+            (eq * 16 + if !colour(c) { q16(rne.abs()) } else { xmag }) as u32,
             off(0) * 17 + off(1),
             off(2) * 17 + off(7),
             off(8) * 17 + off(9) + 289 * (eq as u32 >> 2),
             off(3) * 17 + off(4),
             off(5) * 17 + off(6),
             off(10) * 17 + off(11),
-            off(12) * 17 + off(13) + 289 * if c != 1 && self.planar {
+            off(12) * 17 + off(13) + 289 * if colour(c) && self.planar {
                 let gc = g[pos] as i32; let ge = if x + 1 < w { g[pos + 1] as i32 } else { gc }; let gs = if y + 1 < self.h { g[pos + w] as i32 } else { gc };
                 q16((ge - gc).abs() + (gs - gc).abs()) as u32 + 1 } else { 0 },
             off(14) * 17 + lsig * 289,
@@ -368,62 +377,94 @@ impl Model {
         // learn: bias, predictor errors, residual store
         if self.bias_n[bias_ctx] >= 64 { self.bias_sum[bias_ctx] /= 2; self.bias_n[bias_ctx] /= 2; }
         self.bias_sum[bias_ctx] += recon - pred; self.bias_n[bias_ctx] += 1;
-        for i in 0..NP { self.err[c][pos * NP + i] = ((preds[i] - recon).unsigned_abs() * 8).min(65535) as u16; }
+        let slot = (pos % (2 * w)) * NP;
+        for i in 0..NP { self.err[c][slot + i] = ((preds[i] - recon).unsigned_abs() * 8).min(65535) as u16; }
         self.res[c][pos] = eqd.clamp(-32768, 32767) as i16;
         self.rec[c][pos] = recon as u8;
         recon as u8
     }
 
-    fn run<I: BitIo>(&mut self, io: &mut I, rgb: Option<&[u8]>) -> Vec<u8> {
-        let (w, h) = (self.w, self.h);
-        let mut out = vec![0u8; w * h * 3];
+    /// Number of coding units: rows of one channel (planar) or rows of all channels (interleaved).
+    fn units(&self) -> usize { if self.planar { self.nch * self.h } else { self.h } }
+    /// Code (or decode) unit `u`; `px` holds interleaved samples (nch per pixel), read when encoding, written when decoding.
+    fn unit<I: BitIo>(&mut self, io: &mut I, u: usize, px: &mut [u8], encoding: bool) {
+        let (w, nch) = (self.w, self.nch);
         if self.planar {
-            // whole green plane first: red and blue then see brightness everywhere, ahead of them too
-            for &c in &CODE_ORDER { for y in 0..h { for x in 0..w {
-                let pos = y * w + x; let v = rgb.map_or(0, |a| a[pos * 3 + c]);
-                out[pos * 3 + c] = self.sample(io, c, x, y, v);
-            } } }
+            let (c, y) = (self.order[u / self.h], u % self.h);
+            for x in 0..w { let i = (y * w + x) * nch + c; let v = if encoding { px[i] } else { 0 }; px[i] = self.sample(io, c, x, y, v); }
         } else {
-            for y in 0..h { for x in 0..w {
-                let pos = y * w + x;
-                for &c in &CODE_ORDER {
-                    let v = rgb.map_or(0, |a| a[pos * 3 + c]);
-                    out[pos * 3 + c] = self.sample(io, c, x, y, v);
-                }
-            } }
+            let y = u;
+            for x in 0..w { for oi in 0..nch { let c = self.order[oi]; let i = (y * w + x) * nch + c; let v = if encoding { px[i] } else { 0 }; px[i] = self.sample(io, c, x, y, v); } }
         }
-        out
     }
 }
 
-/// Compress 8-bit RGB pixels (row-major, 3 bytes per pixel). `k` = 0 lossless, else max abs error per sample.
-/// `flags`: F_PLANAR (green plane first), F_LEARNED_COLOUR (needs planar), F_LEARNED_GREEN. 0 = fastest.
-pub fn compress_rgb(rgb: &[u8], w: usize, h: usize, k: u8) -> Vec<u8> { compress_rgb_flags(rgb, w, h, k, 0) }
-pub fn compress_rgb_flags(rgb: &[u8], w: usize, h: usize, k: u8, flags: u8) -> Vec<u8> {
-    assert_eq!(rgb.len(), w * h * 3);
-    let flags = if flags & F_LEARNED_COLOUR != 0 { flags | F_PLANAR } else { flags };
-    let mut m = Model::new(w, h, k as i32, flags);
-    let mut e = Enc { x1: 0, x2: 0xFFFF_FFFF, out: Vec::new() };
-    m.run(&mut e, Some(rgb));
-    e.out.extend_from_slice(&e.x1.to_be_bytes());
-    let mut v = Vec::with_capacity(HEADER + e.out.len());
+/// Header: "NCZI" | version | k | flags | w u32 | h u32 | payload.
+fn header(k: u8, flags: u8, w: usize, h: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(HEADER);
     v.extend_from_slice(MAGIC); v.push(VERSION); v.push(k); v.push(flags);
     v.extend_from_slice(&(w as u32).to_le_bytes()); v.extend_from_slice(&(h as u32).to_le_bytes());
-    v.extend_from_slice(&e.out);
     v
 }
 
-/// Returns (rgb, w, h, k), or None if this is not an NCZI stream.
+/// Streaming encoder over interleaved samples (3 per pixel, or 4 with F_ALPHA): `step(n)` codes n more units.
+pub struct ImgEncoder { m: Model, e: Enc, px: Vec<u8>, u: usize, k: u8, flags: u8 }
+impl ImgEncoder {
+    pub fn new(px: Vec<u8>, w: usize, h: usize, k: u8, flags: u8) -> ImgEncoder {
+        let flags = if flags & F_LEARNED_COLOUR != 0 { flags | F_PLANAR } else { flags };
+        let nch = if flags & F_ALPHA != 0 { 4 } else { 3 };
+        assert_eq!(px.len(), w * h * nch);
+        ImgEncoder { m: Model::new(w, h, k as i32, flags), e: Enc { x1: 0, x2: 0xFFFF_FFFF, out: Vec::new() }, px, u: 0, k, flags }
+    }
+    pub fn units(&self) -> usize { self.m.units() }
+    pub fn done(&self) -> usize { self.u }
+    pub fn step(&mut self, n: usize) -> usize {
+        let end = self.u.saturating_add(n).min(self.m.units()); let k = end - self.u;
+        while self.u < end { let u = self.u; self.m.unit(&mut self.e, u, &mut self.px, true); self.u += 1; }
+        k
+    }
+    pub fn finish(mut self) -> Vec<u8> {
+        while self.step(usize::MAX) > 0 {}
+        self.e.out.extend_from_slice(&self.e.x1.to_be_bytes());
+        let mut v = header(self.k, self.flags, self.m.w, self.m.h); v.extend_from_slice(&self.e.out); v
+    }
+}
+
+/// Streaming decoder; `finish` returns the interleaved samples.
+pub struct ImgDecoder { m: Model, d: Dec, px: Vec<u8>, u: usize, pub w: usize, pub h: usize, pub k: u8, pub flags: u8 }
+impl ImgDecoder {
+    pub fn new(blob: &[u8]) -> Option<ImgDecoder> {
+        if blob.len() < HEADER || &blob[..4] != MAGIC || blob[4] != VERSION { return None; }
+        let (k, flags) = (blob[5], blob[6]);
+        if flags & !ALL_FLAGS != 0 { return None; }
+        let w = u32::from_le_bytes(blob[7..11].try_into().ok()?) as usize; let h = u32::from_le_bytes(blob[11..15].try_into().ok()?) as usize;
+        if w == 0 || h == 0 || w.checked_mul(h)? > 1 << 28 { return None; }
+        let nch = if flags & F_ALPHA != 0 { 4 } else { 3 };
+        let mut d = Dec { x1: 0, x2: 0xFFFF_FFFF, x: 0, buf: blob[HEADER..].to_vec(), pos: 0 };
+        for _ in 0..4 { d.x = (d.x << 8) | d.next_in(); }
+        Some(ImgDecoder { m: Model::new(w, h, k as i32, flags), d, px: vec![0; w * h * nch], u: 0, w, h, k, flags })
+    }
+    pub fn units(&self) -> usize { self.m.units() }
+    pub fn done(&self) -> usize { self.u }
+    pub fn step(&mut self, n: usize) -> usize {
+        let end = self.u.saturating_add(n).min(self.m.units()); let k = end - self.u;
+        while self.u < end { let u = self.u; self.m.unit(&mut self.d, u, &mut self.px, false); self.u += 1; }
+        k
+    }
+    pub fn finish(mut self) -> Vec<u8> { while self.step(usize::MAX) > 0 {} self.px }
+}
+
+/// Compress 8-bit RGB pixels (row-major, 3 bytes per pixel). `k` = 0 lossless, else max abs error per sample.
+/// `flags`: F_PLANAR (green plane first), F_LEARNED_COLOUR (needs planar), F_LEARNED_GREEN; 0 = fastest.
+pub fn compress_rgb(rgb: &[u8], w: usize, h: usize, k: u8) -> Vec<u8> { compress_rgb_flags(rgb, w, h, k, 0) }
+pub fn compress_rgb_flags(rgb: &[u8], w: usize, h: usize, k: u8, flags: u8) -> Vec<u8> { ImgEncoder::new(rgb.to_vec(), w, h, k, flags & !F_ALPHA).finish() }
+/// RGBA (4 bytes per pixel).
+pub fn compress_rgba_flags(rgba: &[u8], w: usize, h: usize, k: u8, flags: u8) -> Vec<u8> { ImgEncoder::new(rgba.to_vec(), w, h, k, flags | F_ALPHA).finish() }
+
+/// Returns (samples, w, h, k) — 3 per pixel, or 4 if the stream carries alpha — or None if not an NCZI stream.
 pub fn decompress_rgb(blob: &[u8]) -> Option<(Vec<u8>, usize, usize, u8)> {
-    if blob.len() < HEADER || &blob[..4] != MAGIC || blob[4] != VERSION { return None; }
-    let (k, flags) = (blob[5], blob[6]);
-    if flags & !(F_PLANAR | F_LEARNED_COLOUR | F_LEARNED_GREEN) != 0 { return None; }
-    let w = u32::from_le_bytes(blob[7..11].try_into().ok()?) as usize; let h = u32::from_le_bytes(blob[11..15].try_into().ok()?) as usize;
-    if w == 0 || h == 0 || w.checked_mul(h)? > 1 << 28 { return None; }
-    let mut d = Dec { x1: 0, x2: 0xFFFF_FFFF, x: 0, buf: &blob[HEADER..], pos: 0 };
-    for _ in 0..4 { d.x = (d.x << 8) | d.next_in(); }
-    let mut m = Model::new(w, h, k as i32, flags);
-    Some((m.run(&mut d, None), w, h, k))
+    let d = ImgDecoder::new(blob)?; let (w, h, k) = (d.w, d.h, d.k);
+    Some((d.finish(), w, h, k))
 }
 
 /// Read a binary PPM (P6, maxval 255).

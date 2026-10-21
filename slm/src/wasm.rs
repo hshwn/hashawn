@@ -14,9 +14,11 @@ static mut OUT_LEN: usize = 0;
 #[allow(static_mut_refs)]
 fn assets() -> Option<&'static Assets> { unsafe { ASSETS.as_deref() } }
 
-pub enum AnyEncoder { Lm(LmEncoder<'static>), Ncz { data: Vec<u8>, pos: usize, enc: Encoder, id: u32 } }
+pub enum AnyEncoder { Lm(LmEncoder<'static>), Ncz { data: Vec<u8>, pos: usize, enc: Encoder, id: u32 }, Png { e: ncz::pngc::PngEncoder, data: Vec<u8> } }
 impl AnyEncoder {
     pub fn new(data: &[u8], threads: usize) -> AnyEncoder {
+        // PNG: pixel model (fast mode); falls back to the byte-exact path in finish() when it would not be smaller
+        if ncz::pngc::is_png(data) { if let Some(e) = ncz::pngc::PngEncoder::new(data, 0) { return AnyEncoder::Png { e, data: data.to_vec() }; } }
         match assets() {
             Some(a) if looks_like_text(data) => AnyEncoder::Lm(LmEncoder::new(a, data, threads)),
             _ => AnyEncoder::Ncz { data: data.to_vec(), pos: 0, enc: Encoder::new(), id: 0 },
@@ -26,13 +28,19 @@ impl AnyEncoder {
         match self {
             AnyEncoder::Lm(e) => e.step(n),
             AnyEncoder::Ncz { data, pos, enc, .. } => { let k = n.min(data.len() - *pos); enc.push(&data[*pos..*pos + k]); *pos += k; k }
+            AnyEncoder::Png { e, .. } => e.step(n),                        // n = rows
         }
     }
-    pub fn done(&self) -> usize { match self { AnyEncoder::Lm(e) => e.done(), AnyEncoder::Ncz { pos, .. } => *pos } }
+    /// Progress in input bytes (PNG: rows done scaled to the file size).
+    pub fn done(&self) -> usize { match self { AnyEncoder::Lm(e) => e.done(), AnyEncoder::Ncz { pos, .. } => *pos, AnyEncoder::Png { e, data } => data.len() * e.done() / e.units().max(1) } }
     pub fn finish(self) -> Vec<u8> {
         match self {
             AnyEncoder::Lm(e) => e.finish(),
             AnyEncoder::Ncz { data, enc, id, .. } => { let out = header(MODE_NCZ, id, data.len(), &enc.finish_payload()); if out.len() >= HEADER + data.len() { header(MODE_STORE, id, data.len(), &data) } else { out } }
+            AnyEncoder::Png { e, data } => match e.finish() {
+                Some(out) => out,
+                None => { let mut enc = Encoder::new(); enc.push(&data); let out = header(MODE_NCZ, 0, data.len(), &enc.finish_payload()); if out.len() >= HEADER + data.len() { header(MODE_STORE, 0, data.len(), &data) } else { out } }
+            },
         }
     }
 }
@@ -51,17 +59,19 @@ impl AnyEncoder {
 #[no_mangle] pub unsafe extern "C" fn nczl_enc_finish(e: *mut AnyEncoder) -> *mut u8 { let out = Box::from_raw(e).finish(); leak(out) }
 
 /// NCZL streams, and the site's earlier plain NCZ2/NCZ3 files.
-pub enum AnyDecoder { Lm(LmDecoder<'static>), Old { d: ncz::Decoder, out: Vec<u8>, total: usize } }
+pub enum AnyDecoder { Lm(LmDecoder<'static>), Old { d: ncz::Decoder, out: Vec<u8>, total: usize }, Png(ncz::pngc::PngDecoder) }
 impl AnyDecoder {
     fn new(blob: &[u8]) -> Option<AnyDecoder> {
+        if blob.starts_with(ncz::pngc::MAGIC) { return ncz::pngc::PngDecoder::new(blob).map(AnyDecoder::Png); }
         if blob.starts_with(crate::codec::MAGIC) { return LmDecoder::new(assets(), blob, 1).map(AnyDecoder::Lm); }
         let d = ncz::Decoder::new(blob)?; let total = d.total() as usize;
         Some(AnyDecoder::Old { d, out: Vec::with_capacity(total), total })
     }
-    fn step(&mut self, n: usize) -> usize { match self { AnyDecoder::Lm(d) => d.step(n), AnyDecoder::Old { d, out, .. } => { let c = d.next(n); out.extend_from_slice(&c); c.len() } } }
-    fn done(&self) -> usize { match self { AnyDecoder::Lm(d) => d.done(), AnyDecoder::Old { out, .. } => out.len() } }
-    fn total(&self) -> usize { match self { AnyDecoder::Lm(d) => d.total(), AnyDecoder::Old { total, .. } => *total } }
-    fn finish(self) -> Option<Vec<u8>> { match self { AnyDecoder::Lm(d) => d.finish(), AnyDecoder::Old { out, total, .. } => if out.len() == total { Some(out) } else { None } } }
+    fn step(&mut self, n: usize) -> usize { match self { AnyDecoder::Lm(d) => d.step(n), AnyDecoder::Old { d, out, .. } => { let c = d.next(n); out.extend_from_slice(&c); c.len() }, AnyDecoder::Png(d) => d.step(n) } }
+    /// Progress (PNG: in rows; the page only uses done/total as a fraction).
+    fn done(&self) -> usize { match self { AnyDecoder::Lm(d) => d.done(), AnyDecoder::Old { out, .. } => out.len(), AnyDecoder::Png(d) => d.done() } }
+    fn total(&self) -> usize { match self { AnyDecoder::Lm(d) => d.total(), AnyDecoder::Old { total, .. } => *total, AnyDecoder::Png(d) => d.units() } }
+    fn finish(self) -> Option<Vec<u8>> { match self { AnyDecoder::Lm(d) => d.finish(), AnyDecoder::Old { out, total, .. } => if out.len() == total { Some(out) } else { None }, AnyDecoder::Png(d) => d.finish() } }
 }
 #[no_mangle] pub unsafe extern "C" fn nczl_dec_new(p: *const u8, n: usize) -> *mut AnyDecoder {
     match AnyDecoder::new(std::slice::from_raw_parts(p, n)) { Some(d) => Box::into_raw(Box::new(d)), None => std::ptr::null_mut() }
@@ -72,6 +82,10 @@ impl AnyDecoder {
 #[no_mangle] pub unsafe extern "C" fn nczl_dec_finish(d: *mut AnyDecoder) -> *mut u8 { match Box::from_raw(d).finish() { Some(out) => leak(out), None => std::ptr::null_mut() } }
 /// Does this stream need the model (NCZL mode 2)? Lets the page fetch the pack only when it must.
 #[no_mangle] pub unsafe extern "C" fn nczl_needs_model(p: *const u8, n: usize) -> u32 { let b = std::slice::from_raw_parts(p, n); (b.len() >= 6 && b.starts_with(crate::codec::MAGIC) && b[5] == crate::codec::MODE_LM) as u32 }
+/// Is this a PNG (coded by the pixel model; step in rows, no gzip comparison)?
+#[no_mangle] pub unsafe extern "C" fn nczl_is_png(p: *const u8, n: usize) -> u32 { ncz::pngc::is_png(std::slice::from_raw_parts(p, n)) as u32 }
+/// Is this an NCZP stream (decodes to a PNG)?
+#[no_mangle] pub unsafe extern "C" fn nczl_is_nczp(p: *const u8, n: usize) -> u32 { std::slice::from_raw_parts(p, n).starts_with(ncz::pngc::MAGIC) as u32 }
 /// Would compressing this input use the model (UTF-8 text)?
 #[no_mangle] pub unsafe extern "C" fn nczl_is_text(p: *const u8, n: usize) -> u32 { looks_like_text(std::slice::from_raw_parts(p, n)) as u32 }
 
@@ -80,6 +94,7 @@ fn leak(mut v: Vec<u8>) -> *mut u8 { v.shrink_to_fit(); unsafe { OUT_LEN = v.len
 /// Segment plan for big inputs (same function as native, so both write the same container):
 /// writes up to `max` exclusive end offsets as u32 to `out`, returns how many.
 #[no_mangle] pub unsafe extern "C" fn nczl_split(p: *const u8, n: usize, out: *mut u32, max: usize) -> usize {
+    if ncz::pngc::is_png(std::slice::from_raw_parts(p, n)) { if max > 0 { *out = n as u32; } return 1; }   // images are never split
     let ends = crate::codec::split_points(std::slice::from_raw_parts(p, n), crate::codec::seg_len(n, crate::codec::SEG_MIN));
     let k = ends.len().min(max);
     for i in 0..k { *out.add(i) = ends[i] as u32; }

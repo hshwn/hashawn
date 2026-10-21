@@ -288,6 +288,8 @@ pub fn segments(blob: &[u8]) -> Option<Vec<&[u8]>> {
 /// Inputs above one segment are split and compressed in parallel (one model per segment, `threads` is
 /// then unused); smaller ones are a single stream using `threads` inside each token.
 pub fn compress(a: &Assets, data: &[u8], threads: usize) -> Vec<u8> {
+    // PNGs: pixels through ncz's pixel model, every other chunk kept (pixel-exact, metadata-exact); never split
+    if ncz::pngc::is_png(data) { if let Some(c) = ncz::pngc::compress(data, 0) { return c; } }
     let seg = seg_len(data.len(), seg_min());
     if seg >= data.len() { return compress_one(a, data, threads); }
     let ends = split_points(data, seg);
@@ -297,6 +299,7 @@ pub fn compress(a: &Assets, data: &[u8], threads: usize) -> Vec<u8> {
 }
 
 pub fn decompress(a: &Assets, blob: &[u8], threads: usize) -> Option<Vec<u8>> {
+    if blob.starts_with(ncz::pngc::MAGIC) { return ncz::pngc::decompress(blob); }
     match segments(blob) {
         None => decompress_one(a, blob, threads),
         Some(parts) => {

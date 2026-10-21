@@ -3,6 +3,37 @@ use std::{env, fs, process};
 
 fn main() {
     let a: Vec<String> = env::args().collect();
+    if a.len() >= 3 && a[1] == "png-roundtrip" {
+        // nczcli png-roundtrip <a.png>...: PNG -> .ncz -> PNG, pixels compared exactly; sizes vs the original
+        let flags = std::env::var("IMG_FLAGS").ok().and_then(|v| v.parse().ok()).unwrap_or(0u8);
+        let (mut tin, mut tout) = (0usize, 0usize);
+        for f in &a[2..] {
+            let b = fs::read(f).expect("read");
+            let t0 = std::time::Instant::now();
+            match ncz::pngc::compress(&b, flags) {
+                None => println!("{:40} not worth it or not handled (16-bit, animated): generic byte-exact path", f),
+                Some(c) => {
+                    let t1 = t0.elapsed().as_secs_f64();
+                    let back = ncz::pngc::decompress(&c).expect("decode");
+                    let (p0, n0, w0, h0) = ncz::pngc::pixels(&b).unwrap(); let (p1, n1, w1, h1) = ncz::pngc::pixels(&back).expect("rebuilt PNG unreadable");
+                    let ok = p0 == p1 && n0 == n1 && w0 == w1 && h0 == h1;
+                    let mut hh = 0xcbf29ce484222325u64; for &x in &c { hh = (hh ^ x as u64).wrapping_mul(0x100000001b3); }
+                    println!("{:40} {:>9} -> {:>9} bytes ({:5.1}%)  rebuilt png {:>9}  {:5.2} MB/s  {:016x}  {}", std::path::Path::new(f).file_name().unwrap().to_string_lossy(), b.len(), c.len(), 100.0 * c.len() as f64 / b.len() as f64, back.len(), (w0 * h0 * n0) as f64 / t1 / 1e6, hh, if ok { "PIXELS EXACT" } else { "MISMATCH" });
+                    if !ok { process::exit(1); }
+                    tin += b.len(); tout += c.len();
+                }
+            }
+        }
+        if tin > 0 { println!("TOTAL {tin} -> {tout} bytes ({:.1}% of the PNGs)", 100.0 * tout as f64 / tin as f64); }
+        return;
+    }
+    if a.len() >= 3 && a[1] == "img-hash" {
+        // nczcli img-hash <flags> <a.ppm>...: FNV hash of each compressed stream (regression check)
+        let flags: u8 = a[2].parse().unwrap();
+        for f in &a[3..] { let (rgb, w, h) = ncz::img::read_ppm(&fs::read(f).unwrap()).unwrap(); let c = ncz::img::compress_rgb_flags(&rgb, w, h, 0, flags);
+            let mut hh = 0xcbf29ce484222325u64; for &b in &c { hh = (hh ^ b as u64).wrapping_mul(0x100000001b3); } println!("{hh:016x} {} {}", c.len(), f); }
+        return;
+    }
     if a.len() >= 3 && a[1] == "img-bench" {
         // nczcli img-bench <k> <a.ppm> [b.ppm ...]: compress, decompress, verify, report bits per pixel
         // IMG_FLAGS: 1 green plane first, 2 learned colour (implies 1), 4 learned green; 7 = everything

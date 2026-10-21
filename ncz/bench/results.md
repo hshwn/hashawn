@@ -345,3 +345,32 @@ Pretrained features are no better than random ones, and even the raw coarse bloc
 neighbours already carry what a 64x64-pixel summary could. Same law as EG2's vision test: these encoders know
 what is in the picture, not how the next pixel value behaves. Not pursued further. (LILIE, a 1.5M-32M invertible
 language-informed encoder, was looked at but not run after this result.)
+
+## PNG in the compress tool (2026-10-21, NCZP v1)
+
+`ncz/src/pngc.rs`. A PNG's pixels go through the pixel model (fast mode, flags 0); every other chunk (IHDR, PLTE,
+tRNS, iCCP, gAMA, text, EXIF, ...) is kept byte for byte in its original order as a skeleton. Unpacking re-encodes
+only IDAT and splices it back, so pixels and metadata are exact; the PNG's bytes differ only inside IDAT (PNG's own
+zlib stream can't be replayed byte for byte). Palette and 1-4 bit grey images are coded as their own sample bytes
+through ncz's byte model (the pixel model expanded them to RGB and lost badly: up to 5.8x the PNG). 16-bit and
+animated PNGs, and anything that would not get smaller, take the byte-exact generic path.
+
+Pixel codec changes on the way: alpha as a fourth channel coded first, per-predictor error buffers cut from the whole
+image (~1 GB at 12 MP) to a two-row ring, row-by-row encoder/decoder for progress. Existing RGB streams bit-identical.
+
+| test PNG | PNG bytes | .ncz | | rebuilt PNG |
+|---|---:|---:|---:|---:|
+| Kodak photo (RGB) | 502,888 | 305,827 | 60.8% | 552,652 |
+| poster (RGB, iCCP + zTXt) | 3,765,957 | 1,935,432 | 51.4% | 3,671,545 |
+| RGBA | 607,749 | 306,088 | 50.4% | 612,093 |
+| interlaced RGB | 604,696 | 305,916 | 50.6% | 552,835 |
+| grey 8-bit | 196,002 | 155,790 | 79.5% | 207,620 |
+| grey + alpha | 248,790 | 155,905 | 62.7% | 256,254 |
+| palette 8-bit, 64 colours | 100,349 | 67,458 | 67.2% | 126,296 |
+| palette 4-bit | 5,333 | 4,059 | 76.1% | 2,993 |
+| grey 1-bit | 12,057 | 10,229 | 84.8% | 13,684 |
+| palette 2-bit + tRNS (3 KB) | 3,235 | generic path | | |
+| 16-bit RGB | 254,970 | generic path | | |
+
+All pixel-exact (decoded pixels compared). Browser: compressed and rebuilt files hash identical to native for RGB,
+RGBA, palette and 1-bit; kodim03 0.6 s each way. nczl.wasm grew 199 KB -> 539 KB (png crate + zlib).

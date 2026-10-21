@@ -47,17 +47,18 @@ async function gzipSize(u8) {
 async function compress(u8, id) {
   await load();
   let inPtr = put(u8);
-  const text = wasm.nczl_is_text(inPtr, u8.length);
+  const png = !!wasm.nczl_is_png(inPtr, u8.length);
+  const text = !png && wasm.nczl_is_text(inPtr, u8.length);
   if (text) { wasm.nczl_free(inPtr, u8.length); await loadModel(id); inPtr = put(u8); }
   const enc = wasm.nczl_enc_new(inPtr, u8.length);
   wasm.nczl_free(inPtr, u8.length);
-  const step = text && modelId ? STEP_LM : STEP;
+  const step = png ? 8 : text && modelId ? STEP_LM : STEP;      // PNG: steps are rows of pixels
   let t0 = performance.now(), done = 0;
   for (;;) {
     const n = wasm.nczl_enc_step(enc, step);
     done = wasm.nczl_enc_done(enc);
     const now = performance.now();
-    if (now - t0 > 80 || n === 0) { t0 = now; postMessage({ id, type: 'progress', done, total: u8.length, brain: !!(text && modelId) }); await new Promise((r) => setTimeout(r, 0)); }
+    if (now - t0 > 80 || n === 0) { t0 = now; postMessage({ id, type: 'progress', done, total: u8.length, brain: !!(text && modelId), png }); await new Promise((r) => setTimeout(r, 0)); }
     if (n === 0) break;
   }
   return takeOut(wasm.nczl_enc_finish(enc));
@@ -70,7 +71,7 @@ async function decompress(u8, id) {
   const dec = wasm.nczl_dec_new(inPtr, u8.length);
   wasm.nczl_free(inPtr, u8.length);
   if (!dec) throw new Error('not one of mine, or made with a different model');
-  const total = wasm.nczl_dec_total(dec);
+  const total = wasm.nczl_dec_total(dec);           // bytes, or rows for a PNG (only the fraction is shown)
   let t0 = performance.now();
   for (;;) {
     const n = wasm.nczl_dec_step(dec, STEP_LM);
@@ -107,7 +108,8 @@ onmessage = async (e) => {
       const t = performance.now();
       const out = await compress(u8, id);
       const ms = performance.now() - t;
-      const gz = wantGz ? await gzipSize(u8) : null;
+      const isPng = u8.length > 8 && u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47;
+      const gz = wantGz && !isPng ? await gzipSize(u8) : null;          // gzip of a PNG says nothing: it is already deflated
       postMessage({ id, type: 'done', buf: out.buffer, ms, gz }, [out.buffer]);
     } else {
       const t = performance.now();

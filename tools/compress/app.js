@@ -71,7 +71,7 @@
     const pl = await call(pool[0], { type: 'plan', buf: u8.slice().buffer });
     if (pl.ends.length <= 1) {
       const buf = u8.slice().buffer;
-      const m = await call(pool[0], { type: 'compress', buf }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.done, brain: p.brain, k: 1 }));
+      const m = await call(pool[0], { type: 'compress', buf }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.done, brain: p.brain, png: p.png, k: 1 }));
       return m;
     }
     const starts = [0, ...pl.ends.slice(0, -1)];
@@ -97,7 +97,7 @@
   const decompressAll = async (u8, onProgress) => {
     const t0 = performance.now();
     const seg = u8.length >= 22 && u8[0] === 78 && u8[1] === 67 && u8[2] === 90 && u8[3] === 76 && u8[5] === 3;
-    if (!seg) { const buf = u8.slice().buffer; return call(pool[0], { type: 'decompress', buf }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.done, k: 1 })); }
+    if (!seg) { const buf = u8.slice().buffer; return call(pool[0], { type: 'decompress', buf }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.total ? p.done / p.total * u8.length : p.done, k: 1 })); }
     const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
     const total = Number(dv.getBigUint64(10, true)), n = dv.getUint32(18, true);
     const lens = Array.from({ length: n }, (_, i) => dv.getUint32(22 + 4 * i, true));
@@ -121,8 +121,8 @@
     progress(isNcz ? 'unpacking' : 'compressing', 0, total);
     const onProgress = (p) => {
       if (p.model) { render(`<div class="job"><p class="label">fetching the brain</p><div class="bar"><i style="width:${p.model.total ? (p.model.done / p.model.total * 100).toFixed(1) : 0}%"></i></div><p class="sub">3 MB, once</p></div>`); return; }
-      const label = isNcz ? 'unpacking' : (p.brain ? 'compressing, with the brain' : 'compressing');
-      progress(p.k > 1 ? `${label} · ${p.k} at once` : label, p.done, total);
+      const label = isNcz ? 'unpacking' : p.png ? 'compressing the pixels' : (p.brain ? 'compressing, with the brain' : 'compressing');
+      progress(p.k > 1 ? `${label} · ${p.k} at once` : label, Math.min(p.done, total), total);
     };
     let done;
     try { done = await (isNcz ? decompressAll(u8, onProgress) : compressAll(u8, onProgress)); }
@@ -134,7 +134,8 @@
       const name = file.name.replace(/\.ncz$/i, '');
       render(`<div class="job"><p class="label">unpacked</p><p class="big">${fmt(out.length)}</p><p class="sub">${esc(name)} · ${(done.ms / 1000).toFixed(1)}s</p><button class="btn" id="dl">save it</button></div>`);
       document.getElementById('dl').onclick = () => download(out, name);
-      say("there it is. every byte.");
+      const png = out.length > 8 && out[0] === 0x89 && out[1] === 0x50 && out[2] === 0x4e && out[3] === 0x47;
+      say(png ? "there it is. every pixel." : "there it is. every byte.");
       return;
     }
     const ratio = total / out.length, gzRatio = done.gz ? total / done.gz : null;
@@ -147,7 +148,7 @@
         ${done.gz ? `<div class="row"><span>gzip</span><div class="bar"><i style="width:${pct(done.gz)};background:#7a766f"></i></div><b>${fmt(done.gz)}</b></div>` : ''}
         <div class="row"><span>ncz</span><div class="bar"><i style="width:${pct(out.length)};background:#009f4d"></i></div><b>${fmt(out.length)}</b></div>
       </div>
-      <p class="sub">${(done.ms / 1000).toFixed(1)}s · nothing left your browser</p>
+      <p class="sub">${(done.ms / 1000).toFixed(1)}s · ${/\.png$/i.test(file.name) ? 'every pixel comes back, metadata too · ' : ''}nothing left your browser</p>
       <button class="btn" id="dl">save .ncz</button>
     </div>`);
     document.getElementById('dl').onclick = () => download(out, file.name + '.ncz');

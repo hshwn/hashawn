@@ -23,12 +23,12 @@
 
 <main class="page">
   <h1>compress</h1>
-  <p class="lead">Drop a file. It comes back smaller, as <code>.ncz</code>. Drop the <code>.ncz</code> to get it back, byte for byte. It never leaves your browser.</p>
+  <p class="lead">Drop a file. It comes back smaller, as <code>.ncz</code>. Drop the <code>.ncz</code> to get it back, byte for byte (PNGs: pixel for pixel). It never leaves your browser.</p>
 
   <div class="drop" id="drop" tabindex="0" role="button" aria-label="Drop a file or click to choose">
     <svg class="ic"><use href="#i-arrow-down-tray"/></svg>
     <span>drop anything here</span>
-    <small>or click to choose · text and code do best</small>
+    <small>or click to choose · text, code and PNGs do best</small>
   </div>
   <input type="file" id="file" hidden>
 
@@ -37,6 +37,7 @@
   <details class="how">
     <summary>what is this</summary>
     <p>A context-mixing compressor, the family that wins the benchmarks and that nobody ships because it's slow. It predicts every bit from what came before, with a tiny neural net that learns as it goes, and a range coder turns the predictions into bytes. The decoder runs the exact same net, so the output is bit-exact. It beats gzip, bzip2 and xz on text and code. It won't beat anything on photos, video or zips, those are already squeezed.</p>
+    <p>PNGs get their own model: every pixel is predicted from the ones before it (and red and blue from green), and only the surprise is stored. You get back a PNG with exactly the same pixels and the same metadata (colour profile, text, everything); only PNG's own internal packing is redone, so the file's bytes can differ. Photos come out around half the size of their PNG; flat graphics and palette images less so.</p>
     <p>For text it also runs a 3-million-parameter language model, the smallest one that still reads English, and feeds its guesses into the mixer as one more input. That part is slow, tens of kilobytes a second, and the first time it fetches the model once (3 MB). Everything else goes through the context mixer alone at around 2MB a second. The bar is honest either way.</p>
   </details>
 </main>

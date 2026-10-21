@@ -62,8 +62,10 @@ fn main() {
                 _ => {
                     let c = slm::codec::compress(&assets, &data, threads()); let t1 = Instant::now();
                     let d = slm::codec::decompress(&assets, &c, threads()).expect("decode failed");
-                    let ok = d == data;
-                    println!("{}: {} -> {} bytes  {:.4} bpb  enc {:.1} KB/s  dec {:.1} KB/s  {}", a[2], data.len(), c.len(), 8.0 * c.len() as f64 / data.len().max(1) as f64, data.len() as f64 / (t1 - t0).as_secs_f64() / 1000.0, data.len() as f64 / t1.elapsed().as_secs_f64() / 1000.0, if ok { "round trip OK" } else { "MISMATCH" });
+                    // PNGs come back pixel-exact (metadata kept), not byte-exact: compare decoded pixels
+                    let png_px = |b: &[u8]| ncz::pngc::pixels(b);
+                    let ok = d == data || (ncz::pngc::is_png(&data) && c.starts_with(ncz::pngc::MAGIC) && png_px(&data).is_some() && png_px(&data) == png_px(&d));
+                    println!("{}: {} -> {} bytes  {:.4} bpb  enc {:.1} KB/s  dec {:.1} KB/s  {}", a[2], data.len(), c.len(), 8.0 * c.len() as f64 / data.len().max(1) as f64, data.len() as f64 / (t1 - t0).as_secs_f64() / 1000.0, data.len() as f64 / t1.elapsed().as_secs_f64() / 1000.0, if d == data { "round trip OK" } else if ok { "pixels exact (PNG re-encoded)" } else { "MISMATCH" });
                     if !ok { std::process::exit(1); }
                 }
             }
