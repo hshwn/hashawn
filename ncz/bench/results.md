@@ -140,3 +140,30 @@ window is fine. A constant extra decay of 0.999 per token on every GDN state fix
 
 Decay knob is flat between 0.999 and 0.9993; 0.998 costs 0.3%, 0.995 costs 1%. Hard resets lose context,
 soft shrink (×0.7 every 512) 1.8727, continuous decay best. Held out: +0.5% bpb for 1.8× throughput.
+
+### Byte bridge and the fair hybrid (2026-10-21)
+
+A codec decodes bytes; the model predicts tokens. Two bridges measured on Nardo docs 100 KB:
+
+| bridge | model on its tokens | LM-alone byte bpb | ncz + side |
+|---|---:|---:|---:|
+| greedy longest match decided by the decoder | 2.2052 (+18%: not BPE's cuts) | 4.4074 (end-of-token bytes cost 7.8 bits) | 2.1383 |
+| **BPE tokenisation transmitted as per-byte end flags** | 1.8705 | 1.8701 (= byte 1.6432 + flags 0.2269; telescopes) | **1.7827** |
+
+The transmitted-flag bridge (`slm/src/bridge.rs`, `slmcli side`): before every byte inside a token, one binary
+flag "token ends here" at the model's own P(token = tail)/P(token starts with tail); the byte is then
+predicted given "continues" from the trie masses. Flags plus bytes cost exactly the token cost, so the flags
+are free in total and ncz only has to beat the model's byte bits (it does: 1.6432 -> 1.5558).
+
+| | Nardo docs 100 KB | enwik8 1 MB |
+|---|---:|---:|
+| xz -9 | 2.765 | 2.326 |
+| ncz alone | 2.3218 | 1.9071 |
+| GPT-S3-3M alone (streaming, decay 0.999) | 1.8701 | 1.5404 |
+| hybrid bytes (ncz + side input) | 1.5558 | 1.2367 |
+| + flags coded by the model | 0.2269 | 0.1792 |
+| **hybrid total** | **1.7827** | **1.4159** |
+
+Decodable end to end: every quantity depends on past bytes and past flags. Measured at ~45 KB/s (3 threads).
+Flags are coded by the model alone; a mixed flag predictor (model + byte contexts) is the obvious next cut.
+The earlier "1.558" number was this hybrid's byte bits without the flags.

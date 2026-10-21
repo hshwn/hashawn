@@ -37,10 +37,24 @@ of the last 1024 keys is fine. Resetting the GDN state every 1024 tokens loses c
 keeps nearly everything: 1.8705 on Nardo docs (windowed 1.8711) and 1.5407 held out on enwik8 (windowed
 1.5335), with every token computed once instead of 1.5 times. Full numbers in `../ncz/bench/results.md`.
 
+## Byte bridge (`src/bridge.rs`, `slmcli side`)
+
+A codec decodes bytes, the model predicts tokens. Letting the decoder guess token ends (greedy longest
+match) costs 18% on the model's own tokens and ruins the end-of-token bytes (measured, see results.md).
+Instead the encoder transmits the real BPE tokenisation: before every byte inside a token, one binary
+flag "the token ends here" at the model's own probability; the byte is then predicted given "continues"
+from subtree masses over a vocab trie. Byte bits plus flag bits equal the token cost exactly, so the
+flags are free in total. `slmcli side <file> <nbytes> <ids.bin> <out.side>` writes ncz's side input
+(stretch per bit) and reports the flag bits; `nczcli compress-side` then gives the hybrid size.
+
+Fair hybrid: Nardo docs 100 KB 1.7827 bpb (ncz 2.3218, model 1.8701, xz 2.765); enwik8 1 MB 1.4159
+(ncz 1.9071, model 1.5404, xz 2.326).
+
 ## Layout
 
 - `src/simd.rs` — `F8`, exp8/ln8/sigmoid8, dot/dots/axpy, quantize, int8 key scores (`sdot` via inline asm).
 - `src/pool.rs` — fork-join pool for work inside one token; `split` for 8-aligned row ranges.
 - `src/lib.rs` — weights (int8 `QMat`, head-major projection rows), `Model::step`, the per-head GDN and
   attention kernels, `log_prob`.
+- `src/bridge.rs` — vocab trie in DFS order, prefix-sum masses, the transmitted-flag byte bridge.
 - `src/main.rs` — `slmcli`.

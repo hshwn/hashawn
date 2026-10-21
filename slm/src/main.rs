@@ -92,7 +92,40 @@ fn main() {
                 println!("{name:>20}: {:7.0} ns  {:5.1} GMAC/s  {:5.1} GB/s weights", dt * 1e9, (m.n_in * m.n_out) as f64 / dt / 1e9, (m.n_in * m.n_out) as f64 / dt / 1e9);
             }
         }
-        _ => eprintln!("usage: slmcli check | slmcli bpb <ids.bin> <nbytes> | slmcli micro"),
+        Some("side") => {
+            // slmcli side <file> <nbytes> <ids.bin> <out.side>
+            // Byte by byte with the BPE tokenisation transmitted as per-byte end flags coded from the model.
+            // Writes ncz's .side (i16 LE stretch per bit, conditioned on "token continues") and reports the flag bits.
+            let dir = env::var("SLM_MODEL").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/model").to_string());
+            let v = slm::bridge::Vocab::load(&fs::read(format!("{dir}/vocab.bin")).unwrap());
+            let n: usize = a[3].parse().unwrap(); let data = fs::read(&a[2]).unwrap(); let data = &data[..n.min(data.len())];
+            let toks = ids(&a[4]);
+            let back: Vec<u8> = toks.iter().flat_map(|&i| v.bytes[i as usize].clone()).collect(); assert_eq!(back, data, "ids do not spell the file");
+            let mut br = slm::bridge::Bridge::new(slm::Model::new(&w), &v);
+            let mut side = Vec::with_capacity(data.len() * 16); let mut bits = [0i16; 8];
+            let (mut byte_bits, mut end_bits, mut cont_bits) = (0f64, 0f64, 0f64); let t0 = Instant::now();
+            let mut prev: Option<u32> = None;
+            for &tok in &toks {
+                for (k, &b) in v.bytes[tok as usize].iter().enumerate() {
+                    if br.in_token() {
+                        let pe = br.p_end();
+                        if k == 0 { end_bits += -pe.log2(); br.end_token(prev.unwrap()); } else { cont_bits += -(1.0 - pe).log2(); }
+                    }
+                    br.predict();
+                    byte_bits += -br.p[b as usize].log2();
+                    br.bits(b, &mut bits); for s in bits { side.extend_from_slice(&s.to_le_bytes()); }
+                    br.observe(b);
+                }
+                prev = Some(tok);
+            }
+            end_bits += -br.p_end().log2();   // the last token's end
+            let dt = t0.elapsed().as_secs_f64(); let nb = data.len() as f64;
+            fs::write(&a[5], side).unwrap();
+            println!("bytes {}  tokens {}  byte bits {:.4} bpb  flags {:.4} bpb (end {:.4} + continue {:.4})  LM total {:.4} bpb  ({:.1} KB/s, {} threads)",
+                data.len(), toks.len(), byte_bits / nb, (end_bits + cont_bits) / nb, end_bits / nb, cont_bits / nb, (byte_bits + end_bits + cont_bits) / nb, nb / dt / 1000.0, br.m.threads());
+            println!("FLAGBITS {:.1}", end_bits + cont_bits);
+        }
+        _ => eprintln!("usage: slmcli check | slmcli bpb <ids.bin> <nbytes> | slmcli micro | slmcli side <file> <nbytes> <ids.bin> <out.side>"),
     }
 }
 /// number of model steps the windowed pass performs (windows overlap by ctx-stride)
