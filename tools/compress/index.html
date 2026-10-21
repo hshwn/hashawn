@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en" class="blog">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>compress — hashawn!</title>
+<meta name="description" content="Compress any file in your browser with a neural compressor. Nothing is uploaded.">
+<meta name="theme-color" content="#f3efe8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&display=swap">
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+</head>
+<body class="blog tool">
+
+<canvas id="face" aria-label="Hassan's face, on a ball."></canvas>
+<div class="bubble" id="bubble" hidden><span class="txt"></span></div>
+
+<header class="blogbar">
+  <a class="mark" href="/" aria-label="hashawn! home"><svg viewBox="0 0 217 200" aria-hidden="true"><use href="#hmark"/></svg></a>
+  <a class="crumb" href="/tools/">tools</a>
+</header>
+
+<main class="page">
+  <h1>compress</h1>
+  <p class="lead">Drop a file. It comes back smaller, as <code>.ncz</code>. Drop the <code>.ncz</code> to get it back, byte for byte. It never leaves your browser.</p>
+
+  <div class="drop" id="drop" tabindex="0" role="button" aria-label="Drop a file or click to choose">
+    <svg class="ic"><use href="#i-arrow-down-tray"/></svg>
+    <span>drop anything here</span>
+    <small>or click to choose · text and code do best</small>
+  </div>
+  <input type="file" id="file" hidden>
+
+  <section class="result" id="result" hidden></section>
+
+  <details class="how">
+    <summary>what is this</summary>
+    <p>A context-mixing compressor, the family that wins the benchmarks and that nobody ships because it's slow. It predicts every bit from what came before, with a tiny neural net that learns as it goes, and a range coder turns the predictions into bytes. The decoder runs the exact same net, so the output is bit-exact. It beats gzip, bzip2 and xz on text and code. It won't beat anything on photos, video or zips, those are already squeezed.</p>
+    <p>The code runs as WebAssembly inside this page, around 2MB a second. A big file takes a while and the bar is honest.</p>
+  </details>
+</main>
+
+<script src="/sprite.js"></script>
+<script src="/voice.js"></script>
+<script src="/sphere.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

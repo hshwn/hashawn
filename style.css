@@ -265,3 +265,40 @@ body.blog #face { pointer-events: none; }
   .page { padding: 20px 18px 100px; font-size: 17px; }
   .entry h2 { font-size: 24px; }
 }
+
+/* ---------- tools ---------- */
+.page .lead { font-size: 18px; color: #3d3a35; margin: 6px 0 26px; }
+.page .lead code { font: 700 0.9em ui-monospace, "SF Mono", Menlo, monospace; background: rgba(0,0,0,0.06); padding: 2px 6px; border-radius: 6px; }
+.drop {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  min-height: 220px; border-radius: 22px; cursor: pointer;
+  border: 3px dashed rgba(0,0,0,0.18); background: rgba(255,255,255,0.5);
+  font-weight: 900; font-size: 22px; color: #141311;
+  transition: transform 0.08s, border-color 0.15s, background 0.15s;
+  -webkit-user-select: none; user-select: none;
+}
+.drop small { font-size: 14px; font-weight: 700; color: #7a766f; }
+.drop .ic { width: 34px; height: 34px; color: #009f4d; margin-bottom: 6px; }
+.drop:hover, .drop.over { border-color: #009f4d; background: rgba(0,159,77,0.08); }
+.drop.over { transform: scale(1.01); }
+.drop.busy { pointer-events: none; opacity: 0.6; }
+.result { margin-top: 18px; }
+.job { background: #fff; border-radius: 22px; padding: 22px 24px; box-shadow: 0 0 0 var(--rim) #fff, 0 12px 30px rgba(0,0,0,0.08); }
+.job .label { margin: 0; font-weight: 900; font-size: 15px; color: #7a766f; word-break: break-all; }
+.job .big { margin: 2px 0 14px; font-size: 64px; font-weight: 900; letter-spacing: -0.03em; line-height: 1; color: #009f4d; }
+.job .sub { margin: 12px 0 0; font-size: 14px; font-weight: 700; color: #7a766f; }
+.job .bar { height: 12px; border-radius: 999px; background: rgba(0,0,0,0.07); overflow: hidden; margin: 10px 0 0; }
+.job .bar i { display: block; height: 100%; border-radius: 999px; background: #009f4d; transition: width 0.15s; }
+.job .bars { display: grid; gap: 8px; margin-top: 4px; }
+.job .row { display: grid; grid-template-columns: 64px 1fr 80px; align-items: center; gap: 12px; font-weight: 800; font-size: 14px; }
+.job .row .bar { margin: 0; }
+.job .row b { text-align: right; font-weight: 800; }
+.btn {
+  margin-top: 18px; border: 0; border-radius: 999px; padding: 12px 20px; cursor: pointer;
+  font: inherit; font-weight: 900; font-size: 16px; background: #141311; color: #fff;
+  transition: transform 0.08s;
+}
+.btn:active { transform: scale(0.95) rotate(-2deg); }
+.how { margin-top: 30px; color: #3d3a35; }
+.how summary { font-weight: 900; cursor: pointer; color: #141311; }
+.how p { margin: 10px 0 0; font-size: 15px; }
