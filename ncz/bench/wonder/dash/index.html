@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Student dB</title>
+<style>
+  :root { --bg: #0f0f0e; --card: #181816; --line: #2a2a27; --ink: #f1ede6; --mute: #8f8a82; --live: #00c46a; --dip: #ff3d7f; --amber: #ffb800; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 600 14px/1.35 ui-rounded, "SF Pro Rounded", system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 18px 16px 40px; }
+  .top { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr; gap: 10px; }
+  .card { background: var(--card); border-radius: 16px; padding: 12px 14px; }
+  .k { color: var(--mute); font-size: 12px; font-weight: 800; letter-spacing: .02em; }
+  .v { font-size: 30px; font-weight: 900; letter-spacing: -.02em; margin-top: 2px; }
+  .v small { font-size: 14px; color: var(--mute); font-weight: 800; }
+  .live .v { color: var(--live); }
+  .bar { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; margin-top: 8px; }
+  .bar i { display: block; height: 100%; background: var(--live); border-radius: 99px; transition: width .4s; }
+  .chart { margin-top: 10px; padding: 8px 8px 4px; }
+  svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 4px 8px 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--mute); font-weight: 800; font-size: 13px; cursor: pointer; user-select: none; }
+  .legend span.off { opacity: .35; }
+  .legend b { width: 14px; height: 4px; border-radius: 2px; display: inline-block; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  td, th { text-align: left; padding: 8px 10px; border-top: 1px solid var(--line); }
+  th { color: var(--mute); font-size: 12px; font-weight: 800; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+  .pulse { animation: p 1.4s infinite; } @keyframes p { 50% { opacity: .25; } }
+  @media (max-width: 760px) { .top { grid-template-columns: 1fr 1fr; } .top .card:first-child { grid-column: span 2; } .v { font-size: 24px; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div class="card live"><div class="k" id="lname">live run</div><div class="v" id="ldb">–</div><div class="bar"><i id="lbar" style="width:0"></i></div></div>
+    <div class="card"><div class="k">step</div><div class="v" id="lstep">–</div></div>
+    <div class="card"><div class="k">time left</div><div class="v" id="leta">–</div></div>
+    <div class="card"><div class="k">vs v1 · distilled, same step</div><div class="v" id="ldelta">–</div></div>
+    <div class="card"><div class="k">GPU</div><div class="v" id="gpu">–</div></div>
+  </div>
+  <div class="card chart"><svg id="svg" viewBox="0 0 1000 460" aria-label="training PSNR by step"></svg><div class="legend" id="legend"></div></div>
+  <div class="card"><table><thead><tr><th>run</th><th style="text-align:right">last dB</th><th style="text-align:right">best dB</th><th style="text-align:right">step</th><th>state</th></tr></thead><tbody id="rows"></tbody></table></div>
+</main>
+<script>
+const COLORS = ['#5b5751', '#9e8cfa', '#ffb800', '#ff3d7f', '#00c46a'];
+const hidden = new Set(JSON.parse(localStorage.getItem('dash-hidden') || '[]'));
+let last = null;
+const fmtT = (s) => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s` : `${Math.floor(s / 3600)}h ${Math.round(s % 3600 / 60)}m`;
+const at = (pts, step) => { let best = null; for (const p of pts) if (p[0] <= step) best = p; return best; };
+function draw(d) {
+  last = d;
+  const runs = d.runs.map((r, i) => ({ ...r, color: COLORS[i % COLORS.length] }));
+  const live = [...runs].reverse().find((r) => !r.done && r.points.length) || runs[runs.length - 1];
+  const ref = runs.find((r) => r.label === 'v1 · distilled');
+  // cards
+  if (live && live.points.length) {
+    const p = live.points[live.points.length - 1];
+    document.getElementById('lname').textContent = live.done ? `${live.label} · finished` : `${live.label} · live`;
+    document.getElementById('ldb').innerHTML = `${p[1].toFixed(2)} <small>dB</small>`;
+    document.getElementById('lbar').style.width = `${Math.min(100, p[0] / live.total * 100)}%`;
+    document.getElementById('lstep').innerHTML = `${(p[0] / 1000).toFixed(0)}k <small>/ ${live.total / 1000}k</small>`;
+    const rate = p[2] / p[0], left = (live.total - p[0]) * rate + (live.done ? 0 : Math.max(0, d.now - live.mtime) * 0);
+    document.getElementById('leta').textContent = live.done ? 'done' : fmtT(left);
+    const r = ref && at(ref.points, p[0]);
+    const delta = r ? p[1] - r[1] : null;
+    const el = document.getElementById('ldelta'); el.textContent = delta == null ? '–' : `${delta >= 0 ? '+' : ''}${delta.toFixed(2)} dB`; el.style.color = delta == null ? '' : delta >= 0 ? 'var(--live)' : 'var(--dip)';
+  }
+  const g = d.gpu; document.getElementById('gpu').innerHTML = g ? `${g.util.toFixed(0)}% <small>${(g.mem / 1024).toFixed(1)} GB · ${g.temp.toFixed(0)}°</small>` : '–';
+  // chart
+  const W = 1000, H = 460, L = 46, R = 14, T = 14, B = 34;
+  const vis = runs.filter((r) => !hidden.has(r.label) && r.points.length);
+  const ys = vis.flatMap((r) => r.points.map((p) => p[1])).filter((v) => v > 15);
+  const ymax = Math.ceil(Math.max(31, ...ys) + 0.2), ymin = Math.floor(Math.max(18, Math.min(ymax - 4, ...ys)));
+  const xmax = Math.max(100000, ...vis.map((r) => r.total));
+  const X = (s) => L + (W - L - R) * s / xmax, Y = (v) => T + (H - T - B) * (1 - (Math.max(ymin, Math.min(ymax, v)) - ymin) / (ymax - ymin));
+  let s = '';
+  for (let v = ymin; v <= ymax; v++) s += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="#2a2a27"/><text x="${L - 8}" y="${Y(v) + 4}" fill="#8f8a82" font-size="12" text-anchor="end">${v}</text>`;
+  for (let x = 0; x <= xmax; x += 20000) s += `<text x="${X(x)}" y="${H - 10}" fill="#8f8a82" font-size="12" text-anchor="middle">${x / 1000}k</text>`;
+  s += `<text x="${L}" y="${T - 2}" fill="#8f8a82" font-size="11">dB, train crops</text>`;
+  for (const r of vis) {
+    const isLive = r === live && !r.done;
+    for (const m of r.marks) s += `<line x1="${X(m[0])}" x2="${X(m[0])}" y1="${T}" y2="${H - B}" stroke="${r.color}" stroke-dasharray="3 5" opacity=".6"/><text x="${X(m[0]) + 4}" y="${T + 12}" fill="${r.color}" font-size="11">${m[1]}-bit on</text>`;
+    const path = r.points.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('');
+    s += `<path d="${path}" fill="none" stroke="${r.color}" stroke-width="${isLive ? 3 : 1.8}" opacity="${isLive ? 1 : .8}" stroke-linejoin="round"/>`;
+    const p = r.points[r.points.length - 1];
+    s += `<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="${isLive ? 5 : 3}" fill="${r.color}" ${isLive ? 'class="pulse"' : ''}/>`;
+  }
+  document.getElementById('svg').innerHTML = s;
+  document.getElementById('legend').innerHTML = runs.map((r) => `<span data-l="${r.label}" class="${hidden.has(r.label) ? 'off' : ''}"><b style="background:${r.color}"></b>${r.label}</span>`).join('');
+  document.getElementById('rows').innerHTML = runs.map((r) => {
+    const p = r.points[r.points.length - 1] || [0, NaN]; const best = r.points.length ? Math.max(...r.points.map((q) => q[1])) : NaN;
+    const state = r.done ? 'done' : (r === live ? '<span class="pulse" style="color:var(--live)">training</span>' : 'stopped');
+    return `<tr><td><span class="dot" style="background:${r.color}"></span>${r.label}</td><td class="n">${isNaN(p[1]) ? '–' : p[1].toFixed(2)}</td><td class="n">${isNaN(best) ? '–' : best.toFixed(2)}</td><td class="n">${(p[0] / 1000).toFixed(0)}k</td><td>${state}</td></tr>`;
+  }).join('');
+}
+document.getElementById('legend').addEventListener('click', (e) => {
+  const t = e.target.closest('span[data-l]'); if (!t) return; const l = t.dataset.l;
+  hidden.has(l) ? hidden.delete(l) : hidden.add(l); try { localStorage.setItem('dash-hidden', JSON.stringify([...hidden])); } catch {}
+  if (last) draw(last);
+});
+async function tick() { try { draw(await (await fetch('/data', { cache: 'no-store' })).json()); } catch {} setTimeout(tick, 5000); }
+tick();
+</script>
+</body>
+</html>
