@@ -828,3 +828,11 @@ one layer at a time: the first conv (192 latents -> 128, weights max/rms 15) alo
 under -0.01. So: first conv fp16, the other 14 at 8 bits (no QAT): Kodak 8 30.88 dB / 44.4, decoder 2.71 MB ONNX,
 2.20 MB packed with ncz (v1 fp16 was 2.72 MB). Browser: kodim03 33.15 -> 33.61 dB, same 12,606 B file, unpack 0.24 s
 after the networks load. Tiny mode download 5.9 MB (encoder 3.08, decoder 2.20, predictor 0.64).
+
+Tiny mode + regrown grain (NCZW v3: grain fingerprint between the header and the latents; v2 still decodes). The
+encoder measures the original's grain fingerprint (grain::measure_on, centre crop of at most 1024 x 1024 in the
+browser), the decoder regrows it (regrain_v2) on the decoded picture. Kodak 8 with the v2 decoder: every photo has
+measurable grain, fingerprints 1309-1549 B (+5-11% on these 12-55 KB files); 30.88 -> 30.76 dB, SSIMULACRA2 44.4 ->
+43.9 (both metrics count new grain as error); by eye the smooth areas read as film instead of plastic. Browser:
+kodim23 12,584 B with grain, 34.58 dB (native prototype 34.59); native and both wasm builds identical on every
+NCZW and PNG-mode check.

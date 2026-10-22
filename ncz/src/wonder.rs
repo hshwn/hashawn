@@ -6,14 +6,16 @@
 //! (Rust never fuses), no exp/log (scale buckets by comparison against constants). Pixels are decoded outside this
 //! crate (a small learned decoder); they need not be bit-exact, the latents are.
 //!
-//! Container: "NCZW" | version | quality | picture width u16 | height u16 | predictor id u32 | NCZY v2 stream.
+//! Container: "NCZW" | version | quality | picture width u16 | height u16 | predictor id u32 | grain length u32 |
+//! grain fingerprint (grain::measure; 0 bytes = none) | NCZY v2 stream. The decoder regrows the photo's grain from the
+//! fingerprint on top of the decoded picture (the learned decoder smooths it away). Version 2 (no grain) still decodes.
 //! The predictor id (FNV-1a of its file) ties a file to the exact predictor that made it: another one would decode
 //! garbage, so the decoder refuses.
 use crate::lat::{self, GroupModel};
 
 pub const MAGIC: &[u8; 4] = b"NCZW";
-pub const VERSION: u8 = 2;
-const HEAD: usize = 4 + 1 + 1 + 4 + 4;
+pub const VERSION: u8 = 3;
+const HEAD2: usize = 4 + 1 + 1 + 4 + 4;
 
 // scale buckets: log(scale) against log((((11 << b) >> 2) - 0.5) / 64); scale >= 0.11
 const LN_T: [f32; 23] = [-3.753418, -2.654806, -1.807508, -1.09083, -0.3861221, 0.3127557, 1.008756, 1.703327, 2.397185, 3.090687, 3.784012, 4.477248,
@@ -137,21 +139,34 @@ impl GroupModel for Predictor {
 
 /// Compress latents (C x H x W, i16) of a `pw` x `ph` picture coded at quality `q` (the latents cover the picture
 /// padded up to a multiple of 64 on each side).
-pub fn compress(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u8, p: &Predictor) -> Option<Vec<u8>> {
+pub fn compress(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u8, p: &Predictor) -> Option<Vec<u8>> { compress_grain(lat, c, h, w, pw, ph, q, p, &[]) }
+/// With a grain fingerprint (grain::measure of the original picture; empty: none).
+#[allow(clippy::too_many_arguments)]
+pub fn compress_grain(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u8, p: &Predictor, grain: &[u8]) -> Option<Vec<u8>> {
     if c != p.channels() || pw > w * 16 || ph > h * 16 || pw + 64 <= w * 16 || ph + 64 <= h * 16 || pw > 65535 || ph > 65535 { return None; }
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC); out.push(VERSION); out.push(q);
     out.extend_from_slice(&(pw as u16).to_le_bytes()); out.extend_from_slice(&(ph as u16).to_le_bytes());
     out.extend_from_slice(&p.id.to_le_bytes());
+    out.extend_from_slice(&(grain.len() as u32).to_le_bytes()); out.extend_from_slice(grain);
     out.extend_from_slice(&lat::compress_groups(lat, c, h, w, p)); Some(out)
 }
 /// (quality, picture width, height, predictor id) of an NCZW stream, without decoding it.
 pub fn info(b: &[u8]) -> Option<(u8, usize, usize, u32)> {
-    if b.len() < HEAD || &b[..4] != MAGIC || b[4] != VERSION { return None; }
+    if b.len() < HEAD2 || &b[..4] != MAGIC || !(b[4] == 2 || b[4] == VERSION) { return None; }
     Some((b[5], u16::from_le_bytes([b[6], b[7]]) as usize, u16::from_le_bytes([b[8], b[9]]) as usize, u32::from_le_bytes(b[10..14].try_into().ok()?)))
 }
+/// (grain fingerprint, latent stream) parts of an NCZW stream.
+fn parts(b: &[u8]) -> Option<(&[u8], &[u8])> {
+    info(b)?;
+    if b[4] == 2 { return Some((&b[..0], &b[HEAD2..])); }
+    let n = u32::from_le_bytes(b.get(HEAD2..HEAD2 + 4)?.try_into().ok()?) as usize; let g0 = HEAD2 + 4;
+    Some((b.get(g0..g0 + n)?, b.get(g0 + n..)?))
+}
+/// The grain fingerprint stored in a stream (empty if none).
+pub fn grain(b: &[u8]) -> Option<&[u8]> { parts(b).map(|p| p.0) }
 /// Returns (latents, c, h, w). None if damaged, or made with a different predictor.
 pub fn decompress(b: &[u8], p: &Predictor) -> Option<(Vec<i16>, usize, usize, usize)> {
     let (_, _, _, id) = info(b)?; if id != p.id { return None; }
-    lat::decompress_groups(&b[HEAD..], p)
+    lat::decompress_groups(parts(b)?.1, p)
 }

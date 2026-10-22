@@ -139,7 +139,7 @@
       if (p.model) {
         const tiny = !!p.model.label;
         render(`<div class="job"><p class="label">${tiny ? `fetching ${p.model.label}` : 'fetching the brain'}</p><div class="bar"><i style="width:${p.model.total ? (p.model.done / p.model.total * 100).toFixed(1) : 0}%"></i></div><p class="sub">${tiny ? `${fmt(p.model.done)} of ${fmt(p.model.total)}, once` : '3 MB, once'}</p></div>`); return; }
-      const lph = { 'learn-enc': 'looking at the picture', 'learn-pack': 'packing it', 'learn-unpack': 'unpacking', 'learn-dec': 'painting it back' }[p.phase];
+      const lph = { 'learn-grain': 'measuring the grain', 'learn-enc': 'looking at the picture', 'learn-pack': 'packing it', 'learn-unpack': 'unpacking', 'learn-dec': 'painting it back', 'learn-grain-back': 'growing the grain back' }[p.phase];
       if (lph) { progress(lph, Math.min(p.done, total), total); return; }
       const label = p.phase === 'grain' ? (isNcz ? 'growing the grain back' : 'finding the grain') : isNcz ? 'unpacking' : p.png ? 'compressing the pixels' : (p.brain ? 'compressing, with the brain' : 'compressing');
       progress(p.k > 1 ? `${label} · ${p.k} at once` : label, Math.min(p.done, total), total);

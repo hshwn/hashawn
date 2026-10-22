@@ -3,6 +3,19 @@ use std::{env, fs, process};
 
 fn main() {
     let a: Vec<String> = env::args().collect();
+    if a.len() == 5 && a[1] == "add-grain" {
+        // nczcli add-grain <original.ppm> <decoded.png> <out.ppm>: grain fingerprint of the original, regrown on the decoded picture
+        let (rgb, w, h) = ncz::img::read_ppm(&fs::read(&a[2]).expect("read")).expect("not a P6 PPM");
+        let (mut px, nch, dw, dh) = ncz::pngc::pixels(&fs::read(&a[3]).expect("read")).expect("not a PNG");
+        assert!(nch == 3 && dw == w && dh == h, "decoded picture must be RGB, same size");
+        let t = std::time::Instant::now();
+        match ncz::grain::measure(&rgb, w, h) {
+            Some(fpz) => { let tm = t.elapsed().as_secs_f64(); ncz::grain::apply_grain(&mut px, w, h, &fpz).unwrap(); println!("fingerprint {} B, measure {:.2}s", fpz.len(), tm); }
+            None => println!("no measurable grain: unchanged"),
+        }
+        let mut v = format!("P6\n{w} {h}\n255\n").into_bytes(); v.extend_from_slice(&px); fs::write(&a[4], v).expect("write");
+        return;
+    }
     if a.len() >= 4 && a[1] == "wonder" {
         // nczcli wonder <q.pred> <a.lat>...: learned-mode streams (NCZW) from latent files, round trip checked,
         // bits per pixel and time; WONDER_OUT=<dir> writes the streams

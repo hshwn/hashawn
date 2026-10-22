@@ -152,6 +152,11 @@ async function learnedEncode(u8, id) {
   const cv = new OffscreenCanvas(pw, ph); const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0); bmp.close();
   const rgba = cx.getImageData(0, 0, pw, ph).data;
   await predictor(LQ, id);
+  // the photo's grain fingerprint (the decoder smooths grain away; it is regrown from this on unpack), on a centre crop
+  postMessage({ id, type: 'progress', done: 0, total: 1, phase: 'learn-grain' }); await yieldNow();
+  let grain = new Uint8Array(0);
+  { const rgb = new Uint8Array(pw * ph * 3); for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { rgb[i] = rgba[j]; rgb[i + 1] = rgba[j + 1]; rgb[i + 2] = rgba[j + 2]; }
+    const rp = put(rgb); const gp = wasm.nczl_grain_measure(rp, pw, ph, 1024); wasm.nczl_free(rp, rgb.length); if (gp) grain = takeOut(gp); }
   const enc = await session('enc', id);
   const tiles = []; for (let ty = 0; ty < H; ty += T) for (let tx = 0; tx < W; tx += T) tiles.push([tx, ty]);
   let lat = null, c = 0; const h = H / 16, w = W / 16;
@@ -171,7 +176,8 @@ async function learnedEncode(u8, id) {
     y.dispose && y.dispose();
   }
   postMessage({ id, type: 'progress', done: tiles.length, total: tiles.length + 1, phase: 'learn-pack' }); await yieldNow();
-  const lp = put(new Uint8Array(lat.buffer)); const zp = wasm.nczl_w_enc(lp, c, h, w, pw, ph, LQ); wasm.nczl_free(lp, lat.length * 2);
+  const lp = put(new Uint8Array(lat.buffer)); const gp = grain.length ? put(grain) : 0;
+  const zp = wasm.nczl_w_enc_grain(lp, c, h, w, pw, ph, LQ, gp, grain.length); wasm.nczl_free(lp, lat.length * 2); if (gp) wasm.nczl_free(gp, grain.length);
   if (!zp) throw new Error('could not pack the latents');
   return { out: takeOut(zp), ep: enc.ep };
 }
@@ -183,6 +189,7 @@ async function learnedDecode(u8, id) {
   postMessage({ id, type: 'progress', done: 0, total: 2, phase: 'learn-unpack' }); await new Promise((r) => setTimeout(r, 0));
   const p = put(u8);
   if (!wasm.nczl_w_match(p, u8.length)) { wasm.nczl_free(p, u8.length); throw new Error('made with a different version of tiny mode'); }
+  const gq = wasm.nczl_w_grain(p, u8.length); const grain = gq ? takeOut(gq) : null;
   const lp = wasm.nczl_w_dec(p, u8.length); wasm.nczl_free(p, u8.length);
   if (!lp) throw new Error('the file is damaged');
   const raw = takeOut(lp); const lat = new Int16Array(raw.buffer, raw.byteOffset, raw.length / 2);
@@ -201,6 +208,13 @@ async function learnedDecode(u8, id) {
       const s = (yy - y0 * 16) * PW + (xx - x0 * 16), o = (yy * pw + xx) * 4;
       d[o] = xo.data[s] * 255 + 0.5; d[o + 1] = xo.data[P + s] * 255 + 0.5; d[o + 2] = xo.data[2 * P + s] * 255 + 0.5; d[o + 3] = 255; }
     xo.dispose && xo.dispose();
+  }
+  if (grain) {                // regrow the photo's grain on the decoded picture
+    postMessage({ id, type: 'progress', done: tiles.length + 1, total: tiles.length + 1, phase: 'learn-grain-back' }); await yieldNow();
+    const rgb = new Uint8Array(pw * ph * 3); for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { rgb[i] = d[j]; rgb[i + 1] = d[j + 1]; rgb[i + 2] = d[j + 2]; }
+    const rp = put(rgb), gp = put(grain);
+    if (wasm.nczl_grain_apply(rp, pw, ph, gp, grain.length)) { const out = bytes().subarray(rp, rp + rgb.length); for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { d[j] = out[i]; d[j + 1] = out[i + 1]; d[j + 2] = out[i + 2]; } }
+    wasm.nczl_free(rp, rgb.length); wasm.nczl_free(gp, grain.length);
   }
   const cv = new OffscreenCanvas(pw, ph); cv.getContext('2d').putImageData(img, 0, 0);
   return new Uint8Array(await (await cv.convertToBlob({ type: 'image/png' })).arrayBuffer());

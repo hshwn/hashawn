@@ -130,8 +130,25 @@ fn leak(mut v: Vec<u8>) -> *mut u8 { v.shrink_to_fit(); unsafe { OUT_LEN = v.len
     }
 }
 #[no_mangle] pub unsafe extern "C" fn nczl_w_enc(lat: *const i16, c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u32) -> *mut u8 {
+    nczl_w_enc_grain(lat, c, h, w, pw, ph, q, std::ptr::null(), 0)
+}
+/// With a grain fingerprint (from nczl_grain_measure; n 0: none).
+#[no_mangle] #[allow(clippy::too_many_arguments)] pub unsafe extern "C" fn nczl_w_enc_grain(lat: *const i16, c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u32, g: *const u8, gn: usize) -> *mut u8 {
     let Some(pr) = predictor(q as u8) else { return std::ptr::null_mut() };
-    match ncz::wonder::compress(std::slice::from_raw_parts(lat, c * h * w), c, h, w, pw, ph, q as u8, pr) { Some(v) => leak(v), None => std::ptr::null_mut() }
+    let grain = if gn == 0 { &[][..] } else { std::slice::from_raw_parts(g, gn) };
+    match ncz::wonder::compress_grain(std::slice::from_raw_parts(lat, c * h * w), c, h, w, pw, ph, q as u8, pr, grain) { Some(v) => leak(v), None => std::ptr::null_mut() }
+}
+/// Grain fingerprint of an RGB picture, measured on a centre crop of at most est x est: ptr (len nczl_out_len), 0 = no grain.
+#[no_mangle] pub unsafe extern "C" fn nczl_grain_measure(rgb: *const u8, w: usize, h: usize, est: usize) -> *mut u8 {
+    match ncz::grain::measure_on(std::slice::from_raw_parts(rgb, w * h * 3), w, h, est) { Some(v) => leak(v), None => { OUT_LEN = 0; std::ptr::null_mut() } }
+}
+/// The grain fingerprint stored in an NCZW stream: ptr (len nczl_out_len), 0 = none.
+#[no_mangle] pub unsafe extern "C" fn nczl_w_grain(p: *const u8, n: usize) -> *mut u8 {
+    match ncz::wonder::grain(std::slice::from_raw_parts(p, n)) { Some(g) if !g.is_empty() => leak(g.to_vec()), _ => { OUT_LEN = 0; std::ptr::null_mut() } }
+}
+/// Regrow grain on an RGB picture in place. 1 = done.
+#[no_mangle] pub unsafe extern "C" fn nczl_grain_apply(rgb: *mut u8, w: usize, h: usize, g: *const u8, gn: usize) -> u32 {
+    ncz::grain::apply_grain(std::slice::from_raw_parts_mut(rgb, w * h * 3), w, h, std::slice::from_raw_parts(g, gn)).is_some() as u32
 }
 #[no_mangle] pub unsafe extern "C" fn nczl_is_nczw(p: *const u8, n: usize) -> u32 { ncz::wonder::info(std::slice::from_raw_parts(p, n)).map_or(0, |i| i.0 as u32 | 256) }
 /// Was this NCZW stream made with the predictor loaded for its quality? (1 yes, 0 no or not loaded)

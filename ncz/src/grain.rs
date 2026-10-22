@@ -582,6 +582,26 @@ fn prepare(rgb: &[u8], w: usize, h: usize, k: u8) -> Option<(Vec<u8>, Vec<u8>, F
     Some((head, clean, fp))
 }
 
+/// The grain fingerprint of a picture (measured on a centre crop of a big one), compressed, ready to store; None if
+/// it has no measurable grain or is under 64x64. For other codecs that lose the grain (tiny mode): store this, then
+/// `apply_grain` after decoding.
+pub fn measure(rgb: &[u8], w: usize, h: usize) -> Option<Vec<u8>> { measure_on(rgb, w, h, EST) }
+/// Same, measured on a centre crop of at most `est` x `est` (smaller: faster).
+pub fn measure_on(rgb: &[u8], w: usize, h: usize, est: usize) -> Option<Vec<u8>> {
+    if w < 64 || h < 64 || rgb.len() != w * h * 3 { return None; }
+    let mut seed = 0xcbf2_9ce4_8422_2325u64; for &b in rgb.iter().step_by(97) { seed = (seed ^ b as u64).wrapping_mul(0x100_0000_01b3); }
+    let (cw, ch) = (w.min(est.max(64)), h.min(est.max(64))); let (cx, cy) = ((w - cw) / 2 / STEP * STEP, (h - ch) / 2 / STEP * STEP);
+    let crop: Vec<u8> = (cy..cy + ch).flat_map(|y| rgb[(y * w + cx) * 3..(y * w + cx + cw) * 3].iter().copied()).collect();
+    let (clean_o, _, _) = separate_full(&crop, cw, ch);
+    let fp = fingerprint(&crop, &clean_o, cw, ch, seed);
+    if fp.strength.iter().map(|s| s[0]).sum::<f64>() / (NB as f64) < NO_GRAIN { return None; }
+    Some(crate::compress(&fp.encode()))
+}
+/// Regrow grain from a `measure`d fingerprint on a decoded picture, in place (version 2 synthesis, constant memory).
+pub fn apply_grain(rgb: &mut [u8], w: usize, h: usize, fpz: &[u8]) -> Option<()> {
+    let fp = Fingerprint::decode(&crate::decompress(fpz)?)?; regrain_v2(rgb, w, h, &fp); Some(())
+}
+
 /// Grain mode: clean picture within +-k (k >= 1 typical: 2) + fingerprint. LOOKS THE SAME, NOT EXACT.
 /// None for pictures under 64x64 (too small to measure grain) or over MAX_PIXELS; use the exact or +-k pixel mode.
 pub fn compress(rgb: &[u8], w: usize, h: usize, k: u8) -> Option<Encoded> { compress_with(rgb, w, h, k, k, 0) }
