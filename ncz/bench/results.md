@@ -855,3 +855,14 @@ At equal quality (cheng interpolated in log bpp): at 33.45 dB cheng through our 
 (+5%); at HPCM's 0.724 bpp cheng gives 33.73 dB (+0.28). HPCM's ~15-18% edge is real for its own codec, but it lives in
 its entropy model: our predictor is 31% above HPCM's own rate on its latents (11% on cheng's). Not switching teachers
 until our predictor closes that gap (side information for the first groups, more capacity for 320 channels).
+
+### Teacher's hyperprior as predictor input: no gain (2026-10-22)
+
+`pred.py HYPER=1`: z = round(h_a(y) - medians) (the side information, 192 ch at 1/64), its h_s features (384 ch at
+latent resolution, fp32 without TF32, cached fp16) as extra input to every group's net, the first group included.
+Two NaN blow-ups on the way: exp(log-scale) overflowing to inf (inf * 0 = NaN gradients; photo 561 has features up to
+114, median 7); fixed by clamping the log-scale at 10 before exp and the scaled features to +-16.
+q4, 15k steps: train crops 0.512 -> 0.480 bpp, but Kodak 8: Gaussian 0.645 -> 0.639 (strongest 8 channels 0.126 ->
+0.122; teacher 0.074), NCZY 0.6205 -> 0.6271, plus z 186 B a photo (0.0038 bpp). Not worth porting. The teacher's edge
+on the strong channels comes from its autoregressive context (causal neighbours across all channels), not its
+hyperprior. The HPCM rerun is moot until that changes.
