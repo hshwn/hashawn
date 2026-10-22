@@ -820,3 +820,11 @@ Tiny mode downloads 14.4 -> 6.4 MB:
   the f32 file with the dequantised values; native and both wasm builds identical (`pred_q8.py`).
 - NCZW v2 header carries the predictor id (FNV-1a of its file); a file from another predictor is refused ("made with a
   different version of tiny mode"), never decoded into garbage. Browser: kodim03 12,606 B, 33.15 dB.
+
+Student v2 shipped (8-bit, first layer fp16). Same run with 8-bit QAT from 90k (scale max/127): train-crop PSNR
+31.33 -> 30.68 at the switch; Kodak 30.59 dB / SSIMULACRA2 38.4. The float checkpoint from 90k: 30.91 / 44.7 (v1
+shipping: 29.99 / 40.9). Post-training 8-bit of the float model: -0.32 dB / -5.7 (max or MSE-picked scales alike);
+one layer at a time: the first conv (192 latents -> 128, weights max/rms 15) alone costs -0.34 dB, every other layer
+under -0.01. So: first conv fp16, the other 14 at 8 bits (no QAT): Kodak 8 30.88 dB / 44.4, decoder 2.71 MB ONNX,
+2.20 MB packed with ncz (v1 fp16 was 2.72 MB). Browser: kodim03 33.15 -> 33.61 dB, same 12,606 B file, unpack 0.24 s
+after the networks load. Tiny mode download 5.9 MB (encoder 3.08, decoder 2.20, predictor 0.64).

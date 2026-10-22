@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a student decoder with 4-bit (or QBITS=8) weights for the browser.
+"""Export a student decoder with 4-bit (or QBITS=8) weights for the browser (KEEP16=n.0,...: those layers stay fp16).
 
     python export4.py <student.pt> <out.onnx>        (then: nczcli compress out.onnx out.onnx.ncz)
 
@@ -19,7 +19,7 @@ S = stu.Student(M, chans=chans); S.load_state_dict(sd); S.eval()
 levels = {}
 with torch.no_grad():
     for name, m in S.named_modules():
-        if isinstance(m, stu.QConv):
+        if isinstance(m, stu.QConv) and name not in os.environ.get("KEEP16", "").split(","):     # KEEP16=n.0: layers left in fp16
             lo, hi = stu.QConv.levels(); sc = stu.QConv.scale(m.weight); k = torch.clamp(torch.round(m.weight / sc), lo, hi)
             m.weight.copy_(k * sc); levels["S." + name + ".weight"] = (k.to(torch.int8).numpy(), sc.flatten().numpy().astype(np.float32))
 stu.QConv.qat = False

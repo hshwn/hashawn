@@ -112,7 +112,7 @@ async function fetchProgress(url, id, label, part) {
   const out = new Uint8Array(got); let off = 0; for (const c of chunks) { out.set(c, off); off += c.byteLength; } return out;
 }
 // the network files; '.ncz' ones are packed with our own codec (8-bit weights pack to ~6 bits, 4-bit to ~3) and unpacked here
-const FILES = { enc: `learned/q${LQ}.enc.onnx.ncz`, dec: `learned/q${LQ}.dec.onnx`, pred: `learned/q${LQ}.pred.ncz` };
+const FILES = { enc: `learned/q${LQ}.enc.onnx.ncz`, dec: `learned/q${LQ}.dec.onnx.ncz`, pred: `learned/q${LQ}.pred.ncz` };
 const LABEL = { enc: 'the encoder', dec: 'the decoder', pred: 'the predictor' };
 async function fetchModel(name, id) {
   let bytes = await fetchProgress(FILES[name], id, LABEL[name], name);
