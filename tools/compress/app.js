@@ -58,6 +58,23 @@
   // ---------- jobs ----------
   const render = (html) => { result.innerHTML = html; result.hidden = false; };
   const progress = (label, done, total) => render(`<div class="job"><p class="label">${label}</p><div class="bar"><i style="width:${total ? (done / total * 100).toFixed(1) : 0}%"></i></div><p class="sub">${fmt(done)} of ${fmt(total)}</p></div>`);
+  // ---------- seeing pictures: a .ncz is not something any viewer opens, so the page shows what comes back ----------
+  const isPng = (u) => u.length > 8 && u[0] === 0x89 && u[1] === 0x50 && u[2] === 0x4e && u[3] === 0x47;
+  let urls = []; const blobUrl = (data, type) => { const u = URL.createObjectURL(new Blob([data], { type })); urls.push(u); return u; };
+  const dropUrls = () => { urls.forEach((u) => URL.revokeObjectURL(u)); urls = []; };
+  // one picture, or the original and what comes back with a slider between them
+  const viewer = (outUrl, origUrl) => origUrl
+    ? `<div class="view cmp" id="cmp"><img src="${origUrl}" alt="original"><img class="top" src="${outUrl}" alt="what comes back"><i class="seam"></i>
+         <span class="tag l">original</span><span class="tag r">from the .ncz</span></div>
+       <input class="slide" id="slide" type="range" min="0" max="100" value="50" aria-label="compare">`
+    : `<div class="view"><img src="${outUrl}" alt="the picture"></div>`;
+  const wireSlider = () => {
+    const c = document.getElementById('cmp'), s = document.getElementById('slide'); if (!c || !s) return;
+    const set = () => { c.style.setProperty('--x', `${s.value}%`); }; s.addEventListener('input', set); set();
+    const drag = (e) => { const r = c.getBoundingClientRect(); s.value = Math.max(0, Math.min(100, ((e.touches ? e.touches[0].clientX : e.clientX) - r.left) / r.width * 100)); set(); };
+    c.addEventListener('pointerdown', (e) => { drag(e); c.setPointerCapture(e.pointerId); c.onpointermove = drag; });
+    c.addEventListener('pointerup', () => { c.onpointermove = null; });
+  };
   const download = (u8, name) => { const url = URL.createObjectURL(new Blob([u8])); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000); };
 
   // ---------- the codec, across workers ----------
@@ -155,11 +172,12 @@
     catch (err) { done = { type: 'error', message: String(err && err.message || err) }; }
     busy = false; drop.classList.remove('busy');
     if (done.type === 'error') { render(`<div class="job"><p class="label">couldn't do that</p><p class="sub">${esc(done.message)}</p></div>`); say("that's not one of mine."); return; }
-    const out = new Uint8Array(done.buf);
+    const out = new Uint8Array(done.buf); dropUrls();
     if (isNcz) {
       let name = file.name.replace(/\.ncz$/i, '');
       if (done.pngMode === 'tiny') name = name.replace(/\.(jpe?g|webp|png)$/i, '') + '.png';
-      render(`<div class="job"><p class="label">unpacked</p><p class="big">${fmt(out.length)}</p><p class="sub">${esc(name)} · ${(done.ms / 1000).toFixed(1)}s${done.pngMode ? ' · ' + pngNote(done.pngMode === 'tiny' ? 'tiny' : done.pngMode | 0).replace(/ · $/, '') : ''}</p><button class="btn" id="dl">save it</button></div>`);
+      const pic = isPng(out) ? viewer(blobUrl(out, 'image/png')) : '';
+      render(`<div class="job"><p class="label">unpacked</p><p class="big">${fmt(out.length)}</p>${pic}<p class="sub">${esc(name)} · ${(done.ms / 1000).toFixed(1)}s${done.pngMode ? ' · ' + pngNote(done.pngMode === 'tiny' ? 'tiny' : done.pngMode | 0).replace(/ · $/, '') : ''}</p><button class="btn" id="dl">save it</button></div>`);
       document.getElementById('dl').onclick = () => download(out, name);
       const png = out.length > 8 && out[0] === 0x89 && out[1] === 0x50 && out[2] === 0x4e && out[3] === 0x47;
       const m = done.pngMode | 0;
@@ -177,10 +195,22 @@
         <div class="row"><span>ncz</span><div class="bar"><i style="width:${pct(out.length)};background:#009f4d"></i></div><b>${fmt(out.length)}</b></div>
       </div>
       <p class="sub">${(done.ms / 1000).toFixed(1)}s · ${done.pngMode || /\.png$/i.test(file.name) ? pngNote(done.pngMode === 'tiny' ? 'tiny' : done.pngMode | 0) : ''}nothing left your browser</p>
-      <button class="btn" id="dl">save .ncz</button>
+      <div id="peek"></div>
+      <button class="btn" id="dl">save .ncz</button><button class="btn ghost" id="dlpic" hidden>save the picture</button>
     </div>`);
     document.getElementById('dl').onclick = () => download(out, file.name + '.ncz');
     say(lineFor(ratio, gzRatio));
+    // a lossy picture mode: unpack it straight away and show it next to the original
+    const lossy = done.pngMode === 'tiny' || (done.pngMode | 0) > 0;
+    if (lossy) {
+      const peek = document.getElementById('peek'); peek.innerHTML = '<p class="sub">unpacking it so you can see it…</p>';
+      const back = await decompressAll(out.slice(), () => {});
+      if (back.type === 'done' && document.getElementById('peek') === peek) {
+        const pic = new Uint8Array(back.buf);
+        peek.innerHTML = viewer(blobUrl(pic, 'image/png'), blobUrl(u8, file.type || 'image/png')); wireSlider();
+        const b = document.getElementById('dlpic'); b.hidden = false; b.onclick = () => download(pic, file.name.replace(/\.(jpe?g|webp|png)$/i, '') + '.ncz.png');
+      } else if (back.type !== 'done') peek.innerHTML = `<p class="sub">couldn't unpack it to show: ${esc(back.message || '')}</p>`;
+    }
   };
 
   // ---------- drop zone ----------

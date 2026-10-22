@@ -311,6 +311,15 @@ body.blog #face { pointer-events: none; }
   transition: transform 0.08s;
 }
 .btn:active { transform: scale(0.95) rotate(-2deg); }
+.view { margin: 14px 0 4px; border-radius: 14px; overflow: hidden; background: #141311; line-height: 0; }
+.view img { width: 100%; height: auto; display: block; }
+.view.cmp { position: relative; cursor: ew-resize; touch-action: none; --x: 50%; }
+.view.cmp .top { position: absolute; inset: 0; clip-path: inset(0 0 0 var(--x)); }
+.view.cmp .seam { position: absolute; top: 0; bottom: 0; left: var(--x); width: 3px; margin-left: -1.5px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,0.25); }
+.view .tag { position: absolute; top: 10px; padding: 4px 9px; border-radius: 999px; font-size: 12px; font-weight: 900; line-height: 1.2; background: rgba(20,19,17,0.72); color: #fff; }
+.view .tag.l { left: 10px; } .view .tag.r { right: 10px; }
+.slide { width: 100%; margin: 8px 0 0; accent-color: #009f4d; }
+.btn.ghost { background: transparent; color: #141311; box-shadow: inset 0 0 0 2px #141311; margin-left: 8px; }
 .how { margin-top: 30px; color: #3d3a35; }
 .how summary { font-weight: 900; cursor: pointer; color: #141311; }
 .how p { margin: 10px 0 0; font-size: 15px; }
