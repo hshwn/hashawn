@@ -45,7 +45,7 @@
   <div class="card"><table><thead><tr><th>run</th><th style="text-align:right">last dB</th><th style="text-align:right">best dB</th><th style="text-align:right">step</th><th>state</th></tr></thead><tbody id="rows"></tbody></table></div>
 </main>
 <script>
-const COLORS = ['#5b5751', '#9e8cfa', '#ffb800', '#ff3d7f', '#00c46a'];
+const COLORS = ['#5b5751', '#9e8cfa', '#ffb800', '#ff3d7f', '#00c46a', '#4cc3ff', '#ff8a3d'];
 const hidden = new Set(JSON.parse(localStorage.getItem('dash-hidden') || '[]'));
 let last = null;
 const fmtT = (s) => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s` : `${Math.floor(s / 3600)}h ${Math.round(s % 3600 / 60)}m`;

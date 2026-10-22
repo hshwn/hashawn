@@ -10,6 +10,8 @@ RUNS = [  # (log, label, total steps)
     ("student_q4d2.log", "v1 · 2 passes", 100000),
     ("student_q4v2.log", "v2 · 4-bit from 60k", 100000),
     ("student_q4v28.log", "v2 · 8-bit from 90k", 100000),
+    ("student_q1v2.log", "q1 · v2", 80000),
+    ("student_q2v2.log", "q2 · v2", 80000),
 ]
 PT = re.compile(r"^(\d+) psnr\(train crops\) (-?[\d.]+)\s+(\d+)s")
 QB = re.compile(r"^(\d+): (\d+)-bit weights from here")

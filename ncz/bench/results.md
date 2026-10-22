@@ -883,3 +883,19 @@ params, 29 ms/step, 15k steps. Rust: NCZC/NCZD predictor formats, `GroupModel::p
 The raw model gains 5.6%, the coder only 1.6%: the context mixer's own neighbour contexts were already finding most of
 that spatial information (one-pass: coder 4% under its Gaussian; checkerboard: equal). Costs 2x predictor weights
 (~1.4 MB packed vs 0.64) and 2x predictor time. Not shipped; the Rust path stays.
+
+### Tiny mode: three sizes (q1, q2, q4) (2026-10-22)
+
+q1/q2 (128-channel latents): predictors (q1 from before, q2 15k steps; NCZQ: q1 0.1977 -> 0.1978 bpp, q2 0.2884, ~0.54 MB
+packed each), v2 students (2.39M weights, distilled, 80k steps, 25 ms/step, ~35 min each; float, then 8-bit with the
+first layer fp16; 2.0 MB packed each), encoders 8-bit (1.45 MB packed each). Kodak 8, with regrown grain, JPEG XL at the
+same size:
+
+| size | KB | tiny PSNR / SSIMULACRA2 | teacher decoder | JPEG XL |
+|---|---|---|---|---|
+| smallest (q1) | 10.9 | 27.25 / 0.8 | 27.72 / 3.9 | 25.02 / -5.4 |
+| small (q2) | 15.3 | 28.50 / 19.0 | 29.12 / 23.2 | 25.81 / 11.4 |
+
+The students sit 0.5-0.6 dB under the teacher here (q4: 2 dB). Page: a size row under tiny (smallest / small / sharp),
+remembered per browser; each size fetches its own networks once (4.0 / 4.0 / 5.9 MB); unpacking reads the size from
+the file. Browser (WebGPU), bikes: q1 15.2 KB 25.67 dB, q2 21.1 KB 27.15 dB, q4 40.2 KB 29.81 dB.

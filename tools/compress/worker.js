@@ -97,7 +97,7 @@ async function decompress(u8, id) {
 // codec's wasm, whose mean/scale predictor is bit-exact on every machine, so files always decode. Pictures are not
 // exact: they look close to the original, at a fraction of the size.
 const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
-const LQ = 4;                                                  // the one quality shipped so far
+const QUALITIES = [1, 2, 4];                                   // the teacher's qualities shipped: 1 smallest, 4 sharpest
 let ortReady = null; const sessions = {}; const predLoaded = {};
 function ortLoad() {
   if (!ortReady) ortReady = (async () => { importScripts(ORT + 'ort.webgpu.min.js'); ort.env.wasm.wasmPaths = ORT;
@@ -112,29 +112,29 @@ async function fetchProgress(url, id, label, part) {
   const out = new Uint8Array(got); let off = 0; for (const c of chunks) { out.set(c, off); off += c.byteLength; } return out;
 }
 // the network files; '.ncz' ones are packed with our own codec (8-bit weights pack to ~6 bits, 4-bit to ~3) and unpacked here
-const FILES = { enc: `learned/q${LQ}.enc.onnx.ncz`, dec: `learned/q${LQ}.dec.onnx.ncz`, pred: `learned/q${LQ}.pred.ncz` };
+const file = (name, q) => `learned/q${q}.${name}${name === 'pred' ? '' : '.onnx'}.ncz`;
 const LABEL = { enc: 'the encoder', dec: 'the decoder', pred: 'the predictor' };
-async function fetchModel(name, id) {
-  let bytes = await fetchProgress(FILES[name], id, LABEL[name], name);
-  if (FILES[name].endsWith('.ncz')) {
+async function fetchModel(name, q, id) {
+  let bytes = await fetchProgress(file(name, q), id, LABEL[name], name);
+  {
     await load(); const p = put(bytes); const d = wasm.nczl_dec_new(p, bytes.length); wasm.nczl_free(p, bytes.length);
     if (!d) throw new Error(`${LABEL[name]} is damaged`);
     while (wasm.nczl_dec_step(d, 1 << 20) > 0); const o = wasm.nczl_dec_finish(d); if (!o) throw new Error(`${LABEL[name]} is damaged`); bytes = takeOut(o);
   }
   return bytes;
 }
-async function session(name, id) {
-  if (sessions[name]) return sessions[name];
+async function session(name, q, id) {
+  const key = `${name}${q}`; if (sessions[key]) return sessions[key];
   await ortLoad();
-  const bytes = await fetchModel(name, id);
+  const bytes = await fetchModel(name, q, id);
   let s;
   try { s = await ort.InferenceSession.create(bytes, { executionProviders: ['webgpu'] }); s.ep = 'webgpu'; }
   catch { s = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] }); s.ep = 'wasm'; }
-  return (sessions[name] = s);
+  return (sessions[key] = s);
 }
 async function predictor(q, id) {
   if (predLoaded[q]) return;
-  const b = await fetchModel('pred', id);
+  const b = await fetchModel('pred', q, id);
   const p = put(b); const ok = wasm.nczl_w_load(p, b.length, q); wasm.nczl_free(p, b.length);
   if (!ok) throw new Error('the predictor did not load'); predLoaded[q] = true;
 }
@@ -143,7 +143,8 @@ async function predictor(q, id) {
 // one tile, exactly as a single pass.
 const T = 1024, M = 128, TL = T / 16, ML = M / 16;
 const yieldNow = () => new Promise((r) => setTimeout(r, 0));
-async function learnedEncode(u8, id) {
+async function learnedEncode(u8, id, q) {
+  if (!QUALITIES.includes(q)) throw new Error(`no tiny quality ${q}`);
   await load();
   const bmp = await createImageBitmap(new Blob([u8]));
   const pw = bmp.width, ph = bmp.height;
@@ -151,13 +152,13 @@ async function learnedEncode(u8, id) {
   const W = Math.ceil(pw / 64) * 64, H = Math.ceil(ph / 64) * 64;
   const cv = new OffscreenCanvas(pw, ph); const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0); bmp.close();
   const rgba = cx.getImageData(0, 0, pw, ph).data;
-  await predictor(LQ, id);
+  await predictor(q, id);
   // the photo's grain fingerprint (the decoder smooths grain away; it is regrown from this on unpack), on a centre crop
   postMessage({ id, type: 'progress', done: 0, total: 1, phase: 'learn-grain' }); await yieldNow();
   let grain = new Uint8Array(0);
   { const rgb = new Uint8Array(pw * ph * 3); for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { rgb[i] = rgba[j]; rgb[i + 1] = rgba[j + 1]; rgb[i + 2] = rgba[j + 2]; }
     const rp = put(rgb); const gp = wasm.nczl_grain_measure(rp, pw, ph, 1024); wasm.nczl_free(rp, rgb.length); if (gp) grain = takeOut(gp); }
-  const enc = await session('enc', id);
+  const enc = await session('enc', q, id);
   const tiles = []; for (let ty = 0; ty < H; ty += T) for (let tx = 0; tx < W; tx += T) tiles.push([tx, ty]);
   let lat = null, c = 0; const h = H / 16, w = W / 16;
   for (let k = 0; k < tiles.length; k++) {
@@ -177,15 +178,15 @@ async function learnedEncode(u8, id) {
   }
   postMessage({ id, type: 'progress', done: tiles.length, total: tiles.length + 1, phase: 'learn-pack' }); await yieldNow();
   const lp = put(new Uint8Array(lat.buffer)); const gp = grain.length ? put(grain) : 0;
-  const zp = wasm.nczl_w_enc_grain(lp, c, h, w, pw, ph, LQ, gp, grain.length); wasm.nczl_free(lp, lat.length * 2); if (gp) wasm.nczl_free(gp, grain.length);
+  const zp = wasm.nczl_w_enc_grain(lp, c, h, w, pw, ph, q, gp, grain.length); wasm.nczl_free(lp, lat.length * 2); if (gp) wasm.nczl_free(gp, grain.length);
   if (!zp) throw new Error('could not pack the latents');
   return { out: takeOut(zp), ep: enc.ep };
 }
 async function learnedDecode(u8, id) {
   const pp = put(u8.subarray(0, 16)); const q = wasm.nczl_is_nczw(pp, 16) & 255; wasm.nczl_free(pp, 16);
-  if (q !== LQ) throw new Error('made with a quality this page does not have');
+  if (!QUALITIES.includes(q)) throw new Error('made with a quality this page does not have');
   await predictor(q, id);
-  const dec = await session('dec', id);
+  const dec = await session('dec', q, id);
   postMessage({ id, type: 'progress', done: 0, total: 2, phase: 'learn-unpack' }); await new Promise((r) => setTimeout(r, 0));
   const p = put(u8);
   if (!wasm.nczl_w_match(p, u8.length)) { wasm.nczl_free(p, u8.length); throw new Error('made with a different version of tiny mode'); }
@@ -243,7 +244,7 @@ onmessage = async (e) => {
       postMessage({ id, type: 'done', gz: await gzipSize(u8) });
     } else if (type === 'learned') {
       if (!isImage(u8)) throw new Error('tiny mode takes photos (PNG, JPEG, WebP)');
-      const t = performance.now(); const { out, ep } = await learnedEncode(u8, id);
+      const t = performance.now(); const { out, ep } = await learnedEncode(u8, id, e.data.q || 4);
       postMessage({ id, type: 'done', buf: out.buffer, ms: performance.now() - t, gz: null, pngMode: 'tiny', ep }, [out.buffer]);
     } else if (type === 'compress') {
       const t = performance.now();

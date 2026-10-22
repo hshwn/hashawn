@@ -11,7 +11,13 @@
   // ---------- PNG mode: 0 every pixel exact, 1 every sample within +-1, 2 looks the same (grain regrown) ----------
   const modes = document.getElementById('modes');
   let mode = 0; try { mode = Math.min(3, Math.max(0, +localStorage.getItem('pngMode') || 0)); } catch {}
-  const showMode = () => modes.querySelectorAll('button').forEach((b) => { const on = +b.dataset.m === mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); });
+  // tiny mode's size: the teacher quality (1 smallest .. 4 sharpest); its networks are fetched when first used
+  const tinyq = document.getElementById('tinyq');
+  let tq = 4; try { tq = [1, 2, 4].includes(+localStorage.getItem('tinyQ')) ? +localStorage.getItem('tinyQ') : 4; } catch {}
+  const showQ = () => tinyq.querySelectorAll('button').forEach((b) => { const on = +b.dataset.q === tq; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); });
+  tinyq.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || busy) return; tq = +b.dataset.q; showQ(); try { localStorage.setItem('tinyQ', tq); } catch {} });
+  showQ();
+  const showMode = () => { modes.querySelectorAll('button').forEach((b) => { const on = +b.dataset.m === mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); }); tinyq.hidden = mode !== 3; };
   modes.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || busy) return; mode = +b.dataset.m; showMode(); try { localStorage.setItem('pngMode', mode); } catch {} });
   showMode();
   // what came back: 0 exact, k within +-k, 255 grain mode
@@ -82,7 +88,7 @@
     const t0 = performance.now();
     if (mode === 3 && isImage(u8)) {      // tiny: the learned codec, one worker (the networks are big; one copy of them)
       const buf = u8.slice().buffer;
-      return call(pool[0], { type: 'learned', buf }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.done / p.total * u8.length, phase: p.phase, k: 1 }));
+      return call(pool[0], { type: 'learned', buf, q: tq }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.done / p.total * u8.length, phase: p.phase, k: 1 }));
     }
     const pl = await call(pool[0], { type: 'plan', buf: u8.slice().buffer });
     if (pl.ends.length <= 1) {

@@ -291,6 +291,8 @@ body.blog #face { pointer-events: none; }
 }
 .modes button:hover { background: #fff; }
 .modes button.on { background: #141311; color: #fff; }
+.modes.sub { margin-top: 6px; }
+.modes.sub button { padding: 6px 12px; font-size: 13px; }
 .modes button:active { transform: scale(0.93) rotate(-2deg); }
 .result { margin-top: 18px; }
 .job { background: #fff; border-radius: 22px; padding: 22px 24px; box-shadow: 0 0 0 var(--rim) #fff, 0 12px 30px rgba(0,0,0,0.08); }
