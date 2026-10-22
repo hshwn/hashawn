@@ -515,3 +515,28 @@ Grain fidelity (`bench/grain/mode_eval.py`; real = photo - clean, regenerated = 
 
 Known gaps: clumping a bit low on busy pictures; regenerated grain is laid evenly while the split leaves some real grain
 in textured areas, so whole-picture grain is ~1.27x the removed grain there (texture hides it; flat areas match).
+
+### Layers from a vision model: albedo x shading + residual (2026-10-22) — does not help exact coding
+
+`ncz/bench/iid/`. Marigold-IID Lighting v1.1 (prs-eth, 2025; fp16 on the 3090, ~3 s per 768x512 photo, ensemble 5)
+splits each photo into albedo (flat surface colour), diffuse shading and a residual. The model would run in the encoder
+only. Visually the split is good (shadow-free caps, cast shadows in the shading layer). Kodak 03/05/13/23 + ram poster.
+
+(c) Shading as side information: the coder (patch `shade_predictor.patch`, two extra predictors that take neighbours'
+surface colour, sample / shading, and relight it with this pixel's shading) vs the same coder without it.
+Same pictures, exact mode, total bpp incl. the shading's own cost:
+
+| shading given to the coder | free (ceiling) | 1/8 res | 1/4 res | 1/2 res | full res |
+|---|---:|---:|---:|---:|---:|
+| Marigold | +0.09% | +1.53% | +5.30% | +22.1% | +113% |
+| Retinex (blurred photo, sigma 8) | +0.09% | +1.40% | | | |
+
+Even free, full-resolution model shading gains nothing. Sanity check, synthetic flat colours x shading with sharp
+shadows: -3.45% without noise, -0.80% with 0.8-level noise, so the predictor works; the coder's gradient predictors
+already follow smooth light, and shadow edges are too few pixels to matter.
+
+(b) Layers coded separately (albedo exact + shading at 1/8 + residual): +123% to +154%. The albedo alone costs about
+as much as the photo (wood grain, feathers and the model's own fine noise stay in it); the residual costs more again.
+
+Verdict: for exact and +-k coding the photo is already the cheapest layer. The coder was left unchanged (streams
+byte-identical); the experiment lives in the patch and scripts.
