@@ -170,8 +170,12 @@ impl Model {
     fn run_groups<I: BitIo>(&mut self, io: &mut I, src: &[i16], gm: &dyn GroupModel) {
         let n = self.c * self.h * self.w; let hw = self.h * self.w;
         self.aux = Some((vec![0; n], vec![0; n], vec![0; n]));
+        let (mut tp, mut tc) = (0.0f64, 0.0f64); let timing = cfg!(not(target_arch = "wasm32")) && std::env::var("LAT_TIMING").is_ok();
         for (g, chans) in gm.groups().iter().enumerate() {
+            let t0 = if timing { Some(std::time::Instant::now()) } else { None };
             let (mu, qs, qs2) = gm.predict(&self.lat, self.c, self.h, self.w, g);
+            if let Some(t) = t0 { tp += t.elapsed().as_secs_f64(); }
+            let t1 = if timing { Some(std::time::Instant::now()) } else { None };
             if let Some((am, aq, aq2)) = &mut self.aux {
                 for (k, &ch) in chans.iter().enumerate() {
                     am[ch * hw..(ch + 1) * hw].copy_from_slice(&mu[k * hw..(k + 1) * hw]);
@@ -180,7 +184,9 @@ impl Model {
                 }
             }
             for &ch in chans { self.channel(io, src, ch); }
+            if let Some(t) = t1 { tc += t.elapsed().as_secs_f64(); }
         }
+        if timing { eprintln!("predictor {tp:.2}s  coding {tc:.2}s"); }
     }
 
     /// Code (or decode) all latents. `src`: the values (encoder) or zeros (decoder). Classes must be set.

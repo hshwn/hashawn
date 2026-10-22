@@ -17,7 +17,7 @@
 //!
 //! Modes (`Mode`): Exact (default); Near(k); Grain. Lossy modes apply to 8-bit grey / RGB / RGBA photos only:
 //! palette and low-bit images always go exact (their pixels must stay in the palette), and grain mode needs an
-//! opaque picture of 64x64 .. grain::MAX_PIXELS (otherwise it falls back to Near(2), the same bound grain mode
+//! opaque picture of at least 64x64 (up to grain::MAX_PIXELS, 268 MP; otherwise it falls back to Near(2), the same bound grain mode
 //! keeps on the clean picture).
 use crate::img;
 

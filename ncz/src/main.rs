@@ -11,6 +11,11 @@ fn main() {
             let b = fs::read(f).expect("read"); let g = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as usize;
             let (c, h, w) = (g(0), g(2), g(4));
             let lat: Vec<i16> = b[6..].chunks_exact(2).map(|x| i16::from_le_bytes([x[0], x[1]])).collect();
+            // WONDER_TILE=k: repeat the latents k x k times (timing big pictures)
+            let k: usize = std::env::var("WONDER_TILE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            let (lat, h, w) = if k == 1 { (lat, h, w) } else {
+                let (h2, w2) = (h * k, w * k); let mut v = vec![0i16; c * h2 * w2];
+                for q in 0..c { for y in 0..h2 { for x in 0..w2 { v[(q * h2 + y) * w2 + x] = lat[(q * h + y % h) * w + x % w]; } } } (v, h2, w2) };
             let t = std::time::Instant::now(); let z = ncz::wonder::compress(&lat, c, h, w, w * 16, h * 16, 4, &p).expect("compress"); let te = t.elapsed().as_secs_f64();
             let t = std::time::Instant::now(); let back = ncz::wonder::decompress(&z, &p).expect("decode"); let td = t.elapsed().as_secs_f64();
             if let Ok(d) = std::env::var("WONDER_OUT") { fs::write(format!("{}/{}.nczw", d, f.rsplit('/').next().unwrap().trim_end_matches(".lat")), &z).unwrap(); }

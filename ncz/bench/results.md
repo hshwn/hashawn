@@ -770,3 +770,20 @@ notice on the page.
   33.15 dB (the same decoder in PyTorch: 33.21). kodim05 as a q92 JPEG 174 KB -> 37.9 KB. A 2048x1024 WebP 301 KB ->
   6.7 KB, back at full size. CPU fallback (forced): same 12,514 B file, but 29 s / 6 s on one thread (threads need a
   cross-origin isolated page, not set up).
+
+### No more size caps: grain mode v2 (tiled) and tiny mode in tiles (2026-10-22)
+
+Grain mode (NCZG v2; v1 files still decode): the fingerprint is measured on a centre crop of at most 2048x2048, the
+clean picture is made in 1024 px tiles with 32 px margins on the denoiser's 4 px block grid (test: bit-identical to
+the whole-picture pass, `tiles_join_exactly`), and regrowth is local: noise is a hash of the pixel position, fields are
+normalised by their theoretical spread, the quantile map is per pixel (test: a tile's field equals the same window of
+a bigger one). Cap 12 MP -> 268 MP. Pictures up to 2048 px a side: same clean picture and same size as v1 (kodim03,
+kodim13, ram poster: identical bpp); the regrown grain is new (envelope fit 0.05 -> 0.10 on kodim03, 0.20 -> 0.15 on
+kodim13). 48 MP (8000x6000) native: 160 s for compress + decompress, 1.05 GB peak (v1 would need ~8 GB); no seam at
+tile corners by eye or in column statistics. Browser: a 24 MP PNG 42.5 MB -> 7.48 MB in grain mode, 60 s / 40 s.
+
+Tiny mode: encoder and decoder networks run in tiles (1024 px cores, 128 px margins, on the 64 px grid; pictures up to
+1024 px a side are one tile, same bytes as before). The predictor's convolution now runs a row at a time over 16
+output channels (accumulators in cache, same order of every sum: streams bit-identical): 48 MP-sized latents 14.6 ->
+8.8 s native, 14.3 s wasm. Browser, a 48 MP JPEG (10.4 MB) -> 669 KB, 8000x6000 back; compress 146 -> 46 s, unpack
+115 -> 24.5 s. Cap 16 MP -> 65535 px a side.

@@ -126,25 +126,39 @@ async function predictor(q, id) {
   const p = put(b); const ok = wasm.nczl_w_load(p, b.length, q); wasm.nczl_free(p, b.length);
   if (!ok) throw new Error('the predictor did not load'); predLoaded[q] = true;
 }
+// Any size: both networks run in overlapping tiles (core T px, margin M px each side; the margins are cut away), so
+// memory stays flat. Cores and margins are multiples of 64 px, on the encoder's grid; a picture up to T px a side is
+// one tile, exactly as a single pass.
+const T = 1024, M = 128, TL = T / 16, ML = M / 16;
+const yieldNow = () => new Promise((r) => setTimeout(r, 0));
 async function learnedEncode(u8, id) {
   await load();
   const bmp = await createImageBitmap(new Blob([u8]));
   const pw = bmp.width, ph = bmp.height;
-  if (pw * ph > 16e6) throw new Error('that picture is too big for tiny mode (16 megapixels max)');
+  if (pw > 65535 || ph > 65535) throw new Error('that picture is wider or taller than 65535 pixels');
   const W = Math.ceil(pw / 64) * 64, H = Math.ceil(ph / 64) * 64;
-  const cv = new OffscreenCanvas(pw, ph); const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0);
+  const cv = new OffscreenCanvas(pw, ph); const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0); bmp.close();
   const rgba = cx.getImageData(0, 0, pw, ph).data;
-  const x = new Float32Array(3 * H * W);                     // planes, edge pixels repeated into the padding
-  for (let yy = 0; yy < H; yy++) { const sy = Math.min(yy, ph - 1);
-    for (let xx = 0; xx < W; xx++) { const s = (sy * pw + Math.min(xx, pw - 1)) * 4, d = yy * W + xx;
-      x[d] = rgba[s] / 255; x[H * W + d] = rgba[s + 1] / 255; x[2 * H * W + d] = rgba[s + 2] / 255; } }
   await predictor(LQ, id);
   const enc = await session('enc', id);
-  postMessage({ id, type: 'progress', done: 0, total: 1, phase: 'learn-enc' }); await new Promise((r) => setTimeout(r, 0));
-  const y = (await enc.run({ x: new ort.Tensor('float32', x, [1, 3, H, W]) })).y;
-  const [, c, h, w] = y.dims; const lat = new Int16Array(c * h * w);
-  for (let i = 0; i < lat.length; i++) lat[i] = Math.max(-32767, Math.min(32767, Math.round(y.data[i])));
-  postMessage({ id, type: 'progress', done: 1, total: 2, phase: 'learn-pack' }); await new Promise((r) => setTimeout(r, 0));
+  const tiles = []; for (let ty = 0; ty < H; ty += T) for (let tx = 0; tx < W; tx += T) tiles.push([tx, ty]);
+  let lat = null, c = 0; const h = H / 16, w = W / 16;
+  for (let k = 0; k < tiles.length; k++) {
+    postMessage({ id, type: 'progress', done: k, total: tiles.length + 1, phase: 'learn-enc' }); await yieldNow();
+    const [tx, ty] = tiles[k];
+    const x0 = Math.max(0, tx - M), y0 = Math.max(0, ty - M), x1 = Math.min(W, tx + T + M), y1 = Math.min(H, ty + T + M), tw = x1 - x0, th = y1 - y0;
+    const x = new Float32Array(3 * tw * th);                 // planes; edge pixels repeated into the padding
+    for (let yy = 0; yy < th; yy++) { const sy = Math.min(y0 + yy, ph - 1);
+      for (let xx = 0; xx < tw; xx++) { const s = (sy * pw + Math.min(x0 + xx, pw - 1)) * 4, d = yy * tw + xx;
+        x[d] = rgba[s] / 255; x[tw * th + d] = rgba[s + 1] / 255; x[2 * tw * th + d] = rgba[s + 2] / 255; } }
+    const y = (await enc.run({ x: new ort.Tensor('float32', x, [1, 3, th, tw]) })).y;
+    const [, cc, lh, lw] = y.dims; if (!lat) { c = cc; lat = new Int16Array(c * h * w); }
+    const oy = (ty - y0) / 16, ox = (tx - x0) / 16, ch_ = Math.min(TL, h - ty / 16), cw_ = Math.min(TL, w - tx / 16);
+    for (let q = 0; q < c; q++) for (let yy = 0; yy < ch_; yy++) for (let xx = 0; xx < cw_; xx++)
+      lat[(q * h + ty / 16 + yy) * w + tx / 16 + xx] = Math.max(-32767, Math.min(32767, Math.round(y.data[(q * lh + oy + yy) * lw + ox + xx])));
+    y.dispose && y.dispose();
+  }
+  postMessage({ id, type: 'progress', done: tiles.length, total: tiles.length + 1, phase: 'learn-pack' }); await yieldNow();
   const lp = put(new Uint8Array(lat.buffer)); const zp = wasm.nczl_w_enc(lp, c, h, w, pw, ph, LQ); wasm.nczl_free(lp, lat.length * 2);
   if (!zp) throw new Error('could not pack the latents');
   return { out: takeOut(zp), ep: enc.ep };
@@ -159,12 +173,21 @@ async function learnedDecode(u8, id) {
   if (!lp) throw new Error('the file is damaged');
   const raw = takeOut(lp); const lat = new Int16Array(raw.buffer, raw.byteOffset, raw.length / 2);
   const [c, h, w, pw, ph] = [0, 1, 2, 3, 4].map((i) => wasm.nczl_w_dim(i));
-  const yf = new Float32Array(lat.length); for (let i = 0; i < lat.length; i++) yf[i] = lat[i];
-  postMessage({ id, type: 'progress', done: 1, total: 2, phase: 'learn-dec' }); await new Promise((r) => setTimeout(r, 0));
-  const xo = (await dec.run({ y: new ort.Tensor('float32', yf, [1, c, h, w]) })).x; const H = h * 16, W = w * 16;
   const img = new ImageData(pw, ph); const d = img.data;
-  for (let yy = 0; yy < ph; yy++) for (let xx = 0; xx < pw; xx++) { const s = yy * W + xx, o = (yy * pw + xx) * 4;
-    d[o] = xo.data[s] * 255 + 0.5; d[o + 1] = xo.data[H * W + s] * 255 + 0.5; d[o + 2] = xo.data[2 * H * W + s] * 255 + 0.5; d[o + 3] = 255; }
+  const tiles = []; for (let ty = 0; ty < h; ty += TL) for (let tx = 0; tx < w; tx += TL) tiles.push([tx, ty]);
+  for (let k = 0; k < tiles.length; k++) {
+    postMessage({ id, type: 'progress', done: k + 1, total: tiles.length + 1, phase: 'learn-dec' }); await yieldNow();
+    const [tx, ty] = tiles[k];
+    const x0 = Math.max(0, tx - ML), y0 = Math.max(0, ty - ML), x1 = Math.min(w, tx + TL + ML), y1 = Math.min(h, ty + TL + ML), tw = x1 - x0, th = y1 - y0;
+    const yf = new Float32Array(c * tw * th);
+    for (let q = 0; q < c; q++) for (let yy = 0; yy < th; yy++) for (let xx = 0; xx < tw; xx++) yf[(q * th + yy) * tw + xx] = lat[(q * h + y0 + yy) * w + x0 + xx];
+    const xo = (await dec.run({ y: new ort.Tensor('float32', yf, [1, c, th, tw]) })).x; const PW = tw * 16, PH = th * 16, P = PW * PH;
+    const px0 = tx * 16, py0 = ty * 16, px1 = Math.min(pw, (tx + TL) * 16), py1 = Math.min(ph, (ty + TL) * 16);
+    for (let yy = py0; yy < py1; yy++) for (let xx = px0; xx < px1; xx++) {
+      const s = (yy - y0 * 16) * PW + (xx - x0 * 16), o = (yy * pw + xx) * 4;
+      d[o] = xo.data[s] * 255 + 0.5; d[o + 1] = xo.data[P + s] * 255 + 0.5; d[o + 2] = xo.data[2 * P + s] * 255 + 0.5; d[o + 3] = 255; }
+    xo.dispose && xo.dispose();
+  }
   const cv = new OffscreenCanvas(pw, ph); cv.getContext('2d').putImageData(img, 0, 0);
   return new Uint8Array(await (await cv.convertToBlob({ type: 'image/png' })).arrayBuffer());
 }

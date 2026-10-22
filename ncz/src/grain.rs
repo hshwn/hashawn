@@ -14,14 +14,19 @@
 //! the strength of a slow random envelope fitted to the grain's clumping.
 //!
 //! Decoder (must give the same pixels everywhere): integer random numbers, own exp / cos / inverse-normal, f64 in a
-//! fixed order, no FFT: noise -> 17x17 kernel from the spectrum -> envelope -> coupling -> rank-map to the quantiles
+//! fixed order, no FFT: noise -> 17x17 kernel from the spectrum -> envelope -> coupling -> map to the quantiles
 //! -> strength by brightness -> added to the clean picture.
+//! Version 2 (written now) makes every step local, so any size works in constant memory: the noise at a pixel is a
+//! hash of its position, the fields are normalised by their theoretical spread, and the quantile map is per pixel.
+//! Version 1 (whole-picture noise, rank map) still decodes. Big pictures: the fingerprint is measured on a centre
+//! crop (EST x EST), and the clean picture is made in tiles with margins on the denoiser's block grid, so the tiles
+//! join exactly as one whole-picture pass would.
 //!
 //! Stream: "NCZG" | version | k | w u32 | h u32 | fingerprint length u32 | fingerprint (NCZ3) | clean picture (NCZI).
 use crate::img;
 
 pub const MAGIC: &[u8; 4] = b"NCZG";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const NB: usize = 16;            // brightness bands
 const PS: usize = 32;            // spectrum patch size
 const NZ: usize = 65;            // quantiles, on z = -4..4
@@ -209,7 +214,64 @@ fn unit_grain(fp: &Fingerprint, w: usize, h: usize, env: f64) -> [Vec<f64>; 3] {
     [it.next().unwrap(), it.next().unwrap(), it.next().unwrap()]
 }
 
-/// Clean RGB (8-bit) + fingerprint -> RGB with regenerated grain.
+/// Version 2: near-Gaussian unit noise at absolute position (x, y) of stream `st` (channels 0..2, envelope 3), from a hash.
+fn hnoise(seed: u64, st: u64, x: i64, y: i64) -> f64 {
+    Rng(seed ^ st.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (x as u64).wrapping_mul(0xD1B5_4A32_D192_ED03) ^ (y as u64).wrapping_mul(0xABC9_8388_FB8F_AC03)).gauss()
+}
+/// Version 2: normalised grain of the tile (x0, y0, tw, th), per channel; the same values wherever the tile boundaries fall.
+fn unit_grain_tile(fp: &Fingerprint, x0: usize, y0: usize, tw: usize, th: usize, env: f64) -> [Vec<f64>; 3] {
+    let n = 2 * KR + 1; let (pw, ph) = (tw + 2 * KR, th + 2 * KR);
+    let mut f: Vec<Vec<f64>> = (0..3).map(|c| {
+        let ker = kernel(&fp.psd[c]); let sd = ker.iter().map(|k| k * k).sum::<f64>().sqrt().max(1e-12);
+        let noise: Vec<f64> = (0..pw * ph).map(|i| hnoise(fp.seed, c as u64, (x0 + i % pw) as i64 - KR as i64, (y0 + i / pw) as i64 - KR as i64)).collect();
+        let mut out = vec![0.0; tw * th];
+        for y in 0..th { for x in 0..tw {
+            let mut s = 0.0;
+            for ky in 0..n { let row = (y + ky) * pw + x; let kr = ky * n; for kx in 0..n { s += ker[kr + kx] * noise[row + kx]; } }
+            out[y * tw + x] = s / sd;
+        } }
+        out
+    }).collect();
+    if env > 0.0 {
+        let r = (3.0 * ENV_SIGMA) as usize; let k: Vec<f64> = (0..=2 * r).map(|i| { let d = i as f64 - r as f64; dexp(-d * d / (2.0 * ENV_SIGMA * ENV_SIGMA)) }).collect();
+        let esd = k.iter().map(|v| v * v).sum::<f64>().max(1e-12);          // spread of a separable blur of unit noise
+        let (qw, qh) = (tw + 2 * r, th + 2 * r);
+        let noise: Vec<f64> = (0..qw * qh).map(|i| hnoise(fp.seed, 3, (x0 + i % qw) as i64 - r as i64, (y0 + i / qw) as i64 - r as i64)).collect();
+        let mut t = vec![0.0; tw * qh];
+        for y in 0..qh { for x in 0..tw { let mut s = 0.0; for i in 0..k.len() { s += k[i] * noise[y * qw + x + i]; } t[y * tw + x] = s; } }
+        for y in 0..th { for x in 0..tw { let mut s = 0.0; for i in 0..k.len() { s += k[i] * t[(y + i) * tw + x]; } let m = s / esd; let e = dexp(env * m); for c in 0..3 { f[c][y * tw + x] *= e; } } }
+    }
+    let l = &fp.chol; let step = 8.0 / (NZ - 1) as f64; let em = dexp(env * env);
+    let sd: Vec<f64> = (0..3).map(|c| ((0..=c).map(|j| l[c][j] * l[c][j]).sum::<f64>()).sqrt().max(1e-12) * em).collect();
+    for i in 0..tw * th {
+        let (a, b, c) = (f[0][i], f[1][i], f[2][i]);
+        let v = [l[0][0] * a, l[1][0] * a + l[1][1] * b, l[2][0] * a + l[2][1] * b + l[2][2] * c];
+        for ch in 0..3 {          // per-pixel quantile map: z = value / its spread
+            let z = (v[ch] / sd[ch]).clamp(-4.0, 4.0); let t = (z + 4.0) / step; let j = (t.floor() as usize).min(NZ - 2); let fr = t - j as f64;
+            f[ch][i] = fp.quant[ch][j] * (1.0 - fr) + fp.quant[ch][j + 1] * fr;
+        }
+    }
+    let mut it = f.into_iter();
+    [it.next().unwrap(), it.next().unwrap(), it.next().unwrap()]
+}
+/// Version 2: clean RGB + fingerprint -> RGB with regenerated grain, in place, tile by tile (constant memory).
+pub fn regrain_v2(rgb: &mut [u8], w: usize, h: usize, fp: &Fingerprint) {
+    if fp.strength.iter().all(|s| s.iter().all(|&v| v == 0.0)) { return; }
+    const T: usize = 256;
+    for ty in (0..h).step_by(T) { for tx in (0..w).step_by(T) {
+        let (tw, th) = (T.min(w - tx), T.min(h - ty));
+        let u = unit_grain_tile(fp, tx, ty, tw, th, fp.env);
+        for y in 0..th { for x in 0..tw {
+            let i = (ty + y) * w + tx + x; let j = y * tw + x;
+            let (r, g, b) = (rgb[3 * i] as f64, rgb[3 * i + 1] as f64, rgb[3 * i + 2] as f64);
+            let yb = band_of((r + g + b) / 3.0);
+            let go = [u[0][j] * strength_at(fp, yb, 0), u[1][j] * strength_at(fp, yb, 1), u[2][j] * strength_at(fp, yb, 2)];
+            for k in 0..3 { let d = OPP[0][k] * go[0] + OPP[1][k] * go[1] + OPP[2][k] * go[2]; rgb[3 * i + k] = (rgb[3 * i + k] as f64 + d).round().clamp(0.0, 255.0) as u8; }
+        } }
+    } }
+}
+
+/// Version 1: clean RGB (8-bit) + fingerprint -> RGB with regenerated grain.
 pub fn regrain(clean: &[u8], w: usize, h: usize, fp: &Fingerprint) -> Vec<u8> {
     if fp.strength.iter().all(|s| s.iter().all(|&v| v == 0.0)) { return clean.to_vec(); }   // grain-free picture
     let u = unit_grain(fp, w, h, fp.env);
@@ -326,7 +388,40 @@ fn denoise_channel(x: &[f64], pilot_in: Option<&[f64]>, w: usize, h: usize, psd:
 }
 
 /// Split into (clean opponent planes, absolute grain spectrum). Encoder only.
-pub fn separate(rgb: &[u8], w: usize, h: usize) -> ([Vec<f64>; 3], Vec<[f64; PS * PS]>) {
+pub fn separate(rgb: &[u8], w: usize, h: usize) -> ([Vec<f64>; 3], Vec<[f64; PS * PS]>) { let (c, p, _) = separate_full(rgb, w, h); (c, p) }
+
+type Fac = [[f64; NB]; 3];
+/// The clean opponent planes of one tile, from the picture's spectrum and brightness factors (the last two passes of
+/// separate_full, without measuring again).
+fn clean_tile(o: &[Vec<f64>; 3], w: usize, h: usize, psd: &[[f64; PS * PS]], fac_tab: &Fac) -> [Vec<f64>; 3] {
+    let one = |_: usize, _: usize| 1.0;
+    let pilot: Vec<Vec<f64>> = (0..3).map(|c| denoise_channel(&o[c], None, w, h, &psd[c], &one)).collect();
+    let clean: Vec<Vec<f64>> = (0..3).map(|c| {
+        let p = &pilot[c]; let ft = fac_tab[c];
+        let fac = |r: usize, cc: usize| { let mut s = 0.0; for y in 0..B { for x in 0..B { s += pilot[0][(r + y) * w + cc + x]; } } let yb = band_of(s / (B * B) as f64 / S3 / 3.0).round() as usize; ft[yb] };
+        denoise_channel(&o[c], Some(p), w, h, &psd[c], &fac)
+    }).collect();
+    let mut it = clean.into_iter();
+    [it.next().unwrap(), it.next().unwrap(), it.next().unwrap()]
+}
+const TILE: usize = 1024; const MARGIN: usize = 32;     // both multiples of STEP: tiles sit on the block grid
+/// Clean RGB of the whole picture, tile by tile. A pixel depends on the input within 30 px (two 16 px block passes),
+/// so with 32 px margins every kept pixel equals the whole-picture result.
+fn clean_tiled(rgb: &[u8], w: usize, h: usize, psd: &[[f64; PS * PS]], fac_tab: &Fac) -> Vec<u8> {
+    let mut out = vec![0u8; w * h * 3];
+    for ty in (0..h).step_by(TILE) { for tx in (0..w).step_by(TILE) {
+        let (x0, y0) = (tx.saturating_sub(MARGIN), ty.saturating_sub(MARGIN));
+        let (x1, y1) = ((tx + TILE + MARGIN).min(w), (ty + TILE + MARGIN).min(h)); let (tw, th) = (x1 - x0, y1 - y0);
+        let mut t = Vec::with_capacity(tw * th * 3);
+        for y in y0..y1 { t.extend_from_slice(&rgb[(y * w + x0) * 3..(y * w + x1) * 3]); }
+        let o = to_opp(&t, tw * th); let c = clean_tile(&o, tw, th, psd, fac_tab); let back = from_opp(&c, tw * th);
+        for y in ty..(ty + TILE).min(h) { let (a, b) = (tx, (tx + TILE).min(w));
+            out[(y * w + a) * 3..(y * w + b) * 3].copy_from_slice(&back[((y - y0) * tw + a - x0) * 3..((y - y0) * tw + b - x0) * 3]); }
+    } }
+    out
+}
+
+fn separate_full(rgb: &[u8], w: usize, h: usize) -> ([Vec<f64>; 3], Vec<[f64; PS * PS]>, Fac) {
     let n = w * h; let o = to_opp(rgb, n);
     let one = |_: usize, _: usize| 1.0;
     // pass 0: white-noise pilot, sigma from the finest diagonal detail (median, robust to edges)
@@ -361,7 +456,7 @@ pub fn separate(rgb: &[u8], w: usize, h: usize) -> ([Vec<f64>; 3], Vec<[f64; PS 
         denoise_channel(&o[c], Some(p), w, h, &psd[c], &fac)
     }).collect();
     let mut it = clean.into_iter();
-    ([it.next().unwrap(), it.next().unwrap(), it.next().unwrap()], psd)
+    ([it.next().unwrap(), it.next().unwrap(), it.next().unwrap()], psd, fac_tab)
 }
 
 /// Pixels whose 7x7 mean gradient (of plane x) is in the lowest `frac`.
@@ -437,7 +532,7 @@ pub fn fingerprint(rgb: &[u8], clean: &[Vec<f64>; 3], w: usize, h: usize, seed: 
     let target = clumping(&unit[0], w, h, Some(&flat));
     let (tw_, th_) = (256.min(w), 256.min(h)); let mut best = (0.0, f64::MAX);
     for a in [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5] {
-        let u = unit_grain(&fp, tw_, th_, a); let cl = clumping(&u[0], tw_, th_, None);
+        let u = unit_grain_tile(&fp, 0, 0, tw_, th_, a); let cl = clumping(&u[0], tw_, th_, None);
         if (cl - target).abs() < best.1 { best = (a, (cl - target).abs()); }
     }
     if std::env::var("GRAIN_DEBUG").is_ok() { eprintln!("flat px {}  psd patches {take}  clumping target {target:.3}  env {:.2}", fl.len(), best.0); }
@@ -457,19 +552,28 @@ fn erf(x: f64) -> f64 {   // Abramowitz-Stegun 7.1.26 (encoder only; 1.5e-7)
 /// Encoder result: the stream plus the clean picture it carries (for inspection).
 pub struct Encoded { pub stream: Vec<u8>, pub clean: Vec<u8>, pub fp: Fingerprint }
 
-/// Largest picture grain mode takes (pixels): the split needs ~170 bytes per pixel, and the browser build has 4 GB.
-pub const MAX_PIXELS: usize = 12_000_000;
+/// Largest picture grain mode takes (pixels): bounded only by the clean picture and its coder (~15 bytes a pixel).
+pub const MAX_PIXELS: usize = 1 << 28;
+/// Fingerprint measured on a centre crop of at most EST x EST (grain is the same across a photo); the split needs
+/// ~170 bytes a pixel, so this is what bounds the encoder's memory.
+const EST: usize = 2048;
 
 /// The one-shot part of encoding: split, fingerprint, stream head. Returns (head, clean RGB, fingerprint).
 fn prepare(rgb: &[u8], w: usize, h: usize, k: u8) -> Option<(Vec<u8>, Vec<u8>, Fingerprint)> {
     if w < 64 || h < 64 || w * h > MAX_PIXELS || rgb.len() != w * h * 3 { return None; }
-    let (clean_o, _psd) = separate(rgb, w, h);
     let mut seed = 0xcbf2_9ce4_8422_2325u64; for &b in rgb.iter().step_by(97) { seed = (seed ^ b as u64).wrapping_mul(0x100_0000_01b3); }
-    let mut fp = fingerprint(rgb, &clean_o, w, h, seed);
+    let big = w > EST || h > EST;
+    // measure on the whole picture, or on a centre crop of a big one (on the block grid)
+    let (cw, ch) = (w.min(EST), h.min(EST)); let (cx, cy) = ((w - cw) / 2 / STEP * STEP, (h - ch) / 2 / STEP * STEP);
+    let crop: Vec<u8> = if big { (cy..cy + ch).flat_map(|y| rgb[(y * w + cx) * 3..(y * w + cx + cw) * 3].iter().copied()).collect() } else { Vec::new() };
+    let sample = if big { &crop[..] } else { rgb };
+    let (clean_o, psd, fac) = separate_full(sample, cw, ch);
+    let mut fp = fingerprint(sample, &clean_o, cw, ch, seed);
     // no measurable grain (digital art, clean renders): nothing to strip or regrow, the picture itself goes at +-k
     let grainy = fp.strength.iter().map(|s| s[0]).sum::<f64>() / NB as f64 >= NO_GRAIN;
-    let clean = if grainy { from_opp(&clean_o, w * h) } else { fp = Fingerprint { strength: [[0.0; 3]; NB], psd: vec![[0.0; PS * PS]; 3], chol: [[0.0; 3]; 3], quant: [[0.0; NZ]; 3], env: 0.0, seed: 0 }; rgb.to_vec() };
-    drop(clean_o);
+    let clean = if !grainy { fp = Fingerprint { strength: [[0.0; 3]; NB], psd: vec![[0.0; PS * PS]; 3], chol: [[0.0; 3]; 3], quant: [[0.0; NZ]; 3], env: 0.0, seed: 0 }; rgb.to_vec() }
+        else if big { drop(clean_o); clean_tiled(rgb, w, h, &psd, &fac) } else { from_opp(&clean_o, w * h) };
+    drop(crop);
     let fpz = crate::compress(&fp.encode());
     let mut head = Vec::with_capacity(18 + fpz.len());
     head.extend_from_slice(MAGIC); head.push(VERSION); head.push(k);
@@ -504,23 +608,27 @@ impl GrainEncoder {
 }
 
 /// Streaming grain decoder: the clean picture in `step`s of rows, the grain regrown in `finish`.
-pub struct GrainDecoder { fp: Fingerprint, img: img::ImgDecoder, pub w: usize, pub h: usize }
+pub struct GrainDecoder { fp: Fingerprint, img: img::ImgDecoder, pub w: usize, pub h: usize, version: u8 }
 impl GrainDecoder {
     pub fn new(blob: &[u8]) -> Option<GrainDecoder> {
-        if blob.len() < 18 || &blob[..4] != MAGIC || blob[4] != VERSION { return None; }
+        if blob.len() < 18 || &blob[..4] != MAGIC || !(blob[4] == 1 || blob[4] == VERSION) { return None; }
+        let version = blob[4];
         let w = u32::from_le_bytes(blob[6..10].try_into().ok()?) as usize; let h = u32::from_le_bytes(blob[10..14].try_into().ok()?) as usize;
         let n = u32::from_le_bytes(blob[14..18].try_into().ok()?) as usize;
         if 18 + n > blob.len() || w.checked_mul(h)? > MAX_PIXELS { return None; }
         let fp = Fingerprint::decode(&crate::decompress(&blob[18..18 + n])?)?;
         let img = img::ImgDecoder::new(&blob[18 + n..])?;
         if img.w != w || img.h != h || img.flags & img::F_ALPHA != 0 { return None; }
-        Some(GrainDecoder { fp, img, w, h })
+        Some(GrainDecoder { fp, img, w, h, version })
     }
     pub fn units(&self) -> usize { self.img.units() }
     pub fn done(&self) -> usize { self.img.done() }
     pub fn step(&mut self, n: usize) -> usize { self.img.step(n) }
     /// RGB with regenerated grain.
-    pub fn finish(self) -> Vec<u8> { let (w, h, fp) = (self.w, self.h, self.fp); let clean = self.img.finish(); regrain(&clean, w, h, &fp) }
+    pub fn finish(self) -> Vec<u8> {
+        let (w, h, fp, v) = (self.w, self.h, self.fp, self.version); let mut px = self.img.finish();
+        if v == 1 { regrain(&px, w, h, &fp) } else { regrain_v2(&mut px, w, h, &fp); px }
+    }
 }
 
 /// Returns (rgb with regenerated grain, w, h).
@@ -535,6 +643,25 @@ pub fn fingerprint_bytes(blob: &[u8]) -> usize { if blob.len() < 18 { 0 } else {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tiles_join_exactly() {
+        // several tiles (and a partial one): the tiled clean picture must equal the whole-picture pass bit for bit
+        let (w, h) = (TILE + 300, TILE + 77); let mut r = Rng(7);
+        let rgb: Vec<u8> = (0..w * h * 3).map(|i| { let p = i / 3; let (x, y) = (p % w, p / w); (((x * 3 + y * 2) % 200) as f64 + 28.0 + r.gauss() * 9.0).round().clamp(0.0, 255.0) as u8 }).collect();
+        let (clean_o, psd, fac) = separate_full(&rgb, w, h);
+        let whole = from_opp(&clean_o, w * h);
+        let tiled = clean_tiled(&rgb, w, h, &psd, &fac);
+        let diff = whole.iter().zip(&tiled).filter(|(a, b)| a != b).count();
+        assert_eq!(diff, 0, "{diff} samples differ between tiled and whole");
+    }
+    #[test]
+    fn grain_field_is_seamless() {
+        // the v2 field of a tile equals the same window cut from a bigger tile
+        let fp = Fingerprint { strength: [[3.0; 3]; NB], psd: vec![[1.0; PS * PS]; 3], chol: [[1.0, 0.0, 0.0], [0.3, 0.9, 0.0], [0.1, 0.2, 0.8]],
+            quant: { let mut q = [[0.0; NZ]; 3]; for c in 0..3 { for k in 0..NZ { q[c][k] = -4.0 + 8.0 * k as f64 / (NZ - 1) as f64; } } q }, env: 0.2, seed: 99 };
+        let big = unit_grain_tile(&fp, 100, 50, 64, 64, 0.2); let small = unit_grain_tile(&fp, 120, 70, 16, 16, 0.2);
+        for c in 0..3 { for y in 0..16 { for x in 0..16 { assert_eq!(big[c][(y + 20) * 64 + x + 20], small[c][y * 16 + x]); } } }
+    }
     #[test]
     fn grainy_gradient_round_trip() {
         // smooth gradient + coloured grain: grain mode must decode, repeat exactly, and keep the clean picture within k

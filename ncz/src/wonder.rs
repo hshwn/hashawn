@@ -21,27 +21,35 @@ fn bucket(ls: f32) -> u8 { let ls = if ls > LN_MIN { ls } else { LN_MIN }; let m
 
 struct Conv { ci: usize, co: usize, k: usize, w: Vec<f32>, b: Vec<f32> }
 impl Conv {
-    /// x: ci planes of h*w -> co planes, zero padding. Sum order per output: bias, then input channel, then kernel row, column.
+    /// x: ci planes of h*w -> co planes, zero padding. Sum order per output: bias, then input channel, then kernel row,
+    /// column (fixed: this feeds the entropy decoder). Computed one output row at a time for a block of output channels,
+    /// so the accumulators stay in cache; the order of every sum is the same as a plain plane-by-plane loop.
     fn run(&self, x: &[f32], h: usize, w: usize) -> Vec<f32> {
         let (ci, co, k) = (self.ci, self.co, self.k); let hw = h * w; let p = (k / 2) as isize;
+        const OB: usize = 16;
         let mut out = vec![0f32; co * hw];
-        for o in 0..co {
-            let acc = &mut out[o * hw..(o + 1) * hw];
-            for v in acc.iter_mut() { *v = self.b[o]; }
-            for i in 0..ci {
-                let xi = &x[i * hw..(i + 1) * hw];
-                for ky in 0..k { for kx in 0..k {
-                    let wt = self.w[((o * ci + i) * k + ky) * k + kx];
-                    let (dy, dx) = (ky as isize - p, kx as isize - p);
-                    let (y0, y1) = ((-dy).max(0) as usize, (h as isize - dy).min(h as isize) as usize);
-                    let (x0, x1) = ((-dx).max(0) as usize, (w as isize - dx).min(w as isize) as usize);
-                    for yy in y0..y1 {
-                        let src = ((yy as isize + dy) as usize) * w;
-                        let row = &mut acc[yy * w + x0..yy * w + x1];
-                        let sr = &xi[(src as isize + x0 as isize + dx) as usize..(src as isize + x1 as isize + dx) as usize];
-                        for (a, s) in row.iter_mut().zip(sr) { *a += wt * *s; }
+        let mut acc = vec![0f32; OB * w];
+        for y in 0..h {
+            for o0 in (0..co).step_by(OB) {
+                let ob = OB.min(co - o0);
+                for j in 0..ob { for v in &mut acc[j * w..(j + 1) * w] { *v = self.b[o0 + j]; } }
+                for i in 0..ci {
+                    let xi = &x[i * hw..(i + 1) * hw];
+                    for ky in 0..k {
+                        let sy = y as isize + ky as isize - p; if sy < 0 || sy >= h as isize { continue; }
+                        let row = &xi[sy as usize * w..(sy as usize + 1) * w];
+                        for kx in 0..k {
+                            let dx = kx as isize - p;
+                            let (x0, x1) = ((-dx).max(0) as usize, (w as isize - dx).min(w as isize) as usize);
+                            let src = &row[(x0 as isize + dx) as usize..(x1 as isize + dx) as usize];
+                            for j in 0..ob {
+                                let wt = self.w[(((o0 + j) * ci + i) * k + ky) * k + kx];
+                                for (a, s) in acc[j * w + x0..j * w + x1].iter_mut().zip(src) { *a += wt * *s; }
+                            }
+                        }
                     }
-                } }
+                }
+                for j in 0..ob { out[(o0 + j) * hw + y * w..(o0 + j) * hw + (y + 1) * w].copy_from_slice(&acc[j * w..(j + 1) * w]); }
             }
         }
         out
