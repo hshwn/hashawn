@@ -5,6 +5,7 @@
 //!   nczl_load(p, n) -> model id (0 = bad pack)
 //!   nczl_enc_new(p, n) -> enc ; nczl_enc_step(enc, n) -> coded ; nczl_enc_done(enc) ; nczl_enc_finish(enc) -> ptr (len: nczl_out_len)
 //!   nczl_dec_new(p, n) -> dec (0 = bad header / wrong model) ; nczl_dec_step(dec, n) ; nczl_dec_total(dec) ; nczl_dec_finish(dec) -> ptr or 0
+//!   nczl_enc_new_mode(p, n, mode): PNGs only, mode 0 exact, 1 within +-1, 2 grain (looks the same) ; nczl_png_mode(p, n)
 #![allow(clippy::missing_safety_doc)]
 use crate::codec::{Assets, LmDecoder, LmEncoder, looks_like_text, header, MODE_NCZ, MODE_STORE, HEADER};
 use ncz::v3::Encoder;
@@ -16,9 +17,11 @@ fn assets() -> Option<&'static Assets> { unsafe { ASSETS.as_deref() } }
 
 pub enum AnyEncoder { Lm(LmEncoder<'static>), Ncz { data: Vec<u8>, pos: usize, enc: Encoder, id: u32 }, Png { e: ncz::pngc::PngEncoder, data: Vec<u8> } }
 impl AnyEncoder {
-    pub fn new(data: &[u8], threads: usize) -> AnyEncoder {
+    pub fn new(data: &[u8], threads: usize) -> AnyEncoder { AnyEncoder::new_mode(data, threads, ncz::pngc::Mode::Exact) }
+    /// `mode` applies to PNGs (see ncz::pngc); everything else is always byte-exact.
+    pub fn new_mode(data: &[u8], threads: usize, mode: ncz::pngc::Mode) -> AnyEncoder {
         // PNG: pixel model (fast mode); falls back to the byte-exact path in finish() when it would not be smaller
-        if ncz::pngc::is_png(data) { if let Some(e) = ncz::pngc::PngEncoder::new(data, 0) { return AnyEncoder::Png { e, data: data.to_vec() }; } }
+        if ncz::pngc::is_png(data) { if let Some(e) = ncz::pngc::PngEncoder::new_mode(data, 0, mode) { return AnyEncoder::Png { e, data: data.to_vec() }; } }
         match assets() {
             Some(a) if looks_like_text(data) => AnyEncoder::Lm(LmEncoder::new(a, data, threads)),
             _ => AnyEncoder::Ncz { data: data.to_vec(), pos: 0, enc: Encoder::new(), id: 0 },
@@ -54,6 +57,10 @@ impl AnyEncoder {
     match Assets::from_pack(pack) { Some(a) => { let id = a.model_id; ASSETS = Some(Box::new(a)); id } None => 0 }
 }
 #[no_mangle] pub unsafe extern "C" fn nczl_enc_new(p: *const u8, n: usize) -> *mut AnyEncoder { Box::into_raw(Box::new(AnyEncoder::new(std::slice::from_raw_parts(p, n), 1))) }
+#[no_mangle] pub unsafe extern "C" fn nczl_enc_new_mode(p: *const u8, n: usize, mode: u32) -> *mut AnyEncoder {
+    let m = match mode { 1 => ncz::pngc::Mode::Near(1), 2 => ncz::pngc::Mode::Grain, _ => ncz::pngc::Mode::Exact };
+    Box::into_raw(Box::new(AnyEncoder::new_mode(std::slice::from_raw_parts(p, n), 1, m)))
+}
 #[no_mangle] pub unsafe extern "C" fn nczl_enc_step(e: *mut AnyEncoder, n: usize) -> usize { (*e).step(n) }
 #[no_mangle] pub unsafe extern "C" fn nczl_enc_done(e: *mut AnyEncoder) -> usize { (*e).done() }
 #[no_mangle] pub unsafe extern "C" fn nczl_enc_finish(e: *mut AnyEncoder) -> *mut u8 { let out = Box::from_raw(e).finish(); leak(out) }
@@ -86,6 +93,11 @@ impl AnyDecoder {
 #[no_mangle] pub unsafe extern "C" fn nczl_is_png(p: *const u8, n: usize) -> u32 { ncz::pngc::is_png(std::slice::from_raw_parts(p, n)) as u32 }
 /// Is this an NCZP stream (decodes to a PNG)?
 #[no_mangle] pub unsafe extern "C" fn nczl_is_nczp(p: *const u8, n: usize) -> u32 { std::slice::from_raw_parts(p, n).starts_with(ncz::pngc::MAGIC) as u32 }
+/// What an NCZP stream gives back: 0 every pixel exact (also: not an NCZP stream), k = every sample within +-k,
+/// 255 = grain mode (looks the same; the grain is regrown, the pixels are not the originals).
+#[no_mangle] pub unsafe extern "C" fn nczl_png_mode(p: *const u8, n: usize) -> u32 {
+    match ncz::pngc::mode_of(std::slice::from_raw_parts(p, n)) { Some(ncz::pngc::Mode::Near(k)) => k as u32, Some(ncz::pngc::Mode::Grain) => 255, _ => 0 }
+}
 /// Would compressing this input use the model (UTF-8 text)?
 #[no_mangle] pub unsafe extern "C" fn nczl_is_text(p: *const u8, n: usize) -> u32 { looks_like_text(std::slice::from_raw_parts(p, n)) as u32 }
 

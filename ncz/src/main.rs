@@ -3,6 +3,19 @@ use std::{env, fs, process};
 
 fn main() {
     let a: Vec<String> = env::args().collect();
+    if a.len() == 6 && a[1] == "png-mode" {
+        // nczcli png-mode <0 exact | 1 near +-1 | 2 grain> <in.png> <out.ncz> <out.png>: what the browser tool writes
+        // (fast mode); prints sizes, the mode actually used, and the max per-sample error of the rebuilt PNG
+        let mode = match a[2].as_str() { "0" => ncz::pngc::Mode::Exact, "1" => ncz::pngc::Mode::Near(1), _ => ncz::pngc::Mode::Grain };
+        let b = fs::read(&a[3]).expect("read");
+        let c = ncz::pngc::compress_mode(&b, 0, mode).expect("not handled or not smaller");
+        let back = ncz::pngc::decompress(&c).expect("decode");
+        fs::write(&a[4], &c).unwrap(); fs::write(&a[5], &back).unwrap();
+        let (p0, n0, _, _) = ncz::pngc::pixels(&b).unwrap(); let (p1, n1, _, _) = ncz::pngc::pixels(&back).unwrap();
+        let maxerr = if n0 == n1 { p0.iter().zip(&p1).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0) } else { -1 };
+        println!("{} -> {} bytes  mode {:?}  max error {}", b.len(), c.len(), ncz::pngc::mode_of(&c).unwrap(), maxerr);
+        return;
+    }
     if a.len() >= 3 && a[1] == "png-roundtrip" {
         // nczcli png-roundtrip <a.png>...: PNG -> .ncz -> PNG, pixels compared exactly; sizes vs the original
         let flags = std::env::var("IMG_FLAGS").ok().and_then(|v| v.parse().ok()).unwrap_or(0u8);

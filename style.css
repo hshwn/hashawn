@@ -282,6 +282,16 @@ body.blog #face { pointer-events: none; }
 .drop:hover, .drop.over { border-color: #009f4d; background: rgba(0,159,77,0.08); }
 .drop.over { transform: scale(1.01); }
 .drop.busy { pointer-events: none; opacity: 0.6; }
+.modes { display: flex; align-items: center; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+.modes span { font-size: 14px; font-weight: 900; color: #7a766f; margin-right: 4px; }
+.modes button {
+  border: 0; border-radius: 999px; padding: 8px 14px; cursor: pointer;
+  font: inherit; font-weight: 900; font-size: 14px; background: rgba(255,255,255,0.6); color: #141311;
+  transition: transform 0.08s, background 0.15s, color 0.15s;
+}
+.modes button:hover { background: #fff; }
+.modes button.on { background: #141311; color: #fff; }
+.modes button:active { transform: scale(0.93) rotate(-2deg); }
 .result { margin-top: 18px; }
 .job { background: #fff; border-radius: 22px; padding: 22px 24px; box-shadow: 0 0 0 var(--rim) #fff, 0 12px 30px rgba(0,0,0,0.08); }
 .job .label { margin: 0; font-weight: 900; font-size: 15px; color: #7a766f; word-break: break-all; }

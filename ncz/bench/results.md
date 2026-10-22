@@ -612,3 +612,19 @@ helps too. But to look as good as JPEG XL at ~3 bpp (SSIMULACRA2 ~90) this coder
 added sample by sample read as fine noise everywhere; a transform codec removes detail the eye does not track. The gap
 is structural, not a tuning matter: this coder's ground is lossless and near-lossless (+-1), where it leads. By eye at
 2x the crops (+-3, adaptive, JPEG XL) look alike.
+
+### PNG modes in the browser tool: exact, +-1, looks the same (2026-10-22)
+
+`tools/compress`: a picker under the drop zone (remembered per browser) for PNGs: exact (default), every sample
+within +-1, or grain mode (looks the same). Inside the PNG container (NCZP): +-1 is coding 0 with k = 1 in the NCZI
+header (old decoders already read it); grain mode is coding 2 carrying an NCZG stream. Palette / low-bit PNGs always
+go exact; transparent PNGs or pictures outside 64x64 .. 12 MP fall back from grain mode to +-2 (grain mode needs ~170
+bytes per pixel while splitting; it was ~200 before freeing buffers early, same output). The result card and the
+unpacked card say which: "every pixel", "within +-1", or "looks the same: the grain is regrown, the pixels are not the
+originals". Streaming grain encoder/decoder (split + fingerprint up front, then rows; grain regrown at the end).
+
+Native vs wasm (`bench/wasm_png_check.mjs`): kodim03, kodim13, ram poster, harvest poster, a transparent picture and a
+palette picture, every mode, both wasm builds (relaxed SIMD and plain SIMD): every .ncz stream and every rebuilt PNG
+byte-identical to native (SHA-256). Same again through the page's own code in the browser. Text, code and binary files
+compress to the same bytes with the old and new wasm. Grain mode in wasm runs at native speed (kodim03: 1.5 s encode,
+0.7 s decode). kodim03: PNG 539 KB -> exact 299 KB, +-1 199 KB, looks the same 121 KB.

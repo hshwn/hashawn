@@ -44,13 +44,15 @@ async function gzipSize(u8) {
   } catch { return null; }
 }
 
-async function compress(u8, id) {
+// mode (PNGs only): 0 every pixel exact, 1 every sample within +-1, 2 grain mode (looks the same)
+async function compress(u8, id, mode) {
   await load();
   let inPtr = put(u8);
   const png = !!wasm.nczl_is_png(inPtr, u8.length);
   const text = !png && wasm.nczl_is_text(inPtr, u8.length);
   if (text) { wasm.nczl_free(inPtr, u8.length); await loadModel(id); inPtr = put(u8); }
-  const enc = wasm.nczl_enc_new(inPtr, u8.length);
+  if (png && mode === 2) { postMessage({ id, type: 'progress', done: 0, total: u8.length, png, phase: 'grain' }); await new Promise((r) => setTimeout(r, 0)); }
+  const enc = png ? wasm.nczl_enc_new_mode(inPtr, u8.length, mode | 0) : wasm.nczl_enc_new(inPtr, u8.length);   // grain mode: the split happens here
   wasm.nczl_free(inPtr, u8.length);
   const step = png ? 8 : text && modelId ? STEP_LM : STEP;      // PNG: steps are rows of pixels
   let t0 = performance.now(), done = 0;
@@ -63,6 +65,8 @@ async function compress(u8, id) {
   }
   return takeOut(wasm.nczl_enc_finish(enc));
 }
+// what a .ncz gives back: 0 exact (or not a PNG stream), k = within +-k, 255 = grain mode
+const pngMode = (u8) => { const p = put(u8); const m = wasm.nczl_png_mode(p, u8.length); wasm.nczl_free(p, u8.length); return m; };
 
 async function decompress(u8, id) {
   await load();
@@ -71,6 +75,7 @@ async function decompress(u8, id) {
   const dec = wasm.nczl_dec_new(inPtr, u8.length);
   wasm.nczl_free(inPtr, u8.length);
   if (!dec) throw new Error('not one of mine, or made with a different model');
+  const mode = pngMode(u8);
   const total = wasm.nczl_dec_total(dec);           // bytes, or rows for a PNG (only the fraction is shown)
   let t0 = performance.now();
   for (;;) {
@@ -80,9 +85,10 @@ async function decompress(u8, id) {
     if (now - t0 > 80 || n === 0) { t0 = now; postMessage({ id, type: 'progress', done, total }); await new Promise((r) => setTimeout(r, 0)); }
     if (n === 0) break;
   }
-  const ptr = wasm.nczl_dec_finish(dec);
+  if (mode === 255) { postMessage({ id, type: 'progress', done: total, total, phase: 'grain' }); await new Promise((r) => setTimeout(r, 0)); }
+  const ptr = wasm.nczl_dec_finish(dec);         // grain mode: the grain is regrown here
   if (!ptr) throw new Error('the file is damaged');
-  return takeOut(ptr);
+  return { out: takeOut(ptr), mode };
 }
 
 // segment plan for big inputs: the split comes from the same Rust function the native build uses
@@ -97,7 +103,7 @@ async function plan(u8) {
 }
 
 onmessage = async (e) => {
-  const { id, type, buf, gz: wantGz = true } = e.data;
+  const { id, type, buf, gz: wantGz = true, mode = 0 } = e.data;
   const u8 = new Uint8Array(buf);
   try {
     if (type === 'plan') {
@@ -106,15 +112,16 @@ onmessage = async (e) => {
       postMessage({ id, type: 'done', gz: await gzipSize(u8) });
     } else if (type === 'compress') {
       const t = performance.now();
-      const out = await compress(u8, id);
+      const out = await compress(u8, id, mode);
       const ms = performance.now() - t;
+      const pm = pngMode(out);
       const isPng = u8.length > 8 && u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47;
       const gz = wantGz && !isPng ? await gzipSize(u8) : null;          // gzip of a PNG says nothing: it is already deflated
-      postMessage({ id, type: 'done', buf: out.buffer, ms, gz }, [out.buffer]);
+      postMessage({ id, type: 'done', buf: out.buffer, ms, gz, pngMode: pm }, [out.buffer]);
     } else {
       const t = performance.now();
-      const out = await decompress(u8, id);
-      postMessage({ id, type: 'done', buf: out.buffer, ms: performance.now() - t }, [out.buffer]);
+      const { out, mode: pm } = await decompress(u8, id);
+      postMessage({ id, type: 'done', buf: out.buffer, ms: performance.now() - t, pngMode: pm }, [out.buffer]);
     }
   } catch (err) { postMessage({ id, type: 'error', message: String(err && err.message || err) }); }
 };

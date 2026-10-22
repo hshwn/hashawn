@@ -10,14 +10,25 @@
 //! (returns None, caller falls back to byte-exact generic compression): 16-bit, animated PNG, broken files.
 //!
 //! Container: "NCZP" | version | kind | bit depth | coding | skeleton length u32 | skeleton (NCZ3) | payload.
-//! Coding 0: the pixel model (NCZI) over RGB(A) samples. Coding 1: the image's own samples (palette indices or
-//! low-bit grey, one byte each, unfiltered) through ncz's byte model; few-colour images are far cheaper this way.
+//! Coding 0: the pixel model (NCZI) over RGB(A) samples; exact, or every sample within +-k when the NCZI header says
+//! so (near-lossless). Coding 1: the image's own samples (palette indices or low-bit grey, one byte each, unfiltered)
+//! through ncz's byte model; few-colour images are far cheaper this way. Coding 2: grain mode (NCZG), a
+//! LOOKS-THE-SAME mode: the grain is regrown on decode, the pixels are not the originals.
+//!
+//! Modes (`Mode`): Exact (default); Near(k); Grain. Lossy modes apply to 8-bit grey / RGB / RGBA photos only:
+//! palette and low-bit images always go exact (their pixels must stay in the palette), and grain mode needs an
+//! opaque picture of 64x64 .. grain::MAX_PIXELS (otherwise it falls back to Near(2), the same bound grain mode
+//! keeps on the clean picture).
 use crate::img;
 
 pub const MAGIC: &[u8; 4] = b"NCZP";
 pub const VERSION: u8 = 1;
 const SIG: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-const C_PIXEL: u8 = 0; const C_SAMPLES: u8 = 1;
+const C_PIXEL: u8 = 0; const C_SAMPLES: u8 = 1; const C_GRAIN: u8 = 2;
+
+/// What the encoder may do to the pixels.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode { Exact, Near(u8), Grain }
 const K_GRAY: u8 = 0; const K_GRAYA: u8 = 1; const K_RGB: u8 = 2; const K_RGBA: u8 = 3; const K_PAL: u8 = 4;
 
 pub fn is_png(b: &[u8]) -> bool { b.len() > 8 && b[..8] == SIG }
@@ -142,9 +153,11 @@ fn encode(px: &[u8], nch: usize, w: usize, h: usize, kind: u8, depth: u8, pal: &
 
 /// Streaming PNG compressor: the decode, the skeleton and few-colour images happen in `new`; photo-like images are
 /// coded row by row in `step`. `finish` returns None when the result would not beat the original file.
-pub struct PngEncoder { head: Vec<u8>, img: Option<img::ImgEncoder>, done: Option<Vec<u8>>, orig_len: usize }
+enum Inner { Img(img::ImgEncoder), Grain(crate::grain::GrainEncoder) }
+pub struct PngEncoder { head: Vec<u8>, img: Option<Inner>, done: Option<Vec<u8>>, orig_len: usize }
 impl PngEncoder {
-    pub fn new(b: &[u8], flags: u8) -> Option<PngEncoder> {
+    pub fn new(b: &[u8], flags: u8) -> Option<PngEncoder> { PngEncoder::new_mode(b, flags, Mode::Exact) }
+    pub fn new_mode(b: &[u8], flags: u8, mode: Mode) -> Option<PngEncoder> {
         let cs = chunks(b)?;
         let (px, nch, w, h, kind, depth, raw) = decode(b)?;
         // skeleton: every chunk but IDAT, IDAT marked once where it first appears
@@ -155,23 +168,35 @@ impl PngEncoder {
         }
         let skz = crate::compress(&sk);
         let few = kind == K_PAL || depth < 8;
+        // lossy modes only where they make sense (see the module notes)
+        let mode = if few { Mode::Exact } else { mode };
+        let mode = if mode == Mode::Grain && (nch != 3 || w < 64 || h < 64 || w * h > crate::grain::MAX_PIXELS) { Mode::Near(2) } else { mode };
+        let grain = if mode == Mode::Grain { crate::grain::GrainEncoder::new(&px, w, h, 2, 2, flags) } else { None };
+        let mode = if mode == Mode::Grain && grain.is_none() { Mode::Near(2) } else { mode };
+        let coding = if few { C_SAMPLES } else if grain.is_some() { C_GRAIN } else { C_PIXEL };
         let mut head = Vec::with_capacity(16 + skz.len());
-        head.extend_from_slice(MAGIC); head.push(VERSION); head.push(kind); head.push(depth); head.push(if few { C_SAMPLES } else { C_PIXEL });
+        head.extend_from_slice(MAGIC); head.push(VERSION); head.push(kind); head.push(depth); head.push(coding);
         head.extend_from_slice(&(skz.len() as u32).to_le_bytes()); head.extend_from_slice(&skz);
         if few {
             // few-colour images (palette, 1-4 bit grey): their own sample bytes through the byte model
             let mut out = head; out.extend_from_slice(&(w as u32).to_le_bytes()); out.extend_from_slice(&(h as u32).to_le_bytes()); out.extend_from_slice(&crate::compress(&raw));
             return Some(PngEncoder { head: Vec::new(), img: None, done: Some(out), orig_len: b.len() });
         }
-        let img = img::ImgEncoder::new(px, w, h, 0, if nch == 4 { flags | img::F_ALPHA } else { flags & !img::F_ALPHA });
-        Some(PngEncoder { head, img: Some(img), done: None, orig_len: b.len() })
+        if let Some(g) = grain { return Some(PngEncoder { head, img: Some(Inner::Grain(g)), done: None, orig_len: b.len() }); }
+        let k = if let Mode::Near(k) = mode { k } else { 0 };
+        let img = img::ImgEncoder::new(px, w, h, k, if nch == 4 { flags | img::F_ALPHA } else { flags & !img::F_ALPHA });
+        Some(PngEncoder { head, img: Some(Inner::Img(img)), done: None, orig_len: b.len() })
     }
     /// Work units (rows) in total and done so far.
-    pub fn units(&self) -> usize { self.img.as_ref().map_or(1, |e| e.units()) }
-    pub fn done(&self) -> usize { self.img.as_ref().map_or(1, |e| e.done()) }
-    pub fn step(&mut self, n: usize) -> usize { self.img.as_mut().map_or(0, |e| e.step(n)) }
+    pub fn units(&self) -> usize { match &self.img { Some(Inner::Img(e)) => e.units(), Some(Inner::Grain(e)) => e.units(), None => 1 } }
+    pub fn done(&self) -> usize { match &self.img { Some(Inner::Img(e)) => e.done(), Some(Inner::Grain(e)) => e.done(), None => 1 } }
+    pub fn step(&mut self, n: usize) -> usize { match &mut self.img { Some(Inner::Img(e)) => e.step(n), Some(Inner::Grain(e)) => e.step(n), None => 0 } }
     pub fn finish(self) -> Option<Vec<u8>> {
-        let out = match (self.done, self.img) { (Some(o), _) => o, (None, Some(e)) => { let mut o = self.head; o.extend_from_slice(&e.finish()); o } _ => return None };
+        let out = match (self.done, self.img) {
+            (Some(o), _) => o,
+            (None, Some(Inner::Img(e))) => { let mut o = self.head; o.extend_from_slice(&e.finish()); o }
+            (None, Some(Inner::Grain(e))) => { let mut o = self.head; o.extend_from_slice(&e.finish()); o }
+            _ => return None };
         if out.len() >= self.orig_len { None } else { Some(out) }     // not worth it: use the byte-exact path
     }
 }
@@ -179,9 +204,23 @@ impl PngEncoder {
 /// Compress a PNG file. None = not handled here (16-bit, animated, broken) or not smaller: use byte-exact compression.
 /// `flags` are the pixel model's (0 = fast).
 pub fn compress(b: &[u8], flags: u8) -> Option<Vec<u8>> { PngEncoder::new(b, flags)?.finish() }
+/// Same, in a given mode (lossy modes: see the module notes).
+pub fn compress_mode(b: &[u8], flags: u8, mode: Mode) -> Option<Vec<u8>> { PngEncoder::new_mode(b, flags, mode)?.finish() }
+
+/// What a stream will give back: Exact, Near(k) or Grain. None if not an NCZP stream.
+pub fn mode_of(blob: &[u8]) -> Option<Mode> {
+    if blob.len() < 12 || &blob[..4] != MAGIC || blob[4] != VERSION { return None; }
+    let n = u32::from_le_bytes(blob[8..12].try_into().ok()?) as usize; let pix = blob.get(12 + n..)?;
+    match blob[7] {
+        C_GRAIN => Some(Mode::Grain),
+        C_PIXEL => { let k = *pix.get(5)?; Some(if k == 0 { Mode::Exact } else { Mode::Near(k) }) }
+        _ => Some(Mode::Exact),
+    }
+}
 
 /// Streaming PNG decompressor (the mirror of PngEncoder).
-pub struct PngDecoder { kind: u8, depth: u8, sk: Vec<u8>, img: Option<img::ImgDecoder>, done: Option<Vec<u8>> }
+enum InnerD { Img(img::ImgDecoder), Grain(crate::grain::GrainDecoder) }
+pub struct PngDecoder { kind: u8, depth: u8, sk: Vec<u8>, img: Option<InnerD>, done: Option<Vec<u8>> }
 impl PngDecoder {
     pub fn new(blob: &[u8]) -> Option<PngDecoder> {
         let (kind, depth, coding, sk, pix) = parse(blob)?;
@@ -192,17 +231,19 @@ impl PngDecoder {
             let out = rebuild_samples(&raw, w, h, kind, depth, &sk)?;
             return Some(PngDecoder { kind, depth, sk, img: None, done: Some(out) });
         }
+        if coding == C_GRAIN { return Some(PngDecoder { kind, depth, sk, img: Some(InnerD::Grain(crate::grain::GrainDecoder::new(pix)?)), done: None }); }
         if coding != C_PIXEL { return None; }
-        Some(PngDecoder { kind, depth, sk, img: Some(img::ImgDecoder::new(pix)?), done: None })
+        Some(PngDecoder { kind, depth, sk, img: Some(InnerD::Img(img::ImgDecoder::new(pix)?)), done: None })
     }
-    pub fn units(&self) -> usize { self.img.as_ref().map_or(1, |d| d.units()) }
-    pub fn done(&self) -> usize { self.img.as_ref().map_or(1, |d| d.done()) }
-    pub fn step(&mut self, n: usize) -> usize { self.img.as_mut().map_or(0, |d| d.step(n)) }
+    pub fn units(&self) -> usize { match &self.img { Some(InnerD::Img(d)) => d.units(), Some(InnerD::Grain(d)) => d.units(), None => 1 } }
+    pub fn done(&self) -> usize { match &self.img { Some(InnerD::Img(d)) => d.done(), Some(InnerD::Grain(d)) => d.done(), None => 1 } }
+    pub fn step(&mut self, n: usize) -> usize { match &mut self.img { Some(InnerD::Img(d)) => d.step(n), Some(InnerD::Grain(d)) => d.step(n), None => 0 } }
     pub fn finish(self) -> Option<Vec<u8>> {
         if let Some(o) = self.done { return Some(o); }
-        let d = self.img?; let (w, h) = (d.w, d.h); let nch = if d.flags & img::F_ALPHA != 0 { 4 } else { 3 };
-        let px = d.finish();
-        rebuild(&px, nch, w, h, self.kind, self.depth, &self.sk)
+        match self.img? {
+            InnerD::Img(d) => { let (w, h) = (d.w, d.h); let nch = if d.flags & img::F_ALPHA != 0 { 4 } else { 3 }; let px = d.finish(); rebuild(&px, nch, w, h, self.kind, self.depth, &self.sk) }
+            InnerD::Grain(d) => { let (w, h) = (d.w, d.h); let px = d.finish(); rebuild(&px, 3, w, h, self.kind, self.depth, &self.sk) }
+        }
     }
 }
 

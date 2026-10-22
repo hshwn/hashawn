@@ -199,13 +199,14 @@ fn unit_grain(fp: &Fingerprint, w: usize, h: usize, env: f64) -> [Vec<f64>; 3] {
     let mut rng = Rng(fp.seed);
     let mut f: Vec<Vec<f64>> = (0..3).map(|c| { let k = kernel(&fp.psd[c]); shaped_field(&mut rng, &k, w, h) }).collect();
     if env > 0.0 { let m = envelope(&mut rng, w, h); for c in 0..3 { for i in 0..w * h { f[c][i] *= dexp(env * m[i]); } } }
-    let mut out = [vec![0.0; w * h], vec![0.0; w * h], vec![0.0; w * h]];
-    for i in 0..w * h {
-        let (a, b, c) = (f[0][i], f[1][i], f[2][i]); let l = &fp.chol;
-        out[0][i] = l[0][0] * a; out[1][i] = l[1][0] * a + l[1][1] * b; out[2][i] = l[2][0] * a + l[2][1] * b + l[2][2] * c;
+    let l = &fp.chol;
+    for i in 0..w * h {      // coupling, in place (memory)
+        let (a, b, c) = (f[0][i], f[1][i], f[2][i]);
+        f[0][i] = l[0][0] * a; f[1][i] = l[1][0] * a + l[1][1] * b; f[2][i] = l[2][0] * a + l[2][1] * b + l[2][2] * c;
     }
-    for c in 0..3 { shape_to(&mut out[c], &fp.quant[c]); }
-    out
+    for c in 0..3 { shape_to(&mut f[c], &fp.quant[c]); }
+    let mut it = f.into_iter();
+    [it.next().unwrap(), it.next().unwrap(), it.next().unwrap()]
 }
 
 /// Clean RGB (8-bit) + fingerprint -> RGB with regenerated grain.
@@ -340,6 +341,7 @@ pub fn separate(rgb: &[u8], w: usize, h: usize) -> ([Vec<f64>; 3], Vec<[f64; PS 
     }).collect();
     let psd = grain_spectrum(&o, &pilot0, w, h);
     if std::env::var("GRAIN_DEBUG").is_ok() { for c in 0..3 { let p0: Vec<f64> = (0..w * h).map(|i| o[c][i] - pilot0[c][i]).collect(); eprintln!("ch{c} pilot0 removed {:.2}  spectrum rms {:.2}", std_of(&p0), (psd[c].iter().sum::<f64>() / (PS * PS) as f64).sqrt()); } }
+    drop(pilot0);      // memory: the browser build runs this on big pictures
     let pilot: Vec<Vec<f64>> = (0..3).map(|c| denoise_channel(&o[c], None, w, h, &psd[c], &one)).collect();
     // strength by brightness: stage-1 residual in FLAT pixels of each band vs in all flat pixels (the threshold's
     // bias in the residual cancels in the ratio; textured pixels would read as weak grain)
@@ -358,7 +360,8 @@ pub fn separate(rgb: &[u8], w: usize, h: usize) -> ([Vec<f64>; 3], Vec<[f64; PS 
         let fac = |r: usize, cc: usize| { let mut s = 0.0; for y in 0..B { for x in 0..B { s += pilot[0][(r + y) * w + cc + x]; } } let yb = band_of(s / (B * B) as f64 / S3 / 3.0).round() as usize; ft[yb] };
         denoise_channel(&o[c], Some(p), w, h, &psd[c], &fac)
     }).collect();
-    ([clean[0].clone(), clean[1].clone(), clean[2].clone()], psd)
+    let mut it = clean.into_iter();
+    ([it.next().unwrap(), it.next().unwrap(), it.next().unwrap()], psd)
 }
 
 /// Pixels whose 7x7 mean gradient (of plane x) is in the lowest `frac`.
@@ -389,6 +392,7 @@ pub fn fingerprint(rgb: &[u8], clean: &[Vec<f64>; 3], w: usize, h: usize, seed: 
     // so texture would read as weak, odd-shaped grain
     let n = w * h; let o = to_opp(rgb, n);
     let g: Vec<Vec<f64>> = (0..3).map(|c| (0..n).map(|i| o[c][i] - clean[c][i]).collect()).collect();
+    drop(o);
     let yb: Vec<f64> = (0..n).map(|i| band_of(clean[0][i] / S3 / 3.0)).collect();
     let flat = flat_mask(&clean[0], w, h, 0.3);
     let fl: Vec<usize> = (0..n).filter(|&i| flat[i]).collect();
@@ -407,6 +411,7 @@ pub fn fingerprint(rgb: &[u8], clean: &[Vec<f64>; 3], w: usize, h: usize, seed: 
     }
     let fpl = Fingerprint { strength, psd: vec![[0.0; PS * PS]; 3], chol: [[0.0; 3]; 3], quant: [[0.0; NZ]; 3], env: 0.0, seed };
     let unit: Vec<Vec<f64>> = (0..3).map(|c| (0..n).map(|i| (g[c][i] / strength_at(&fpl, yb[i], c).max(FLOOR)).clamp(-CLIP, CLIP)).collect()).collect();
+    drop(g); drop(yb);
     // spectrum of the normalised grain: mean over the flattest patches (half-overlapping), at least 8
     let tw = twiddles(); let mut psd = vec![[0.0; PS * PS]; 3];
     let mut pats = Vec::new();
@@ -452,38 +457,76 @@ fn erf(x: f64) -> f64 {   // Abramowitz-Stegun 7.1.26 (encoder only; 1.5e-7)
 /// Encoder result: the stream plus the clean picture it carries (for inspection).
 pub struct Encoded { pub stream: Vec<u8>, pub clean: Vec<u8>, pub fp: Fingerprint }
 
-/// Grain mode: clean picture within +-k (k >= 1 typical: 2) + fingerprint. LOOKS THE SAME, NOT EXACT.
-/// None for pictures under 64x64 (too small to measure grain); use the exact or +-k pixel mode for those.
-pub fn compress(rgb: &[u8], w: usize, h: usize, k: u8) -> Option<Encoded> { compress_with(rgb, w, h, k, k, 0) }
+/// Largest picture grain mode takes (pixels): the split needs ~170 bytes per pixel, and the browser build has 4 GB.
+pub const MAX_PIXELS: usize = 12_000_000;
 
-/// Grain mode with the clean picture's green within +-k, red and blue within +-kc, and pixel-mode `flags` (learned models).
-pub fn compress_with(rgb: &[u8], w: usize, h: usize, k: u8, kc: u8, flags: u8) -> Option<Encoded> {
-    if w < 64 || h < 64 { return None; }
+/// The one-shot part of encoding: split, fingerprint, stream head. Returns (head, clean RGB, fingerprint).
+fn prepare(rgb: &[u8], w: usize, h: usize, k: u8) -> Option<(Vec<u8>, Vec<u8>, Fingerprint)> {
+    if w < 64 || h < 64 || w * h > MAX_PIXELS || rgb.len() != w * h * 3 { return None; }
     let (clean_o, _psd) = separate(rgb, w, h);
     let mut seed = 0xcbf2_9ce4_8422_2325u64; for &b in rgb.iter().step_by(97) { seed = (seed ^ b as u64).wrapping_mul(0x100_0000_01b3); }
     let mut fp = fingerprint(rgb, &clean_o, w, h, seed);
     // no measurable grain (digital art, clean renders): nothing to strip or regrow, the picture itself goes at +-k
     let grainy = fp.strength.iter().map(|s| s[0]).sum::<f64>() / NB as f64 >= NO_GRAIN;
     let clean = if grainy { from_opp(&clean_o, w * h) } else { fp = Fingerprint { strength: [[0.0; 3]; NB], psd: vec![[0.0; PS * PS]; 3], chol: [[0.0; 3]; 3], quant: [[0.0; NZ]; 3], env: 0.0, seed: 0 }; rgb.to_vec() };
-    let pix = img::compress_rgb_split(&clean, w, h, k, kc, flags);
+    drop(clean_o);
     let fpz = crate::compress(&fp.encode());
-    let mut out = Vec::with_capacity(18 + fpz.len() + pix.len());
-    out.extend_from_slice(MAGIC); out.push(VERSION); out.push(k);
-    out.extend_from_slice(&(w as u32).to_le_bytes()); out.extend_from_slice(&(h as u32).to_le_bytes());
-    out.extend_from_slice(&(fpz.len() as u32).to_le_bytes()); out.extend_from_slice(&fpz); out.extend_from_slice(&pix);
-    Some(Encoded { stream: out, clean, fp })
+    let mut head = Vec::with_capacity(18 + fpz.len());
+    head.extend_from_slice(MAGIC); head.push(VERSION); head.push(k);
+    head.extend_from_slice(&(w as u32).to_le_bytes()); head.extend_from_slice(&(h as u32).to_le_bytes());
+    head.extend_from_slice(&(fpz.len() as u32).to_le_bytes()); head.extend_from_slice(&fpz);
+    Some((head, clean, fp))
+}
+
+/// Grain mode: clean picture within +-k (k >= 1 typical: 2) + fingerprint. LOOKS THE SAME, NOT EXACT.
+/// None for pictures under 64x64 (too small to measure grain) or over MAX_PIXELS; use the exact or +-k pixel mode.
+pub fn compress(rgb: &[u8], w: usize, h: usize, k: u8) -> Option<Encoded> { compress_with(rgb, w, h, k, k, 0) }
+
+/// Grain mode with the clean picture's green within +-k, red and blue within +-kc, and pixel-mode `flags` (learned models).
+pub fn compress_with(rgb: &[u8], w: usize, h: usize, k: u8, kc: u8, flags: u8) -> Option<Encoded> {
+    let (mut stream, clean, fp) = prepare(rgb, w, h, k)?;
+    stream.extend_from_slice(&img::compress_rgb_split(&clean, w, h, k, kc, flags));
+    Some(Encoded { stream, clean, fp })
+}
+
+/// Streaming grain encoder: the split and the fingerprint happen in `new` (in one go, the slow part), then the clean
+/// picture is coded in `step`s of rows.
+pub struct GrainEncoder { head: Vec<u8>, img: img::ImgEncoder }
+impl GrainEncoder {
+    pub fn new(rgb: &[u8], w: usize, h: usize, k: u8, kc: u8, flags: u8) -> Option<GrainEncoder> {
+        let (head, clean, _) = prepare(rgb, w, h, k)?;
+        Some(GrainEncoder { head, img: img::ImgEncoder::new_split(clean, w, h, k, kc, flags & !img::F_ALPHA) })
+    }
+    pub fn units(&self) -> usize { self.img.units() }
+    pub fn done(&self) -> usize { self.img.done() }
+    pub fn step(&mut self, n: usize) -> usize { self.img.step(n) }
+    pub fn finish(self) -> Vec<u8> { let mut out = self.head; out.extend_from_slice(&self.img.finish()); out }
+}
+
+/// Streaming grain decoder: the clean picture in `step`s of rows, the grain regrown in `finish`.
+pub struct GrainDecoder { fp: Fingerprint, img: img::ImgDecoder, pub w: usize, pub h: usize }
+impl GrainDecoder {
+    pub fn new(blob: &[u8]) -> Option<GrainDecoder> {
+        if blob.len() < 18 || &blob[..4] != MAGIC || blob[4] != VERSION { return None; }
+        let w = u32::from_le_bytes(blob[6..10].try_into().ok()?) as usize; let h = u32::from_le_bytes(blob[10..14].try_into().ok()?) as usize;
+        let n = u32::from_le_bytes(blob[14..18].try_into().ok()?) as usize;
+        if 18 + n > blob.len() || w.checked_mul(h)? > MAX_PIXELS { return None; }
+        let fp = Fingerprint::decode(&crate::decompress(&blob[18..18 + n])?)?;
+        let img = img::ImgDecoder::new(&blob[18 + n..])?;
+        if img.w != w || img.h != h || img.flags & img::F_ALPHA != 0 { return None; }
+        Some(GrainDecoder { fp, img, w, h })
+    }
+    pub fn units(&self) -> usize { self.img.units() }
+    pub fn done(&self) -> usize { self.img.done() }
+    pub fn step(&mut self, n: usize) -> usize { self.img.step(n) }
+    /// RGB with regenerated grain.
+    pub fn finish(self) -> Vec<u8> { let (w, h, fp) = (self.w, self.h, self.fp); let clean = self.img.finish(); regrain(&clean, w, h, &fp) }
 }
 
 /// Returns (rgb with regenerated grain, w, h).
 pub fn decompress(blob: &[u8]) -> Option<(Vec<u8>, usize, usize)> {
-    if blob.len() < 18 || &blob[..4] != MAGIC || blob[4] != VERSION { return None; }
-    let w = u32::from_le_bytes(blob[6..10].try_into().ok()?) as usize; let h = u32::from_le_bytes(blob[10..14].try_into().ok()?) as usize;
-    let n = u32::from_le_bytes(blob[14..18].try_into().ok()?) as usize;
-    if 18 + n > blob.len() { return None; }
-    let fp = Fingerprint::decode(&crate::decompress(&blob[18..18 + n])?)?;
-    let (clean, w2, h2, _) = img::decompress_rgb(&blob[18 + n..])?;
-    if w2 != w || h2 != h || clean.len() != w * h * 3 { return None; }
-    Some((regrain(&clean, w, h, &fp), w, h))
+    let d = GrainDecoder::new(blob)?; let (w, h) = (d.w, d.h);
+    Some((d.finish(), w, h))
 }
 
 /// Size of the fingerprint part of a stream (bytes), for reporting.

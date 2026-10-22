@@ -60,7 +60,9 @@ stored. `src/bpe.rs` is the model's tokenizer (identical to Hugging Face on 1.1 
 every header is the hash of that pack, so native and wasm streams interoperate (verified by SHA-256).
 `src/wasm.rs` is the C ABI the site's `tools/compress/worker.js` drives: `nczl_load`, streaming
 `nczl_enc_*` / `nczl_dec_*`. Build: `RUSTFLAGS="-C target-feature=+simd128 -C strip=debuginfo" cargo build
---release --target wasm32-unknown-unknown`, copy `slm.wasm` to `tools/compress/nczl.wasm`.
+--release --target wasm32-unknown-unknown`, copy `slm.wasm` to `tools/compress/nczl.wasm`. Relaxed-SIMD build (nczl.wasm):
+`+simd128,+relaxed-simd`; plain-SIMD fallback (nczl-base.wasm): `+simd128`. Check PNG modes against native with
+`ncz/bench/wasm_png_check.mjs` (streams and rebuilt PNGs must be byte-identical).
 
 Nardo docs 100 KB: 1.7587 bpb (ncz 2.3218, xz 2.765); enwik8 1 MB 1.3999 (ncz 1.9071). 27 KB/s native, 8 KB/s in the browser.
 Stream v2 codes each byte first, under a mixture of "the token continues" and "a new token starts" (a speculative
