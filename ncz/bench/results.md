@@ -628,3 +628,19 @@ palette picture, every mode, both wasm builds (relaxed SIMD and plain SIMD): eve
 byte-identical to native (SHA-256). Same again through the page's own code in the browser. Text, code and binary files
 compress to the same bytes with the old and new wasm. Grain mode in wasm runs at native speed (kodim03: 1.5 s encode,
 0.7 s decode). kodim03: PNG 539 KB -> exact 299 KB, +-1 199 KB, looks the same 121 KB.
+
+### Wonder format, prototype 0: structure kept, fine texture regrown from statistics (2026-10-22) — fails on real texture
+
+`bench/wonder/proto.py`: YCoCg Laplacian pyramid coded closed-loop with real bytes (ncz byte coder); in the finest
+band each 16x16 block is kept (quantised), dropped, or regrown (energy per block + the band's spectrum; band-limited
+noise shaped and scaled on decode). kodim13 (river), SSIMULACRA2 at matched size:
+
+| q | no regrowth: bpp / score | with regrowth: bpp / score | JPEG XL at the regrowth size |
+|---|---|---|---|
+| 6 | 4.67 / 83.4 | 1.84 / -19.6 | 71.0 |
+| 16 | 2.61 / 57.0 | 0.92 / -26.4 | 46.6 |
+
+Regrowth cuts the bytes by 2.5-3x but wrecks the picture: kodim13's finest band has rms 21 levels and carries
+structure (water sparkle, leaf edges); phase-random noise with the right energy and spectrum reads as speckle, by eye
+too. Statistical regrowth works for grain (low-amplitude noise, grain mode), not for real texture. The plain pyramid
+coder is also far behind JPEG XL (57 vs 81 at 2.6 bpp): a base coder needs work too.
