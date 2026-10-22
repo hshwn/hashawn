@@ -800,3 +800,14 @@ Weight-tied student (each residual block run twice, a learned per-channel gain p
 +0.3 / +0.1 dB for 1.7x the decode time; indistinguishable by eye. Kept the 1-pass student in tiny mode. Reusing the
 blocks does not add capacity here; the gap to the teacher needs real capacity (wider/deeper with its own weights) or a
 different loss.
+
+Student v2 (channels 128/128/96/64/48, capacity moved toward full resolution; 2.46M weights, 129k MAC per pixel), same
+distillation, 100k steps, 4-bit weights trained in from step 60k (QConv: per-channel scale min(max, 3 rms)/7, levels
+-8..7, straight-through):
+- float, before 4-bit: train-crop PSNR 30.69 at 60k vs 29.84 for v1 at the same step (+0.85 dB): the capacity helps.
+- 4-bit from 60k: dropped to 27.3, recovered only to 28.2. Kodak: 29.38 dB / SSIMULACRA2 18.8 vs v1 8-bit 29.99 /
+  40.9 (softer, blotchy smooth areas). The scheme was too crude (fixed scales, sudden switch, schedule already decaying).
+- Post-training quantisation of v1 (Kodak 5): float 30.17, 8-bit 29.95, 6-bit 28.53, 4-bit 20.37 dB.
+- 4-bit ONNX path works: int8 levels + DequantizeLinear, file packed with ncz to 2.9 bits a weight (v1: 1.35M weights
+  -> 489 KB, fp16 was 2.7 MB); browser output equals ONNX Runtime in Python.
+- Downloads: the decoder is 2.7 of tiny mode's 14.4 MB; the encoder (8.4 MB fp16) is the big one.

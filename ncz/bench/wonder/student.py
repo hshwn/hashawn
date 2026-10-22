@@ -21,8 +21,18 @@ from pred import teacher, load_imgs, dev
 import numpy as np
 from PIL import Image
 
+class QConv(nn.Conv2d):
+    """Conv whose weights can be trained for 4-bit storage (quantisation-aware: the forward pass sees the 16-level weights,
+    gradients pass straight through). Per output channel, symmetric, levels -8..7 times a scale of min(max|w|, 3 rms) / 7."""
+    qat = False
+    @staticmethod
+    def scale(w): return torch.minimum(w.abs().amax((1, 2, 3), keepdim=True), 3 * w.pow(2).mean((1, 2, 3), keepdim=True).sqrt()).clamp_min(1e-8) / 7
+    def forward(s, x):
+        if not QConv.qat: return super().forward(x)
+        sc = QConv.scale(s.weight); wq = torch.clamp(torch.round(s.weight / sc), -8, 7) * sc
+        return F.conv2d(x, s.weight + (wq - s.weight).detach(), s.bias, s.stride, s.padding)
 class Res(nn.Module):
-    def __init__(s, c): super().__init__(); s.a = nn.Conv2d(c, c, 3, padding=1); s.b = nn.Conv2d(c, c, 3, padding=1)
+    def __init__(s, c): super().__init__(); s.a = QConv(c, c, 3, padding=1); s.b = QConv(c, c, 3, padding=1)
     def forward(s, x): return x + s.b(F.leaky_relu(s.a(x), 0.1))
 class Loop(nn.Module):
     """The same block applied `r` times (weight-tied: more computation, no more weights), with a learned per-channel
@@ -33,12 +43,15 @@ class Loop(nn.Module):
         for i in range(s.r): x = x + (s.block(x) - x) * s.g[i].view(1, -1, 1, 1)
         return x
 def res(c, r): return Res(c) if r == 1 else Loop(Res(c), c, r)
-def upb(ci, co, r=1): return nn.Sequential(nn.Conv2d(ci, co * 4, 3, padding=1), nn.PixelShuffle(2), nn.LeakyReLU(0.1), res(co, r))
+def upb(ci, co, r=1): return nn.Sequential(QConv(ci, co * 4, 3, padding=1), nn.PixelShuffle(2), nn.LeakyReLU(0.1), res(co, r))
+# channel plans, coarse to fine (1/16, 1/8, 1/4, 1/2, full resolution)
+ARCHS = {"v1": (96, 96, 64, 48, 32), "v2": (128, 128, 96, 64, 48)}
 class Student(nn.Module):
     # channels shrink as resolution grows: the cost per decoded pixel stays browser-sized
-    def __init__(s, M, N=96, r=1):
+    def __init__(s, M, N=96, r=1, chans=None):
         super().__init__(); s.register_buffer("inv", torch.ones(1, M, 1, 1))     # 1 / per-channel std of the latents (set from data)
-        s.n = nn.Sequential(nn.Conv2d(M, N, 3, padding=1), nn.LeakyReLU(0.1), res(N, r), upb(N, N, r), upb(N, 64, r), upb(64, 48, r), upb(48, 32, r), nn.Conv2d(32, 3, 3, padding=1))
+        c = chans or (N, N, 64, 48, 32); s.chans = c
+        s.n = nn.Sequential(QConv(M, c[0], 3, padding=1), nn.LeakyReLU(0.1), res(c[0], r), upb(c[0], c[1], r), upb(c[1], c[2], r), upb(c[2], c[3], r), upb(c[3], c[4], r), nn.Conv2d(c[4], 3, 3, padding=1))
     def forward(s, y): return s.n(y * s.inv) + 0.5
 
 def setup(wpath, idir, L, keep_teacher=False):
@@ -90,13 +103,13 @@ if __name__ == "__main__":
         B = int(os.environ.get("BATCH", "16")); L = int(os.environ.get("LCROP", "16"))
         DISTIL = bool(os.environ.get("DISTIL")); DW_OUT = float(os.environ.get("DW_OUT", "1")); DW_FEAT = float(os.environ.get("DW_FEAT", "0.1"))
         ims, lats, gs, recs = setup(sys.argv[2], sys.argv[3], L, DISTIL); M = lats[0].shape[0]
-        LOOPS = int(os.environ.get("LOOPS", "1"))
-        S = Student(M, r=LOOPS).to(dev, memory_format=torch.channels_last)
+        LOOPS = int(os.environ.get("LOOPS", "1")); ARCH = os.environ.get("ARCH", "v1"); QAT_FROM = float(os.environ.get("QAT_FROM", "2"))
+        S = Student(M, r=LOOPS, chans=ARCHS[ARCH]).to(dev, memory_format=torch.channels_last)
         sd_ = torch.stack([l.float().pow(2).mean((1, 2)) for l in lats]).mean(0).sqrt().clamp_min(0.05)
         S.inv.copy_((1 / sd_).view(1, M, 1, 1))
         print(f"student: {sum(p.numel() for p in S.parameters()) / 1e6:.2f}M params, {macs_per_px(S, M) / 1e3:.0f}k MAC per pixel", flush=True)
         LR = float(os.environ.get("LR", "5e-4"))
-        proj = nn.ModuleList([nn.Conv2d(c, 192 if M == 192 else 128, 1) for c in (96, 64)]).to(dev, memory_format=torch.channels_last)
+        proj = nn.ModuleList([nn.Conv2d(c, 192 if M == 192 else 128, 1) for c in S.chans[1:3]]).to(dev, memory_format=torch.channels_last)
         if DISTIL: gs = gs[:T_TAPS[-1] + 1].to(memory_format=torch.channels_last)     # only the low-resolution part runs per step
         params = list(S.parameters()) + (list(proj.parameters()) if DISTIL else [])
         opt = torch.optim.AdamW(params, LR, weight_decay=1e-5)
@@ -126,6 +139,7 @@ if __name__ == "__main__":
         sched = torch.optim.lr_scheduler.OneCycleLR(opt, LR, total_steps=steps, pct_start=0.03)
         t0 = time.time(); acc = 0.0
         for i in range(1, steps + 1):
+            if not QConv.qat and i > QAT_FROM * steps: QConv.qat = True; print(f"{i}: 4-bit weights from here", flush=True)
             l = step(); sched.step()
             if i % 50 == 0: acc += float(l)
             every = int(os.environ.get("EVERY", "2000"))
@@ -135,7 +149,8 @@ if __name__ == "__main__":
     elif cmd == "dump":
         T = teacher(sys.argv[2]); sd = torch.load(sys.argv[3]); M = sd["n.0.weight"].shape[1]
         r = sd["n.2.g"].shape[0] if "n.2.g" in sd else 1
-        S = Student(M, r=r).to(dev); S.load_state_dict(sd); S.eval()
+        chans = (sd["n.0.weight"].shape[0],) + tuple(sd[f"n.{i}.0.weight"].shape[0] // 4 for i in (3, 4, 5, 6))
+        S = Student(M, r=r, chans=chans).to(dev); QConv.qat = bool(os.environ.get("QAT_DUMP")); S.load_state_dict(sd); S.eval()
         kd, od = sys.argv[4], sys.argv[5]; os.makedirs(od, exist_ok=True); q = int(os.path.basename(sys.argv[2]).split("-")[2])
         for name in sys.argv[6:]:
             x = torch.from_numpy(np.asarray(Image.open(f"{kd}/{name}.ppm").convert("RGB"), dtype=np.float32) / 255).permute(2, 0, 1)[None].to(dev)

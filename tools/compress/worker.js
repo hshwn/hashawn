@@ -111,10 +111,14 @@ async function fetchProgress(url, id, label, part) {
   for (;;) { const { value, done } = await reader.read(); if (done) break; chunks.push(value); got += value.byteLength; postMessage({ id, type: 'model', done: got, total, label, part }); }
   const out = new Uint8Array(got); let off = 0; for (const c of chunks) { out.set(c, off); off += c.byteLength; } return out;
 }
+// which network files are packed with ncz (4-bit decoder weights pack to ~3 bits a weight); unpacked by our own codec
+const PACKED = { dec: false };
 async function session(name, id) {
   if (sessions[name]) return sessions[name];
   await ortLoad();
-  const bytes = await fetchProgress(`learned/q${LQ}.${name}.onnx`, id, name === 'enc' ? 'the encoder' : 'the decoder', name);
+  let bytes = await fetchProgress(`learned/q${LQ}.${name}.onnx${PACKED[name] ? '.ncz' : ''}`, id, name === 'enc' ? 'the encoder' : 'the decoder', name);
+  if (PACKED[name]) { await load(); const p = put(bytes); const d = wasm.nczl_dec_new(p, bytes.length); wasm.nczl_free(p, bytes.length);
+    if (!d) throw new Error('the decoder network is damaged'); while (wasm.nczl_dec_step(d, 1 << 20) > 0); const o = wasm.nczl_dec_finish(d); if (!o) throw new Error('the decoder network is damaged'); bytes = takeOut(o); }
   let s;
   try { s = await ort.InferenceSession.create(bytes, { executionProviders: ['webgpu'] }); s.ep = 'webgpu'; }
   catch { s = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] }); s.ep = 'wasm'; }
