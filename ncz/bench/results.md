@@ -669,3 +669,23 @@ Kodak 03 05 13 23, pyramid coder of proto.py, SSIMULACRA2 at matched size:
   borders (mirror padding; the nets only saw interior crops) and regrowth in smooth areas (strong detail only).
 - The real gap is the base coder: before any texture, at the same bytes JPEG XL scores 87-91 and this pyramid coder
   54-78. Regrowth cannot close that; the base has to be competitive first.
+
+### Wonder format: pretrained teacher as the base (cheng2020-anchor, CompressAI weights) (2026-10-22)
+
+`bench/wonder/teacher.py` (rig) + `teacher_eval.py` (Mac). Kodak 01 03 05 08 13 19 21 23, SSIMULACRA2. "own" = the
+teacher's own learned entropy model (hyperprior + context); "ours" = the same integer latents through ncz's generic
+byte coder (no latent-aware model yet). JPEG XL effort 7 matched by size.
+
+| quality | ours bpp | own bpp | teacher score | JPEG XL at ours | JPEG XL at own |
+|---|---|---|---|---|---|
+| 1 | 0.259 | 0.161 | 3.9 | 0.4 | -14.5 |
+| 2 | 0.368 | 0.247 | 23.2 | 24.8 | -2.6 |
+| 3 | 0.508 | 0.361 | 38.9 | 45.3 | 20.0 |
+| 4 | 0.778 | 0.557 | 53.8 | 60.6 | 42.8 |
+| 5 | 1.038 | 0.775 | 65.3 | 69.8 | 57.8 |
+| 6 | 1.385 | 1.019 | 73.2 | 77.3 | 67.5 |
+
+At the teacher's own rate it beats JPEG XL by 6-19 points at every quality (q1: a whole photo in ~2.8 KB that
+JPEG XL cannot reach). Our generic coder spends 36-60% more bits on the same latents, which hands the win back to
+JPEG XL: the latent coder is the gap. Next: a latent-aware context-mixing coder (contexts: spatial neighbours in the
+same channel, co-located values in earlier channels, channel id), target <= the teacher's own rate.
