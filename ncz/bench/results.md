@@ -716,3 +716,25 @@ per picture. `bench/wonder/latcmp.sh`; 8 test photos, bits per image pixel:
 - With the teacher's mean/scale as context, NCZY beats the teacher's Gaussian on the same symbols at q1 (0.177 vs
   0.182) and nearly matches at q4/q6. So the coder is fine; the missing piece is a deterministic learned predictor of
   mean and scale, which would also allow mean-centred quantisation.
+
+### Wonder format: our predictor (pred.py) and a first student decoder (student.py) (2026-10-22)
+
+Predictor (ours, 0.68M / 0.83M params, trained 15k steps on DIV2K latents, 3-4 min each): channels in a fixed
+strongest-first order, 8-9 groups, each group's mean/scale from a small conv net over all earlier groups (full
+picture). NCZY with it as context, 8 Kodak test photos: q1 0.2232 -> 0.1977 bpp, q4 0.6847 -> 0.6205 (teacher 0.1613 /
+0.5568). Per group (Gaussian bits): from the 17th channel on we are within ~5% of the teacher (better on the weakest at
+q1); the first group (4 strongest channels, no earlier groups to predict from) costs 2x the teacher's (q1 0.059 vs
+0.030), most of the remaining gap. At these sizes the pictures beat JPEG XL on 5 of 6 (parrots, bikes, river x q1/q4).
+Bug on the way: the first run trained 1 step in 50 (a conditional expression); caught by the impossible speed.
+
+Student decoder (1.35M params, 64k MAC per pixel; teacher q4 decoder 11.8M, 552k): teacher's encoder fixed, latents of
+all 800 DIV2K photos cached on the GPU (81 s), MSE to the original, 30k steps (7.4 min, batch 16 of 256 px). First try
+diverged (no input normalisation, no clipping, lr 1e-3: outputs ~1e4); fixed with per-channel input scaling, gradient
+clip 0.5, lr 5e-4. Kodak 8, same latents (same file size):
+
+| | SSIMULACRA2 | PSNR |
+|---|---|---|
+| teacher decoder | 53.8 | 32.8 dB |
+| student, 30k steps | 34.6 | 29.0 dB |
+
+Visibly softer (bushes, water, feathers, logo edges). Undertrained: train-crop PSNR still climbing at the end.

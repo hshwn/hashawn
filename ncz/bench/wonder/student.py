@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Student decoder: the teacher's integer latents -> picture, with a decoder 4-9x smaller than the teacher's.
+
+    python student.py prof  <weights.pth.tar> <img_dir>
+    python student.py train <weights.pth.tar> <img_dir> <steps> <out.pt>
+    python student.py dump  <weights.pth.tar> <student.pt> <kodak_dir> <out_dir> <names...>
+
+The teacher's encoder is fixed, so the latents (and the files) do not change: only the decoder is new. Every training
+photo is encoded once (latents kept on the GPU next to the photo); crops are cut in step (latent L x L <-> pixels
+16L x 16L). Loss: MSE against the original photo (the student learns its own best decoding, not the teacher's).
+"""
+import os, sys, time
+import torch, torch.nn as nn, torch.nn.functional as F
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pred
+from pred import teacher, load_imgs, dev
+import numpy as np
+from PIL import Image
+
+class Res(nn.Module):
+    def __init__(s, c): super().__init__(); s.a = nn.Conv2d(c, c, 3, padding=1); s.b = nn.Conv2d(c, c, 3, padding=1)
+    def forward(s, x): return x + s.b(F.leaky_relu(s.a(x), 0.1))
+def upb(ci, co): return nn.Sequential(nn.Conv2d(ci, co * 4, 3, padding=1), nn.PixelShuffle(2), nn.LeakyReLU(0.1), Res(co))
+class Student(nn.Module):
+    # channels shrink as resolution grows: the cost per decoded pixel stays browser-sized
+    def __init__(s, M, N=96):
+        super().__init__(); s.register_buffer("inv", torch.ones(1, M, 1, 1))     # 1 / per-channel std of the latents (set from data)
+        s.n = nn.Sequential(nn.Conv2d(M, N, 3, padding=1), nn.LeakyReLU(0.1), Res(N), upb(N, N), upb(N, 64), upb(64, 48), upb(48, 32), nn.Conv2d(32, 3, 3, padding=1))
+    def forward(s, y): return s.n(y * s.inv) + 0.5
+
+def setup(wpath, idir, L):
+    T = teacher(wpath); ims = load_imgs(idir, 16 * L); lats = []
+    t = time.time()
+    with torch.no_grad():
+        for i, im in enumerate(ims):
+            H, W = im.shape[-2:]; H, W = H // 64 * 64, W // 64 * 64; ims[i] = im[:, :H, :W].contiguous()
+            lats.append(torch.round(T.g_a(ims[i][None].float() / 255))[0].to(torch.int16))
+    del T; torch.cuda.empty_cache(); torch.cuda.synchronize()
+    print(f"latents of {len(ims)} photos in {time.time() - t:.0f}s", flush=True)
+    torch.backends.cudnn.benchmark = True; torch.backends.cuda.matmul.allow_tf32 = True; torch.backends.cudnn.allow_tf32 = True
+    return ims, lats
+
+def pair_batch(ims, lats, B, L):
+    ys, xs = [], []
+    for _ in range(B):
+        k = torch.randint(len(ims), (1,)).item(); y = lats[k]; H, W = y.shape[-2:]
+        a, b = torch.randint(H - L + 1, (1,)).item(), torch.randint(W - L + 1, (1,)).item()
+        ys.append(y[:, a:a + L, b:b + L]); xs.append(ims[k][:, 16 * a:16 * (a + L), 16 * b:16 * (b + L)])
+    return torch.stack(ys).float(), torch.stack(xs).float() / 255
+
+def macs_per_px(net, M):
+    tot = 0
+    def hook(m, i, o):
+        nonlocal tot
+        if isinstance(m, nn.Conv2d): tot += o.shape[2] * o.shape[3] * m.in_channels * m.out_channels * m.kernel_size[0] * m.kernel_size[1]
+    hs = [m.register_forward_hook(hook) for m in net.modules()]
+    with torch.no_grad(): net(torch.zeros(1, M, 8, 8, device=dev))
+    for h in hs: h.remove()
+    return tot / (128 * 128)
+
+if __name__ == "__main__":
+    cmd = sys.argv[1]
+    if cmd in ("prof", "train"):
+        B = int(os.environ.get("BATCH", "16")); L = int(os.environ.get("LCROP", "16"))
+        ims, lats = setup(sys.argv[2], sys.argv[3], L); M = lats[0].shape[0]
+        S = Student(M).to(dev, memory_format=torch.channels_last)
+        sd_ = torch.stack([l.float().pow(2).mean((1, 2)) for l in lats]).mean(0).sqrt().clamp_min(0.05)
+        S.inv.copy_((1 / sd_).view(1, M, 1, 1))
+        print(f"student: {sum(p.numel() for p in S.parameters()) / 1e6:.2f}M params, {macs_per_px(S, M) / 1e3:.0f}k MAC per pixel", flush=True)
+        LR = float(os.environ.get("LR", "5e-4"))
+        opt = torch.optim.AdamW(S.parameters(), LR, weight_decay=1e-5)
+        def step():
+            y, x = pair_batch(ims, lats, B, L)
+            with torch.autocast("cuda", torch.bfloat16): xh = S(y.contiguous(memory_format=torch.channels_last))
+            loss = F.mse_loss(xh.float(), x); opt.zero_grad(set_to_none=True); loss.backward()
+            torch.nn.utils.clip_grad_norm_(S.parameters(), 0.5); opt.step(); return loss.detach()
+        if os.environ.get("COMPILE"): step = torch.compile(step)
+        if cmd == "prof":
+            for _ in range(15): step()
+            torch.cuda.synchronize(); t = time.time()
+            for _ in range(40): step()
+            torch.cuda.synchronize(); dt = (time.time() - t) / 40
+            print(f"batch {B}, crops {16 * L}px: {dt * 1000:.1f} ms/step, {B * (16 * L) ** 2 / dt / 1e6:.0f} Mpx/s, {torch.cuda.max_memory_allocated() / 1e9:.1f} GB", flush=True)
+            sys.exit()
+        steps, out = int(sys.argv[4]), sys.argv[5]
+        sched = torch.optim.lr_scheduler.OneCycleLR(opt, LR, total_steps=steps, pct_start=0.03)
+        t0 = time.time(); acc = 0.0
+        for i in range(1, steps + 1):
+            l = step(); sched.step()
+            if i % 50 == 0: acc += float(l)
+            every = int(os.environ.get("EVERY", "2000"))
+            if i % every == 0 or i == steps:
+                mse = acc / (every // 50) * 255 ** 2; print(f"{i} psnr(train crops) {10 * np.log10(255 ** 2 / max(mse, 1e-9)):.2f}  {time.time() - t0:.0f}s", flush=True); acc = 0.0
+                torch.save(S.state_dict(), out)
+    elif cmd == "dump":
+        T = teacher(sys.argv[2]); sd = torch.load(sys.argv[3]); M = sd["n.0.weight"].shape[1]
+        S = Student(M).to(dev); S.load_state_dict(sd); S.eval()
+        kd, od = sys.argv[4], sys.argv[5]; os.makedirs(od, exist_ok=True); q = int(os.path.basename(sys.argv[2]).split("-")[2])
+        for name in sys.argv[6:]:
+            x = torch.from_numpy(np.asarray(Image.open(f"{kd}/{name}.ppm").convert("RGB"), dtype=np.float32) / 255).permute(2, 0, 1)[None].to(dev)
+            with torch.no_grad(): xh = S(torch.round(T.g_a(x))).clamp(0, 1)
+            Image.fromarray((xh[0].permute(1, 2, 0).cpu().numpy() * 255 + 0.5).astype(np.uint8)).save(f"{od}/{name}.q{q}.png")
+        print("ok")
