@@ -60,6 +60,16 @@ fn main() {
         println!("TOTAL exact {:.3}  +-{k} {:.3}  grain mode {:.3} bpp (fingerprints {:.3} bpp)  {:+.1}% vs exact, {:+.1}% vs +-{k}", 8.0 * b_ex / px, 8.0 * b_k / px, 8.0 * b_g / px, 8.0 * b_fp / px, 100.0 * (b_g / b_ex - 1.0), 100.0 * (b_g / b_k - 1.0));
         return;
     }
+    if a.len() == 5 && a[1] == "img-rt" {
+        // nczcli img-rt <k> <in.ppm> <out.ppm>: pixel mode round trip, writes the decoded picture, prints the stream size in bytes
+        let k: u8 = a[2].parse().expect("k");
+        let (rgb, w, h) = ncz::img::read_ppm(&fs::read(&a[3]).expect("read")).expect("not a P6 PPM");
+        let c = ncz::img::compress_rgb(&rgb, w, h, k);
+        let (back, _, _, _) = ncz::img::decompress_rgb(&c).expect("decode");
+        let mut v = format!("P6\n{w} {h}\n255\n").into_bytes(); v.extend_from_slice(&back); fs::write(&a[4], v).expect("write");
+        println!("{}", c.len());
+        return;
+    }
     if a.len() >= 3 && a[1] == "img-hash" {
         // nczcli img-hash <flags> <a.ppm>...: FNV hash of each compressed stream (regression check)
         let flags: u8 = a[2].parse().unwrap();

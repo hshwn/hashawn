@@ -540,3 +540,25 @@ as much as the photo (wood grain, feathers and the model's own fine noise stay i
 
 Verdict: for exact and +-k coding the photo is already the cheapest layer. The coder was left unchanged (streams
 byte-identical); the experiment lives in the patch and scripts.
+
+Follow-ups the same day (Hassan: "compress the flat colours, take advantage of the repeating colours"; then "a shading
+layer and a colours layer"):
+
+- Palette albedo (K repeated colours: label map + palette, 0.1-0.5 bpp) x shading at 1/8 as a guide, exact mode
+  (`guide_predictor.patch`, `palette.py`): guide + separate residual +22% (was +135% with a full-colour albedo); the
+  coder guided by it +3.9% (the guide is off by 18-32 levels rms, too rough to steer anything).
+- Two layers, a looks-the-same mode (`two_layer.py`): colours = K region colours + label map; shading = one grey value
+  per pixel, the encoder's least-squares fit given the region colour, coded at +-2; decode colour x shading / 255.
+  kodim03 + kodim23, matched against the pixel coder at +-k and JPEG XL lossy at the same size (CIEDE2000 mean):
+
+| regions | K | two-layer bpp | dE | pixel coder | JPEG XL, same size |
+|---|---:|---:|---:|---:|---:|
+| Marigold albedo | 16 (shading exact) | 3.42 / 3.64 | 3.2 / 5.5 | +-2: 2.86 / 3.16 bpp, dE 1.0 / 0.9 | dE 0.70 / 0.65 |
+| Marigold albedo | 64 | 2.36 / 2.51 | 2.4 / 4.2 | +-3: 2.19 / 2.35 bpp, dE 1.3 / 1.2 | dE 0.82 / 0.78 |
+| photo colour | 64 | 2.57 / 2.72 | 1.3 / 1.7 | +-3: 2.19 / 2.35 bpp, dE 1.3 / 1.2 | dE 0.79 / 0.75 |
+| photo colour | 256 | 7.09 / 7.47 | 0.7 / 0.9 | +-1: 4.04 / 4.47 bpp, dE 0.6 / 0.6 | dE 0.43 / 0.40 |
+
+The colours layer is either cheap and wrong or right and expensive (the label map grows fast); the grey shading alone
+costs about as much as the +-k picture. Best two-layer (photo colours, 64) is ~15% bigger than +-3 at a similar colour
+error. Side note: at matched size JPEG XL lossy has lower average colour error than the pixel coder's +-k (its
+quantisation is perceptual, ours is a max-error bound), but it smooths the grain away.

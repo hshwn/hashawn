@@ -1,0 +1,142 @@
+diff --git a/ncz/src/img.rs b/ncz/src/img.rs
+index 223f205..5955167 100644
+--- a/ncz/src/img.rs
++++ b/ncz/src/img.rs
+@@ -25,7 +25,8 @@ const ALL_FLAGS: u8 = F_PLANAR | F_LEARNED_COLOUR | F_LEARNED_GREEN | F_ALPHA;
+ /// Red and blue lean on green; green and alpha only on their own neighbours.
+ #[inline(always)] fn colour(c: usize) -> bool { c == 0 || c == 2 }
+ 
+-const NP: usize = 15;        // predictors
++const NP: usize = 18;        // predictor slots: 15 always, +3 with a guide picture (experimental, bench/iid)
++const NP_BASE: usize = 15;
+ const ND: usize = 74;        // binary decisions per sample: 0 zero?, 1..=7 size, 8..71 mantissa, 72 sign, 73 spare
+ const D_SIGN: usize = 72;
+ const NSETS: usize = 11;     // context sets feeding the mixer (six weak ones removed after ablation)
+@@ -117,6 +118,7 @@ struct Model {
+     apm: Apm, apm2: Apm,
+     // per-sample context state
+     nets: Option<[Mlp; 2]>, gnet: Option<Mlp>,
++    guide: Option<Vec<u8>>, np: usize,      // optional guide picture both sides have (interleaved RGB) and predictors in use
+     ch: usize, ctx: [u32; NSETS], act: usize, st: [i32; N_IN], sidx: [usize; NSETS], mixbase: usize, pmix: i32, apm_ctx: usize, apm2_ctx: usize,
+ }
+ 
+@@ -182,7 +184,7 @@ impl Model {
+         assert_eq!(PRIOR.len(), 2 * (mix.len() + mix2.len() + fin.len()));
+         let mut it = PRIOR.chunks_exact(2).map(|b| (i16::from_le_bytes([b[0], b[1]]) as i32) << 1);
+         for v in mix.iter_mut().chain(mix2.iter_mut()).chain(fin.iter_mut()) { *v = it.next().unwrap(); }
+-        Model { w, h, k, planar, mix2, mix3, offc: 0, pmix3: 2048, fin, fin_st: [0; 3], fin_base: 0, eqc: 0, mixbase2: 0, pmix2: 2048, nets, gnet,
++        Model { guide: None, np: NP_BASE, w, h, k, planar, mix2, mix3, offc: 0, pmix3: 2048, fin, fin_st: [0; 3], fin_base: 0, eqc: 0, mixbase2: 0, pmix2: 2048, nets, gnet,
+             rec: vec![vec![0; n]; nch], res: vec![vec![0; n]; nch],
+             err: vec![vec![0; 2 * w * NP]; nch], nch, order,
+             bias_sum: vec![0; 4 * 16 * 27], bias_n: vec![0; 4 * 16 * 27],
+@@ -304,6 +306,17 @@ impl Model {
+                 _ => (cfl, 0),
+             },
+         };
++        let gp = match &self.guide {
++            Some(gd) => {
++                let gi = |p: usize| gd[p * 3 + c] as i32; let gx = gi(pos);
++                let (dw, dn, dnw) = (wv - if x > 0 { gi(pos - 1) } else if y > 0 { gi(pos - w) } else { gx },
++                                     nv - if y > 0 { gi(pos - w) } else if x > 0 { gi(pos - 1) } else { gx },
++                                     nw - if x > 0 && y > 0 { gi(pos - w - 1) } else if y > 0 { gi(pos - w) } else if x > 0 { gi(pos - 1) } else { gx });
++                let dm = if dnw >= dw.max(dn) { dw.min(dn) } else if dnw <= dw.min(dn) { dw.max(dn) } else { dw + dn - dnw };
++                (gx + dw, gx + dn, gx + dm)
++            }
++            None => (0, 0, 0),
++        };
+         let med = { let (a, b, cc) = (wv, nv, nw); if cc >= a.max(b) { a.min(b) } else if cc <= a.min(b) { a.max(b) } else { a + b - cc } };
+         let preds: [i32; NP] = [
+             wv, nv, wv + nv - nw, med, (wv + ne + 1) >> 1, wv + ne - nv, (wv + nv + ne + nw + 2) >> 2, ne,
+@@ -314,6 +327,8 @@ impl Model {
+                 let rr = &self.rec[0]; let rw = if x > 0 { rr[pos - 1] as i32 } else if y > 0 { rr[pos - w] as i32 } else { 128 };
+                 wv + rr[pos] as i32 - rw } else { nw + ((ne - nw) >> 1) },
+             bilat, cfl, lpred,
++            // with a guide: the guide here plus the neighbours' difference from it
++            gp.0, gp.1, gp.2,
+         ];
+         // weights from each predictor's recent error around this pixel
+         let e = &self.err[c];
+@@ -324,7 +339,7 @@ impl Model {
+         let pnw = if x > 0 && y > 0 { Some(pos - w - 1) } else { None };
+         let pne = if y > 0 && x + 1 < w { Some(pos - w + 1) } else { None };
+         let mut num: i64 = 0; let mut den: i64 = 0; let mut emin = u32::MAX;
+-        for i in 0..NP {
++        for i in 0..self.np {
+             let s = ebuf(pw, i) + ebuf(pn, i) + ebuf(pnw, i) + ebuf(pne, i) + 1;
+             emin = emin.min(s);
+             let wt = (1i64 << 40) / (s as i64 * s as i64);
+@@ -355,7 +370,7 @@ impl Model {
+             (sgn(rw) * 9 + sgn(rn) * 3 + sgn(xres) + 27 * if !colour(c) { 0 } else { 1 + (xres.abs() > 2) as usize }) as u32,
+             (eq * 16 + if !colour(c) { q16(rne.abs()) } else { xmag }) as u32,
+             off(0) * 17 + off(1),
+-            off(2) * 17 + off(7),
++            if self.guide.is_some() { off(15) * 17 + off(17) + 289 * (1 + off(2)) } else { off(2) * 17 + off(7) },
+             off(8) * 17 + off(9) + 289 * (eq as u32 >> 2),
+             off(10) * 17 + off(11),
+             off(12) * 17 + off(13) + 289 * if colour(c) && self.planar {
+@@ -396,7 +411,7 @@ impl Model {
+         if self.bias_n[bias_ctx] >= 64 { self.bias_sum[bias_ctx] /= 2; self.bias_n[bias_ctx] /= 2; }
+         self.bias_sum[bias_ctx] += recon - pred; self.bias_n[bias_ctx] += 1;
+         let slot = (pos % (2 * w)) * NP;
+-        for i in 0..NP { self.err[c][slot + i] = ((preds[i] - recon).unsigned_abs() * 8).min(65535) as u16; }
++        for i in 0..self.np { self.err[c][slot + i] = ((preds[i] - recon).unsigned_abs() * 8).min(65535) as u16; }
+         self.res[c][pos] = eqd.clamp(-32768, 32767) as i16;
+         self.rec[c][pos] = recon as u8;
+         recon as u8
+@@ -481,6 +496,15 @@ pub fn compress_rgb_flags(rgb: &[u8], w: usize, h: usize, k: u8, flags: u8) -> V
+ /// RGBA (4 bytes per pixel).
+ pub fn compress_rgba_flags(rgba: &[u8], w: usize, h: usize, k: u8, flags: u8) -> Vec<u8> { ImgEncoder::new(rgba.to_vec(), w, h, k, flags | F_ALPHA).finish() }
+ 
++/// EXPERIMENT (bench/iid): the same coder with a guide picture both sides already have (interleaved RGB, w*h*3).
++/// Not a stream format: the caller carries the guide.
++pub fn compress_rgb_guide(rgb: &[u8], w: usize, h: usize, k: u8, guide: Vec<u8>) -> Vec<u8> {
++    let mut e = ImgEncoder::new(rgb.to_vec(), w, h, k, 0); e.m.guide = Some(guide); e.m.np = NP; e.finish()
++}
++pub fn decompress_rgb_guide(blob: &[u8], guide: Vec<u8>) -> Option<Vec<u8>> {
++    let mut d = ImgDecoder::new(blob)?; d.m.guide = Some(guide); d.m.np = NP; Some(d.finish())
++}
++
+ /// Returns (samples, w, h, k) — 3 per pixel, or 4 if the stream carries alpha — or None if not an NCZI stream.
+ pub fn decompress_rgb(blob: &[u8]) -> Option<(Vec<u8>, usize, usize, u8)> {
+     let d = ImgDecoder::new(blob)?; let (w, h, k) = (d.w, d.h, d.k);
+diff --git a/ncz/src/main.rs b/ncz/src/main.rs
+index ffe235d..873a632 100644
+--- a/ncz/src/main.rs
++++ b/ncz/src/main.rs
+@@ -60,6 +60,36 @@ fn main() {
+         println!("TOTAL exact {:.3}  +-{k} {:.3}  grain mode {:.3} bpp (fingerprints {:.3} bpp)  {:+.1}% vs exact, {:+.1}% vs +-{k}", 8.0 * b_ex / px, 8.0 * b_k / px, 8.0 * b_g / px, 8.0 * b_fp / px, 100.0 * (b_g / b_ex - 1.0), 100.0 * (b_g / b_k - 1.0));
+         return;
+     }
++    if a.len() >= 4 && a[1] == "guide-bench" {
++        // nczcli guide-bench <side_dir> <photo.ppm>...  (bench/iid/palette.py writes <name>.guide.ppm/.labels/.palette/.shade.ppm)
++        // Exact coding three ways, side information counted: plain; guide + separate residual; coder guided by the guide.
++        let d = &a[2];
++        let (mut px, mut t0, mut tb, mut tc, mut tside) = (0f64, 0f64, 0f64, 0f64, 0f64);
++        for f in &a[3..] {
++            let name = std::path::Path::new(f).file_stem().unwrap().to_string_lossy().to_string();
++            let (rgb, w, h) = ncz::img::read_ppm(&fs::read(f).unwrap()).unwrap();
++            let (guide, _, _) = ncz::img::read_ppm(&fs::read(format!("{d}/{name}.guide.ppm")).unwrap()).unwrap();
++            let labels = fs::read(format!("{d}/{name}.labels")).unwrap(); let pal = fs::read(format!("{d}/{name}.palette")).unwrap();
++            let (sh, sw, shh) = ncz::img::read_ppm(&fs::read(format!("{d}/{name}.shade.ppm")).unwrap()).unwrap();
++            // labels: generic byte model, or the pixel coder on a grey picture (R = G = B = label); the smaller
++            let l1 = ncz::compress(&labels).len();
++            let grey: Vec<u8> = labels.iter().flat_map(|&v| [v, v, v]).collect(); let l2 = ncz::img::compress_rgb(&grey, w, h, 0).len();
++            let side = l1.min(l2) + pal.len() + ncz::img::compress_rgb(&sh, sw, shh, 0).len();
++            let c0 = ncz::img::compress_rgb(&rgb, w, h, 0).len();
++            // separate residual (+128; out-of-range samples counted as 3-byte escapes)
++            let mut esc = 0usize;
++            let res: Vec<u8> = rgb.iter().zip(&guide).map(|(&p, &g)| { let r = p as i32 - g as i32 + 128; if !(0..=255).contains(&r) { esc += 1; } r.clamp(0, 255) as u8 }).collect();
++            let cb = ncz::img::compress_rgb(&res, w, h, 0).len() + 3 * esc;
++            let cc = ncz::img::compress_rgb_guide(&rgb, w, h, 0, guide.clone());
++            assert!(ncz::img::decompress_rgb_guide(&cc, guide).unwrap() == rgb, "guided round trip failed");
++            let n = (w * h) as f64; let bp = |b: usize| 8.0 * b as f64 / n;
++            println!("{:16} plain {:6.3} | side {:5.3} (labels {:5.3}) | separate residual {:6.3} total {:6.3} ({:+5.1}%) | guided coder {:6.3} total {:6.3} ({:+5.2}%)",
++                name, bp(c0), bp(side), bp(l1.min(l2)), bp(cb), bp(cb + side), 100.0 * ((cb + side) as f64 / c0 as f64 - 1.0), bp(cc.len()), bp(cc.len() + side), 100.0 * ((cc.len() + side) as f64 / c0 as f64 - 1.0));
++            px += n; t0 += c0 as f64; tb += (cb + side) as f64; tc += (cc.len() + side) as f64; tside += side as f64;
++        }
++        println!("TOTAL plain {:.3} | side {:.3} | separate {:.3} ({:+.1}%) | guided {:.3} ({:+.2}%)", 8.0 * t0 / px, 8.0 * tside / px, 8.0 * tb / px, 100.0 * (tb / t0 - 1.0), 8.0 * tc / px, 100.0 * (tc / t0 - 1.0));
++        return;
++    }
+     if a.len() >= 3 && a[1] == "img-hash" {
+         // nczcli img-hash <flags> <a.ppm>...: FNV hash of each compressed stream (regression check)
+         let flags: u8 = a[2].parse().unwrap();
