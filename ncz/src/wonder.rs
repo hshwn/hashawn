@@ -80,20 +80,36 @@ impl Reader<'_> {
 /// The group predictor. Weights file: "NCZP" | u16 C | u16 groups | u16 width | u16 group sizes | u16 channel order
 /// (coding order -> channel) | per group f32 LE: bias (2g) or red(w x cin), red bias, a(w x w x 3 x 3), a bias, b, b bias,
 /// out(2g x w x 3 x 3), out bias. Inputs: earlier groups in coding order, latents / 4.
+/// "NCZC" / "NCZD" (f32 / 8-bit): two-pass checkerboard. Pass 1 codes the anchor half ((x + y) even) of every channel,
+/// group by group; pass 2 the rest. After the header: pass-1 nets for every group (input: anchors of the earlier groups,
+/// then the anchor mask; red is w x (st + 1)), then pass-2 nets (input: earlier groups complete, the group's and later
+/// groups' anchors, then the mask; red is w x (C + 1)). Inputs / 4, the mask too (as trained).
 /// "NCZQ": the same with every weight matrix stored as 8 bits: per row an f32 scale, then the rows' int8 levels; a
 /// weight is level * scale (one f32 multiply, the same everywhere). Biases stay f32. A quarter of the size.
-pub struct Predictor { c: usize, groups: Vec<Vec<usize>>, order: Vec<usize>, nets: Vec<Net>, pub id: u32 }
+pub struct Predictor { c: usize, groups: Vec<Vec<usize>>, order: Vec<usize>, nets: Vec<Net>, nets2: Vec<Net>, cb: bool, pub id: u32 }
 impl Predictor {
     pub fn load(b: &[u8]) -> Option<Predictor> {
-        if b.len() < 10 || !(&b[..4] == b"NCZP" || &b[..4] == b"NCZQ") { return None; }
-        let q8 = &b[..4] == b"NCZQ";
+        let magic = b.get(..4)?;
+        if b.len() < 10 || !matches!(magic, b"NCZP" | b"NCZQ" | b"NCZC" | b"NCZD") { return None; }
+        let q8 = magic == b"NCZQ" || magic == b"NCZD"; let cb = magic == b"NCZC" || magic == b"NCZD";
         let mut r = Reader { b, at: 4 };
         let (c, ng, wd) = (r.u16()?, r.u16()?, r.u16()?);
         let sizes: Vec<usize> = (0..ng).map(|_| r.u16()).collect::<Option<_>>()?;
         let order: Vec<usize> = (0..c).map(|_| r.u16()).collect::<Option<_>>()?;
         if sizes.iter().sum::<usize>() != c || order.iter().any(|&o| o >= c) { return None; }
-        let mut nets = Vec::new(); let mut groups = Vec::new(); let mut st = 0;
-        for &g in &sizes {
+        let mut nets = Vec::new(); let mut nets2 = Vec::new(); let mut groups = Vec::new(); let mut st = 0;
+        let conv = |r: &mut Reader, cin: usize, g: usize| -> Option<Net> {
+            let red = Conv { ci: cin, co: wd, k: 1, w: r.mat(wd, cin, q8)?, b: r.f32s(wd)? };
+            let a = Conv { ci: wd, co: wd, k: 3, w: r.mat(wd, wd * 9, q8)?, b: r.f32s(wd)? };
+            let bb = Conv { ci: wd, co: wd, k: 3, w: r.mat(wd, wd * 9, q8)?, b: r.f32s(wd)? };
+            let out = Conv { ci: wd, co: 2 * g, k: 3, w: r.mat(2 * g, wd * 9, q8)?, b: r.f32s(2 * g)? };
+            Some(Net::Conv { red, a, b: bb, out })
+        };
+        if cb {
+            for &g in &sizes { groups.push(order[st..st + g].to_vec()); nets.push(conv(&mut r, st + 1, g)?); st += g; }
+            for &g in &sizes { nets2.push(conv(&mut r, c + 1, g)?); }
+        }
+        for &g in if cb { &[][..] } else { &sizes[..] } {
             groups.push(order[st..st + g].to_vec());
             if st == 0 { nets.push(Net::Bias(r.f32s(2 * g)?)); }
             else {
@@ -107,17 +123,31 @@ impl Predictor {
         }
         if r.at != b.len() { return None; }
         let mut id = 0x811c_9dc5u32; for &x in b { id = (id ^ x as u32).wrapping_mul(0x0100_0193); }
-        Some(Predictor { c, groups, order, nets, id })
+        Some(Predictor { c, groups, order, nets, nets2, cb, id })
     }
     pub fn channels(&self) -> usize { self.c }
     /// Raw (mean, log-scale) for group g: 2 x g planes.
-    fn raw(&self, lat: &[i32], h: usize, w: usize, g: usize) -> Vec<f32> {
+    fn raw(&self, lat: &[i32], h: usize, w: usize, g: usize, pass: usize) -> Vec<f32> {
         let hw = h * w; let st: usize = self.groups[..g].iter().map(|v| v.len()).sum(); let n = self.groups[g].len();
-        match &self.nets[g] {
+        let net = if pass == 0 { &self.nets[g] } else { &self.nets2[g] };
+        match net {
             Net::Bias(b) => { let mut o = vec![0f32; 2 * n * hw]; for k in 0..2 * n { for v in &mut o[k * hw..(k + 1) * hw] { *v = b[k]; } } o }
             Net::Conv { red, a, b, out } => {
-                let mut x = vec![0f32; st * hw];
-                for (j, &ch) in self.order[..st].iter().enumerate() { for p in 0..hw { x[j * hw + p] = lat[ch * hw + p] as f32 / 4.0; } }
+                let anchor = |p: usize| (p / w + p % w) % 2 == 0;
+                let x = if !self.cb {
+                    let mut x = vec![0f32; st * hw];
+                    for (j, &ch) in self.order[..st].iter().enumerate() { for p in 0..hw { x[j * hw + p] = lat[ch * hw + p] as f32 / 4.0; } }
+                    x
+                } else {
+                    // pass 0: anchors of groups < g, mask; pass 1: groups < g whole, the rest's anchors, mask
+                    let nin = if pass == 0 { st } else { self.c };
+                    let mut x = vec![0f32; (nin + 1) * hw];
+                    for (j, &ch) in self.order[..nin].iter().enumerate() {
+                        for p in 0..hw { if (pass == 1 && j < st) || anchor(p) { x[j * hw + p] = lat[ch * hw + p] as f32 / 4.0; } }
+                    }
+                    for p in 0..hw { if anchor(p) { x[nin * hw + p] = 0.25; } }
+                    x
+                };
                 let mut t = red.run(&x, h, w); lrelu(&mut t);
                 let mut u = a.run(&t, h, w); lrelu(&mut u); for (p, q) in t.iter_mut().zip(&u) { *p += *q; }
                 let mut u = b.run(&t, h, w); lrelu(&mut u); for (p, q) in t.iter_mut().zip(&u) { *p += *q; }
@@ -128,8 +158,9 @@ impl Predictor {
 }
 impl GroupModel for Predictor {
     fn groups(&self) -> &[Vec<usize>] { &self.groups }
-    fn predict(&self, lat: &[i32], _c: usize, h: usize, w: usize, g: usize) -> (Vec<i16>, Vec<u8>, Vec<u8>) {
-        let hw = h * w; let n = self.groups[g].len(); let r = self.raw(lat, h, w, g);
+    fn passes(&self) -> usize { if self.cb { 2 } else { 1 } }
+    fn predict(&self, lat: &[i32], _c: usize, h: usize, w: usize, g: usize, pass: usize) -> (Vec<i16>, Vec<u8>, Vec<u8>) {
+        let hw = h * w; let n = self.groups[g].len(); let r = self.raw(lat, h, w, g, pass);
         let mu = r[..n * hw].iter().map(|&m| (m * 16.0).round().clamp(-32767.0, 32767.0) as i16).collect();
         let qs = r[n * hw..].iter().map(|&l| bucket(l)).collect();
         let qs2 = r[n * hw..].iter().map(|&l| bucket(l + LN_1_5)).collect();

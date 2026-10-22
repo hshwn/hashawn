@@ -44,6 +44,7 @@ struct Model {
     pub bits: [f64; 4], chbits: Vec<f64>,
     /// A predictor's mean (x16) and scale buckets (two offsets) per latent, used as context (and the mean as prediction).
     aux: Option<(Vec<i16>, Vec<u8>, Vec<u8>)>, pred: i32,
+    sel: Option<bool>,       // checkerboard pass being coded (None: plain raster)
 }
 
 impl Model {
@@ -52,7 +53,7 @@ impl Model {
         for v in mix1.iter_mut().chain(mix2.iter_mut()) { *v = 65536 * 3 / 10; }
         Model { c, h, w, lat: vec![0; c * h * w], cls: vec![0; c], s16: vec![1; c], esum: vec![0; h * w], enext: vec![0; h * w], ecount: 0, prev: Vec::new(),
             sm: vec![SM_INIT; 1 << TBITS], mix1, mix2, apm: Apm::new(ND * 17),
-            ctx: [0; NSETS], sctx: [0; NSETS], st: [0; N_IN], sidx: [0; NSETS], ch: 0, qexp: 0, qloc: 0, bits: [0.0; 4], chbits: vec![0.0; c], aux: None, pred: 0 }
+            ctx: [0; NSETS], sctx: [0; NSETS], st: [0; N_IN], sidx: [0; NSETS], ch: 0, qexp: 0, qloc: 0, bits: [0.0; 4], chbits: vec![0.0; c], aux: None, pred: 0, sel: None }
     }
 
     #[inline(always)] fn decide<I: BitIo>(&mut self, io: &mut I, d: usize, want: u32) -> u32 {
@@ -100,7 +101,14 @@ impl Model {
         let qexp = q16((r * s16) >> 10) as u32;              // expected |y| here, x4
         let qexp3 = q16((r3 * s16) >> 10) as u32;
         let qr = q16(r >> 5) as u32;                           // the ratio alone, x8
-        let loc = 2 * vw.abs() + 2 * vn.abs() + vnw.abs() + vne.abs();
+        // same-channel activity from the neighbours that are decoded: raster order uses W N NW NE; on a checkerboard
+        // the anchors see their diagonals and two-away neighbours, the rest all four sides (anchors, done in pass 1)
+        let get = |xx: isize, yy: isize| -> i32 { if xx < 0 || yy < 0 || xx >= w as isize || yy >= h as isize { 0 } else { self.lat[base + yy as usize * w + xx as usize] } };
+        let loc = match self.sel {
+            None => 2 * vw.abs() + 2 * vn.abs() + vnw.abs() + vne.abs(),
+            Some(true) => 2 * vnw.abs() + 2 * vne.abs() + vww.abs() + vnn.abs(),
+            Some(false) => vw.abs() + vn.abs() + get(xi + 1, yi).abs() + get(xi, yi + 1).abs() + vnw.abs() + vne.abs(),
+        };
         let qloc = q16(loc) as u32;
         let qlocn = q16((loc * 16 * 4) / (6 * s16)) as u32;    // relative to the channel's size, x4
         let cb = (self.ecount.min(15) as u32 + 3) / 4;
@@ -154,16 +162,22 @@ impl Model {
     }
 
     /// One channel, every position, then its energy joins the cross-channel map.
-    fn channel<I: BitIo>(&mut self, io: &mut I, src: &[i16], ch: usize) {
-        let (h, w) = (self.h, self.w);
+    fn channel<I: BitIo>(&mut self, io: &mut I, src: &[i16], ch: usize) { self.channel_part(io, src, ch, None, true) }
+    /// The positions of one channel picked by `sel` (None: all; Some(true): the checkerboard's anchors, (x + y) even;
+    /// Some(false): the rest). `done`: the channel is now complete, its energy joins the cross-channel map.
+    fn channel_part<I: BitIo>(&mut self, io: &mut I, src: &[i16], ch: usize, sel: Option<bool>, done: bool) {
+        let (h, w) = (self.h, self.w); self.sel = sel;
         for y in 0..h { for x in 0..w {
+            if let Some(a) = sel { if ((x + y) % 2 == 0) != a { continue; } }
             let i = ch * h * w + y * w + x;
             let v = self.value(io, ch, x, y, src[i] as i32);
             self.lat[i] = v;
-            self.enext[y * w + x] = ((v.abs() * 16) << 8) / self.s16[ch];
         } }
-        for p in 0..h * w { self.esum[p] += self.enext[p].min(256 * 64); }
-        self.ecount += 1; self.prev.push(ch);
+        if done {
+            for p in 0..h * w { self.enext[p] = ((self.lat[ch * h * w + p].abs() * 16) << 8) / self.s16[ch]; }
+            for p in 0..h * w { self.esum[p] += self.enext[p].min(256 * 64); }
+            self.ecount += 1; self.prev.push(ch);
+        }
     }
 
     /// Group by group: the model predicts each group from the groups already decoded, then the group is coded.
@@ -171,9 +185,10 @@ impl Model {
         let n = self.c * self.h * self.w; let hw = self.h * self.w;
         self.aux = Some((vec![0; n], vec![0; n], vec![0; n]));
         let (mut tp, mut tc) = (0.0f64, 0.0f64); let timing = cfg!(not(target_arch = "wasm32")) && std::env::var("LAT_TIMING").is_ok();
-        for (g, chans) in gm.groups().iter().enumerate() {
+        let passes = gm.passes();
+        for pass in 0..passes { for (g, chans) in gm.groups().iter().enumerate() {
             let t0 = if timing { Some(std::time::Instant::now()) } else { None };
-            let (mu, qs, qs2) = gm.predict(&self.lat, self.c, self.h, self.w, g);
+            let (mu, qs, qs2) = gm.predict(&self.lat, self.c, self.h, self.w, g, pass);
             if let Some(t) = t0 { tp += t.elapsed().as_secs_f64(); }
             let t1 = if timing { Some(std::time::Instant::now()) } else { None };
             if let Some((am, aq, aq2)) = &mut self.aux {
@@ -183,9 +198,10 @@ impl Model {
                     aq2[ch * hw..(ch + 1) * hw].copy_from_slice(&qs2[k * hw..(k + 1) * hw]);
                 }
             }
-            for &ch in chans { self.channel(io, src, ch); }
+            let sel = if passes == 1 { None } else { Some(pass == 0) };
+            for &ch in chans { self.channel_part(io, src, ch, sel, pass + 1 == passes); }
             if let Some(t) = t1 { tc += t.elapsed().as_secs_f64(); }
-        }
+        } }
         if timing { eprintln!("predictor {tp:.2}s  coding {tc:.2}s"); }
     }
 
@@ -292,9 +308,11 @@ pub fn decompress(blob: &[u8], prior: Option<&Prior>) -> Option<(Vec<i16>, usize
 pub trait GroupModel {
     /// Channel groups in coding order.
     fn groups(&self) -> &[Vec<usize>];
+    /// 1: each group whole; 2: checkerboard (every group's anchors first, then every group's rest).
+    fn passes(&self) -> usize { 1 }
     /// For group `g`, from the latents decoded so far (earlier groups filled, the rest zero): per channel of the group
     /// (in group order) x position: mean x16, scale bucket, scale bucket at 1.5x.
-    fn predict(&self, lat: &[i32], c: usize, h: usize, w: usize, g: usize) -> (Vec<i16>, Vec<u8>, Vec<u8>);
+    fn predict(&self, lat: &[i32], c: usize, h: usize, w: usize, g: usize, pass: usize) -> (Vec<i16>, Vec<u8>, Vec<u8>);
 }
 
 pub const VERSION_GROUPS: u8 = 2;

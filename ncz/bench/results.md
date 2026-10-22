@@ -866,3 +866,20 @@ q4, 15k steps: train crops 0.512 -> 0.480 bpp, but Kodak 8: Gaussian 0.645 -> 0.
 0.122; teacher 0.074), NCZY 0.6205 -> 0.6271, plus z 186 B a photo (0.0038 bpp). Not worth porting. The teacher's edge
 on the strong channels comes from its autoregressive context (causal neighbours across all channels), not its
 hyperprior. The HPCM rerun is moot until that changes.
+
+### Two-pass checkerboard predictor (2026-10-22)
+
+`pred.py CB=1`: pass 1 codes the anchor half ((x + y) even) of every channel group by group from the anchors decoded so
+far; pass 2 the rest, each group from ALL anchors (every channel, four sides) plus the complete earlier groups. 1.91M
+params, 29 ms/step, 15k steps. Rust: NCZC/NCZD predictor formats, `GroupModel::passes`, NCZY codes each pass's positions
+(one-pass streams unchanged, checked byte for byte), exact round trip on Kodak 8.
+
+| q4, Kodak 8 | Gaussian bpp (strongest 8 ch) | NCZY bpp |
+|---|---|---|
+| one-pass predictor | 0.645 (0.126) | 0.6201 |
+| checkerboard | 0.610 (0.099) | 0.6105; with checkerboard-aware neighbour contexts 0.6102 |
+| teacher's own model | 0.567 (0.074) | — |
+
+The raw model gains 5.6%, the coder only 1.6%: the context mixer's own neighbour contexts were already finding most of
+that spatial information (one-pass: coder 4% under its Gaussian; checkerboard: equal). Costs 2x predictor weights
+(~1.4 MB packed vs 0.64) and 2x predictor time. Not shipped; the Rust path stays.

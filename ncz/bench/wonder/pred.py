@@ -63,6 +63,30 @@ class Predictor(nn.Module):
         mu = torch.cat([o[:, : o.shape[1] // 2] for o in outs], 1); ls = torch.cat([o[:, o.shape[1] // 2:] for o in outs], 1)
         return yo, mu, ls                    # all in coding order
 
+# CB=1: two-pass checkerboard. Pass 1 codes the anchor half ((x + y) even) of every channel, group by group, each group
+# from the anchors decoded so far; pass 2 the other half, group by group, from ALL anchors (every channel, neighbours
+# on all four sides) plus the groups already complete. Inputs are masked latents plus the anchor mask.
+CB = bool(os.environ.get("CB"))
+class CBPredictor(nn.Module):
+    def __init__(s, C):
+        super().__init__(); s.C = C; s.groups = GROUPS[C]
+        s.register_buffer("order", torch.arange(C))
+        starts = np.cumsum([0] + s.groups[:-1]).tolist()
+        s.p1 = nn.ModuleList([GroupNet(st + 1, g) for st, g in zip(starts, s.groups)])        # anchors of groups < g, mask
+        s.p2 = nn.ModuleList([GroupNet(C + 1, g) for g in s.groups])                          # see forward
+    def forward(s, y, feats=None):
+        yo = y[:, s.order]; B, C, H, W = yo.shape
+        a = ((torch.arange(H, device=y.device)[:, None] + torch.arange(W, device=y.device)[None, :]) % 2 == 0).to(yo.dtype)[None, None]  # anchors
+        m = a.expand(B, 1, H, W); ya = yo * a
+        mu1, ls1, mu2, ls2 = [], [], [], []; st = 0
+        for g, n1, n2 in zip(s.groups, s.p1, s.p2):
+            o1 = n1(torch.cat([ya[:, :st], m], 1), (H, W))
+            # pass 2 input: groups < g complete, groups >= g anchors only
+            o2 = n2(torch.cat([yo[:, :st], ya[:, st:], m], 1), (H, W))
+            mu1.append(o1[:, :g]); ls1.append(o1[:, g:]); mu2.append(o2[:, :g]); ls2.append(o2[:, g:]); st += g
+        mu = torch.cat(mu1, 1) * a + torch.cat(mu2, 1) * (1 - a); ls = torch.cat(ls1, 1) * a + torch.cat(ls2, 1) * (1 - a)
+        return yo, mu, ls
+
 def nll_bits(y, mu, ls):
     s = torch.exp(ls.clamp(max=10)).clamp_min(0.11); n = torch.distributions.Normal(mu, s)    # clamp: exp overflow -> inf * 0 = NaN gradients
     p = (n.cdf(y + 0.5) - n.cdf(y - 0.5)).clamp_min(1e-9)
@@ -126,7 +150,7 @@ def setup(wpath, idir, L):
     C = lats[0].shape[0]                     # fixed channel order: strongest first, over the training photos
     order = torch.argsort(torch.stack([l.abs().float().mean((1, 2)) for l in lats]).mean(0), descending=True)
     nh = feats[0].shape[0] if HYPER else 0
-    P = Predictor(C, nh).to(dev); P.order.copy_(order)
+    P = (CBPredictor(C) if CB else Predictor(C, nh)).to(dev); P.order.copy_(order)
     if HYPER:   # features normalised to unit spread per channel
         sd_ = torch.stack([f.float().pow(2).mean((1, 2)) for f in feats[:200]]).mean(0).sqrt().clamp_min(1e-3)
         P.fscale.copy_((1 / sd_).view(1, -1, 1, 1))
@@ -173,7 +197,7 @@ if __name__ == "__main__":
     elif cmd == "dump":
         T = teacher(sys.argv[2]); sd = torch.load(sys.argv[3]); C = sd["order"].numel()
         nh = sd["nets.0.red.weight"].shape[1] if "nets.0.red.weight" in sd else 0
-        P = Predictor(C, nh).to(dev); P.load_state_dict(sd); P.eval()
+        P = (CBPredictor(C) if "p1.0.red.weight" in sd else Predictor(C, nh)).to(dev); P.load_state_dict(sd); P.eval()
         kd, od = sys.argv[4], sys.argv[5]; os.makedirs(od, exist_ok=True)
         q = int(os.environ.get("Q", "0")) or int(os.path.basename(sys.argv[2]).split("-")[2])
         inv = torch.argsort(P.order)
