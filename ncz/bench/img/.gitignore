@@ -2,3 +2,4 @@ kodak/
 raw/
 *.out
 out_combo/*.png
+out_adapt/*.png

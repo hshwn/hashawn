@@ -506,6 +506,19 @@ mod tests {
         assert!(compress(&rgb[..48 * 48 * 3], 48, 48, 2).is_none());
     }
     #[test]
+    fn adaptive_allowance_round_trip() {
+        // flat half then busy half: errors stay within kmax, and busy areas get the larger allowance
+        let (w, h) = (64, 64); let mut r = Rng(5); let mut rgb = vec![0u8; w * h * 3];
+        for y in 0..h { for x in 0..w { for c in 0..3 { let busy = if x >= 32 { 40.0 * r.gauss() } else { 0.0 };
+            rgb[3 * (y * w + x) + c] = (120.0 + 10.0 * c as f64 + busy).round().clamp(0.0, 255.0) as u8; } } }
+        let z = img::compress_rgb_allow(&rgb, w, h, 1, 1, [6, 6, 8], 7);
+        let (back, _, _, _) = img::decompress_rgb(&z).unwrap();
+        let err = |x0: usize, x1: usize| (0..h).flat_map(|y| (x0..x1).flat_map(move |x| (0..3).map(move |c| 3 * (y * w + x) + c))).map(|i| (rgb[i] as i32 - back[i] as i32).abs()).max().unwrap();
+        eprintln!("flat {} busy {}", err(0, 28), err(32, 64));
+        assert!(err(0, 28) <= 1 && err(32, 64) <= 6 && err(32, 64) > 1);   // columns next to the busy half may borrow its allowance
+        assert!(z.len() < img::compress_rgb_flags(&rgb, w, h, 1, 7).len());
+    }
+    #[test]
     fn split_allowance_round_trip() {
         // green within +-1, red and blue within +-6, learned models; header carries kc
         let (w, h) = (64, 48); let mut r = Rng(3); let mut rgb = vec![0u8; w * h * 3];

@@ -587,3 +587,28 @@ normal viewing; the only fair score for grain mode, whose grain is new by design
 - Grain mode on top: 8% smaller again; pixel scores rise by design (new grain).
 - Near-lossless (+-1) beats JPEG XL; from +-2 down, JPEG XL wins every photo at matched size. A max-error coder spends
   bits evenly; a transform codec puts its error where eyes do not look. By eye, at 2x on the crops, all five look alike.
+
+### Context-adaptive allowance, judged by SSIMULACRA2 (2026-10-22)
+
+`F_ADAPT_K` (flag 32, three header bytes kmax / kcmax / t): each sample's allowance is
+min(kmax, k + activity / t), activity = five absolute differences among already-decoded neighbours, so the decoder
+derives it and it costs no bits; errors stay bounded by kmax. Idea: eyes forgive errors in texture, not in flat areas.
+CIEDE2000 cannot judge this (it counts every pixel's error the same), so quality is SSIMULACRA2 (100 identical, ~90
+visually lossless; checked: JPEG XL distance 1 scores 87 on kodim03). Same 8 Kodak photos, JPEG XL matched by size:
+
+| config | bpp | max err | SSIMULACRA2 | JPEG XL same size | we win |
+|---|---:|---:|---:|---:|---:|
+| +-1 | 5.84 | 1 | 95.46 | 95.81 | 3/8 |
+| +-2 | 4.54 | 2 | 92.15 | 94.18 | 0/8 |
+| +-3 | 3.77 | 3 | 88.30 | 92.65 | 0/8 |
+| +-4 | 3.24 | 4 | 83.79 | 91.21 | 0/8 |
+| split 2/6 learned | 2.94 | 6 | 84.83 | 90.17 | 0/8 |
+| adaptive 1..4, t 8, learned | 3.89 | 4 | 89.68 | 92.87 | 0/8 |
+| adaptive 1..6, t 16, learned | 4.21 | 6 | 90.02 | 93.53 | 0/8 |
+| adaptive 2..8, t 8, learned | 2.95 | 8 | 82.87 | 90.09 | 0/8 |
+
+Adaptive beats uniform +-k at matched size by ~1.4 points (3.89 bpp: 89.7 vs ~88.3 for uniform). Split brightness/colour
+helps too. But to look as good as JPEG XL at ~3 bpp (SSIMULACRA2 ~90) this coder needs ~4.3 bpp, ~40% more. Errors
+added sample by sample read as fine noise everywhere; a transform codec removes detail the eye does not track. The gap
+is structural, not a tuning matter: this coder's ground is lossless and near-lossless (+-1), where it leads. By eye at
+2x the crops (+-3, adaptive, JPEG XL) look alike.

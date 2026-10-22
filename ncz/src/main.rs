@@ -60,13 +60,15 @@ fn main() {
         println!("TOTAL exact {:.3}  +-{k} {:.3}  grain mode {:.3} bpp (fingerprints {:.3} bpp)  {:+.1}% vs exact, {:+.1}% vs +-{k}", 8.0 * b_ex / px, 8.0 * b_k / px, 8.0 * b_g / px, 8.0 * b_fp / px, 100.0 * (b_g / b_ex - 1.0), 100.0 * (b_g / b_k - 1.0));
         return;
     }
-    if (a.len() == 5 || a.len() == 7) && a[1] == "img-rt" {
+    if (a.len() == 5 || a.len() == 7 || a.len() == 10) && a[1] == "img-rt" {
         // nczcli img-rt <k> <in.ppm> <out.ppm> [<kc> <flags>]: pixel mode round trip (red/blue within +-kc if given),
         // writes the decoded picture, prints the stream size in bytes
         let k: u8 = a[2].parse().expect("k");
         let (kc, flags) = if a.len() == 7 { (a[5].parse().expect("kc"), a[6].parse().expect("flags")) } else { (k, 0u8) };
         let (rgb, w, h) = ncz::img::read_ppm(&fs::read(&a[3]).expect("read")).expect("not a P6 PPM");
-        let c = ncz::img::compress_rgb_split(&rgb, w, h, k, kc, flags);
+        // optional adaptive allowance: <kmax> <kcmax> <t>
+        let ad: [u8; 3] = if a.len() == 10 { [a[7].parse().unwrap(), a[8].parse().unwrap(), a[9].parse().unwrap()] } else { [k, kc, 0] };
+        let c = ncz::img::compress_rgb_allow(&rgb, w, h, k, kc, ad, flags);
         let (back, _, _, _) = ncz::img::decompress_rgb(&c).expect("decode");
         let mut v = format!("P6\n{w} {h}\n255\n").into_bytes(); v.extend_from_slice(&back); fs::write(&a[4], v).expect("write");
         println!("{}", c.len());
