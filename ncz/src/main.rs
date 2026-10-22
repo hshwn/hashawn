@@ -60,14 +60,26 @@ fn main() {
         println!("TOTAL exact {:.3}  +-{k} {:.3}  grain mode {:.3} bpp (fingerprints {:.3} bpp)  {:+.1}% vs exact, {:+.1}% vs +-{k}", 8.0 * b_ex / px, 8.0 * b_k / px, 8.0 * b_g / px, 8.0 * b_fp / px, 100.0 * (b_g / b_ex - 1.0), 100.0 * (b_g / b_k - 1.0));
         return;
     }
-    if a.len() == 5 && a[1] == "img-rt" {
-        // nczcli img-rt <k> <in.ppm> <out.ppm>: pixel mode round trip, writes the decoded picture, prints the stream size in bytes
+    if (a.len() == 5 || a.len() == 7) && a[1] == "img-rt" {
+        // nczcli img-rt <k> <in.ppm> <out.ppm> [<kc> <flags>]: pixel mode round trip (red/blue within +-kc if given),
+        // writes the decoded picture, prints the stream size in bytes
         let k: u8 = a[2].parse().expect("k");
+        let (kc, flags) = if a.len() == 7 { (a[5].parse().expect("kc"), a[6].parse().expect("flags")) } else { (k, 0u8) };
         let (rgb, w, h) = ncz::img::read_ppm(&fs::read(&a[3]).expect("read")).expect("not a P6 PPM");
-        let c = ncz::img::compress_rgb(&rgb, w, h, k);
+        let c = ncz::img::compress_rgb_split(&rgb, w, h, k, kc, flags);
         let (back, _, _, _) = ncz::img::decompress_rgb(&c).expect("decode");
         let mut v = format!("P6\n{w} {h}\n255\n").into_bytes(); v.extend_from_slice(&back); fs::write(&a[4], v).expect("write");
         println!("{}", c.len());
+        return;
+    }
+    if a.len() == 7 && a[1] == "grain-rt" {
+        // nczcli grain-rt <k> <kc> <flags> <in.ppm> <out.ppm>: grain mode round trip, writes the output, prints bytes
+        let (k, kc, flags): (u8, u8, u8) = (a[2].parse().unwrap(), a[3].parse().unwrap(), a[4].parse().unwrap());
+        let (rgb, w, h) = ncz::img::read_ppm(&fs::read(&a[5]).expect("read")).expect("not a P6 PPM");
+        let e = ncz::grain::compress_with(&rgb, w, h, k, kc, flags).expect("picture under 64x64");
+        let (back, _, _) = ncz::grain::decompress(&e.stream).expect("decode");
+        let mut v = format!("P6\n{w} {h}\n255\n").into_bytes(); v.extend_from_slice(&back); fs::write(&a[6], v).expect("write");
+        println!("{}", e.stream.len());
         return;
     }
     if a.len() >= 3 && a[1] == "img-hash" {

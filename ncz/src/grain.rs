@@ -454,7 +454,10 @@ pub struct Encoded { pub stream: Vec<u8>, pub clean: Vec<u8>, pub fp: Fingerprin
 
 /// Grain mode: clean picture within +-k (k >= 1 typical: 2) + fingerprint. LOOKS THE SAME, NOT EXACT.
 /// None for pictures under 64x64 (too small to measure grain); use the exact or +-k pixel mode for those.
-pub fn compress(rgb: &[u8], w: usize, h: usize, k: u8) -> Option<Encoded> {
+pub fn compress(rgb: &[u8], w: usize, h: usize, k: u8) -> Option<Encoded> { compress_with(rgb, w, h, k, k, 0) }
+
+/// Grain mode with the clean picture's green within +-k, red and blue within +-kc, and pixel-mode `flags` (learned models).
+pub fn compress_with(rgb: &[u8], w: usize, h: usize, k: u8, kc: u8, flags: u8) -> Option<Encoded> {
     if w < 64 || h < 64 { return None; }
     let (clean_o, _psd) = separate(rgb, w, h);
     let mut seed = 0xcbf2_9ce4_8422_2325u64; for &b in rgb.iter().step_by(97) { seed = (seed ^ b as u64).wrapping_mul(0x100_0000_01b3); }
@@ -462,7 +465,7 @@ pub fn compress(rgb: &[u8], w: usize, h: usize, k: u8) -> Option<Encoded> {
     // no measurable grain (digital art, clean renders): nothing to strip or regrow, the picture itself goes at +-k
     let grainy = fp.strength.iter().map(|s| s[0]).sum::<f64>() / NB as f64 >= NO_GRAIN;
     let clean = if grainy { from_opp(&clean_o, w * h) } else { fp = Fingerprint { strength: [[0.0; 3]; NB], psd: vec![[0.0; PS * PS]; 3], chol: [[0.0; 3]; 3], quant: [[0.0; NZ]; 3], env: 0.0, seed: 0 }; rgb.to_vec() };
-    let pix = img::compress_rgb(&clean, w, h, k);
+    let pix = img::compress_rgb_split(&clean, w, h, k, kc, flags);
     let fpz = crate::compress(&fp.encode());
     let mut out = Vec::with_capacity(18 + fpz.len() + pix.len());
     out.extend_from_slice(MAGIC); out.push(VERSION); out.push(k);
@@ -501,5 +504,15 @@ mod tests {
         let n0 = 18 + fingerprint_bytes(&e.stream); let (clean, _, _, _) = img::decompress_rgb(&e.stream[n0..]).unwrap();
         assert!(clean.iter().zip(&e.clean).all(|(x, y)| (*x as i32 - *y as i32).abs() <= 2));
         assert!(compress(&rgb[..48 * 48 * 3], 48, 48, 2).is_none());
+    }
+    #[test]
+    fn split_allowance_round_trip() {
+        // green within +-1, red and blue within +-6, learned models; header carries kc
+        let (w, h) = (64, 48); let mut r = Rng(3); let mut rgb = vec![0u8; w * h * 3];
+        for i in 0..w * h { for c in 0..3 { rgb[3 * i + c] = (100.0 + (i % w) as f64 + 30.0 * c as f64 + 6.0 * r.gauss()).round().clamp(0.0, 255.0) as u8; } }
+        let z = img::compress_rgb_split(&rgb, w, h, 1, 6, 7);
+        let (back, w2, h2, _) = img::decompress_rgb(&z).unwrap(); assert_eq!((w2, h2), (w, h));
+        for i in 0..w * h { for c in 0..3 { let e = (rgb[3 * i + c] as i32 - back[3 * i + c] as i32).abs(); assert!(e <= if c == 1 { 1 } else { 6 }); } }
+        assert!(z.len() < img::compress_rgb_flags(&rgb, w, h, 1, 7).len());
     }
 }

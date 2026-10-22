@@ -21,7 +21,9 @@ const HEADER: usize = 4 + 1 + 1 + 1 + 4 + 4;
 pub const F_PLANAR: u8 = 1; pub const F_LEARNED_COLOUR: u8 = 2; pub const F_LEARNED_GREEN: u8 = 4;
 /// The pixels carry a fourth channel, alpha (RGBA): coded first, from its own neighbours only.
 pub const F_ALPHA: u8 = 8;
-const ALL_FLAGS: u8 = F_PLANAR | F_LEARNED_COLOUR | F_LEARNED_GREEN | F_ALPHA;
+/// Separate allowance for colour: red and blue within +-kc (one extra header byte), green (brightness) within +-k.
+pub const F_SPLIT_K: u8 = 16;
+const ALL_FLAGS: u8 = F_PLANAR | F_LEARNED_COLOUR | F_LEARNED_GREEN | F_ALPHA | F_SPLIT_K;
 /// Red and blue lean on green; green and alpha only on their own neighbours.
 #[inline(always)] fn colour(c: usize) -> bool { c == 0 || c == 2 }
 
@@ -101,7 +103,7 @@ impl Apm {
 }
 
 struct Model {
-    w: usize, h: usize, k: i32, planar: bool,
+    w: usize, h: usize, k: i32, kc: i32, planar: bool,     // k: green and alpha; kc: red and blue
     rec: Vec<Vec<u8>>,                 // reconstructed samples per channel (R, G, B, alpha)
     res: Vec<Vec<i16>>,                // quantised residual per sample
     err: Vec<Vec<u16>>,                // per predictor abs error (x8), a two-row ring: [(pos % 2w) * NP + i]
@@ -182,7 +184,7 @@ impl Model {
         assert_eq!(PRIOR.len(), 2 * (mix.len() + mix2.len() + fin.len()));
         let mut it = PRIOR.chunks_exact(2).map(|b| (i16::from_le_bytes([b[0], b[1]]) as i32) << 1);
         for v in mix.iter_mut().chain(mix2.iter_mut()).chain(fin.iter_mut()) { *v = it.next().unwrap(); }
-        Model { w, h, k, planar, mix2, mix3, offc: 0, pmix3: 2048, fin, fin_st: [0; 3], fin_base: 0, eqc: 0, mixbase2: 0, pmix2: 2048, nets, gnet,
+        Model { kc: k, w, h, k, planar, mix2, mix3, offc: 0, pmix3: 2048, fin, fin_st: [0; 3], fin_base: 0, eqc: 0, mixbase2: 0, pmix2: 2048, nets, gnet,
             rec: vec![vec![0; n]; nch], res: vec![vec![0; n]; nch],
             err: vec![vec![0; 2 * w * NP]; nch], nch, order,
             bias_sum: vec![0; 4 * 16 * 27], bias_n: vec![0; 4 * 16 * 27],
@@ -370,9 +372,10 @@ impl Model {
         self.apm2_ctx = c * 27 + sgn(rw) * 9 + sgn(rn) * 3 + sgn(xres);
 
         // residual, quantised for near-lossless
-        let step = 2 * self.k + 1;
+        let kk = if colour(c) { self.kc } else { self.k };
+        let step = 2 * kk + 1;
         let er = value as i32 - pred;
-        let eqv = if self.k == 0 { er } else if er >= 0 { (er + self.k) / step } else { -((-er + self.k) / step) };
+        let eqv = if kk == 0 { er } else if er >= 0 { (er + kk) / step } else { -((-er + kk) / step) };
         let m = eqv.unsigned_abs();
         // binarise: zero? / size (unary over log2) / mantissa / sign
         let z = self.decide(io, 0, 0, (m == 0) as u32);
@@ -417,23 +420,27 @@ impl Model {
     }
 }
 
-/// Header: "NCZI" | version | k | flags | w u32 | h u32 | payload.
-fn header(k: u8, flags: u8, w: usize, h: usize) -> Vec<u8> {
-    let mut v = Vec::with_capacity(HEADER);
+/// Header: "NCZI" | version | k | flags | w u32 | h u32 | [kc, with F_SPLIT_K] | payload.
+fn header(k: u8, kc: u8, flags: u8, w: usize, h: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(HEADER + 1);
     v.extend_from_slice(MAGIC); v.push(VERSION); v.push(k); v.push(flags);
     v.extend_from_slice(&(w as u32).to_le_bytes()); v.extend_from_slice(&(h as u32).to_le_bytes());
+    if flags & F_SPLIT_K != 0 { v.push(kc); }
     v
 }
 
 /// Streaming encoder over interleaved samples (3 per pixel, or 4 with F_ALPHA): `step(n)` codes n more units.
-pub struct ImgEncoder { m: Model, e: Enc, px: Vec<u8>, u: usize, k: u8, flags: u8 }
+pub struct ImgEncoder { m: Model, e: Enc, px: Vec<u8>, u: usize, k: u8, kc: u8, flags: u8 }
 impl ImgEncoder {
-    pub fn new(px: Vec<u8>, w: usize, h: usize, k: u8, flags: u8) -> ImgEncoder {
+    pub fn new(px: Vec<u8>, w: usize, h: usize, k: u8, flags: u8) -> ImgEncoder { ImgEncoder::new_split(px, w, h, k, k, flags) }
+    /// Red and blue within +-kc, green (and alpha) within +-k.
+    pub fn new_split(px: Vec<u8>, w: usize, h: usize, k: u8, kc: u8, flags: u8) -> ImgEncoder {
         let flags = if flags & F_LEARNED_COLOUR != 0 { flags | F_PLANAR } else { flags };
+        let flags = if kc != k { flags | F_SPLIT_K } else { flags & !F_SPLIT_K };
         let nch = if flags & F_ALPHA != 0 { 4 } else { 3 };
         assert_eq!(px.len(), w * h * nch);
-        let m = Model::new(w, h, k as i32, flags);
-        ImgEncoder { m, e: Enc { x1: 0, x2: 0xFFFF_FFFF, out: Vec::new() }, px, u: 0, k, flags }
+        let mut m = Model::new(w, h, k as i32, flags); m.kc = kc as i32;
+        ImgEncoder { m, e: Enc { x1: 0, x2: 0xFFFF_FFFF, out: Vec::new() }, px, u: 0, k, kc, flags }
     }
     pub fn units(&self) -> usize { self.m.units() }
     pub fn done(&self) -> usize { self.u }
@@ -445,7 +452,7 @@ impl ImgEncoder {
     pub fn finish(mut self) -> Vec<u8> {
         while self.step(usize::MAX) > 0 {}
         self.e.out.extend_from_slice(&self.e.x1.to_be_bytes());
-        let mut v = header(self.k, self.flags, self.m.w, self.m.h); v.extend_from_slice(&self.e.out); v
+        let mut v = header(self.k, self.kc, self.flags, self.m.w, self.m.h); v.extend_from_slice(&self.e.out); v
     }
 }
 
@@ -459,9 +466,10 @@ impl ImgDecoder {
         let w = u32::from_le_bytes(blob[7..11].try_into().ok()?) as usize; let h = u32::from_le_bytes(blob[11..15].try_into().ok()?) as usize;
         if w == 0 || h == 0 || w.checked_mul(h)? > 1 << 28 { return None; }
         let nch = if flags & F_ALPHA != 0 { 4 } else { 3 };
-        let mut d = Dec { x1: 0, x2: 0xFFFF_FFFF, x: 0, buf: blob[HEADER..].to_vec(), pos: 0 };
+        let (kc, body) = if flags & F_SPLIT_K != 0 { (*blob.get(HEADER)?, HEADER + 1) } else { (k, HEADER) };
+        let mut d = Dec { x1: 0, x2: 0xFFFF_FFFF, x: 0, buf: blob[body..].to_vec(), pos: 0 };
         for _ in 0..4 { d.x = (d.x << 8) | d.next_in(); }
-        let m = Model::new(w, h, k as i32, flags);
+        let mut m = Model::new(w, h, k as i32, flags); m.kc = kc as i32;
         Some(ImgDecoder { m, d, px: vec![0; w * h * nch], u: 0, w, h, k, flags })
     }
     pub fn units(&self) -> usize { self.m.units() }
@@ -478,6 +486,8 @@ impl ImgDecoder {
 /// `flags`: F_PLANAR (green plane first), F_LEARNED_COLOUR (needs planar), F_LEARNED_GREEN; 0 = fastest.
 pub fn compress_rgb(rgb: &[u8], w: usize, h: usize, k: u8) -> Vec<u8> { compress_rgb_flags(rgb, w, h, k, 0) }
 pub fn compress_rgb_flags(rgb: &[u8], w: usize, h: usize, k: u8, flags: u8) -> Vec<u8> { ImgEncoder::new(rgb.to_vec(), w, h, k, flags & !F_ALPHA).finish() }
+/// Green within +-k, red and blue within +-kc (eyes see brightness detail, barely colour detail).
+pub fn compress_rgb_split(rgb: &[u8], w: usize, h: usize, k: u8, kc: u8, flags: u8) -> Vec<u8> { ImgEncoder::new_split(rgb.to_vec(), w, h, k, kc, flags & !F_ALPHA).finish() }
 /// RGBA (4 bytes per pixel).
 pub fn compress_rgba_flags(rgba: &[u8], w: usize, h: usize, k: u8, flags: u8) -> Vec<u8> { ImgEncoder::new(rgba.to_vec(), w, h, k, flags | F_ALPHA).finish() }
 

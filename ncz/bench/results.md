@@ -562,3 +562,28 @@ The colours layer is either cheap and wrong or right and expensive (the label ma
 costs about as much as the +-k picture. Best two-layer (photo colours, 64) is ~15% bigger than +-3 at a similar colour
 error. Side note: at matched size JPEG XL lossy has lower average colour error than the pixel coder's +-k (its
 quantisation is perceptual, ours is a max-error bound), but it smooths the grain away.
+
+### Everything stacked as a lossy mode: learned models + split allowance + grain mode, vs JPEG XL (2026-10-22)
+
+`bench/img/combo.py`, 8 Kodak photos (01 03 05 08 13 19 21 23). New in the coder: `F_SPLIT_K` (flag 16, one header
+byte): green (brightness) within +-k, red and blue within +-kc; old streams unchanged. Every configuration matched by
+JPEG XL lossy (effort 7) at the same size. dE = CIEDE2000 mean; "soft" = after a sigma-1 blur of both (closer to
+normal viewing; the only fair score for grain mode, whose grain is new by design).
+
+| config | bpp | dE | soft | PSNR | JPEG XL same size: dE | soft | PSNR | we win (dE) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| +-1 | 5.84 | 0.69 | 0.20 | 49.96 | 0.83 | 0.25 | 45.52 | 7/8 |
+| +-2 | 4.54 | 1.16 | 0.35 | 45.29 | 0.99 | 0.36 | 43.49 | 0/8 |
+| +-2 learned | 4.48 | 1.16 | 0.35 | 45.30 | 1.00 | 0.37 | 43.39 | 0/8 |
+| +-3 | 3.77 | 1.55 | 0.50 | 42.46 | 1.12 | 0.45 | 42.06 | 0/8 |
+| +-4 | 3.24 | 1.91 | 0.66 | 40.43 | 1.24 | 0.58 | 41.03 | 0/8 |
+| split 2/4 learned | 3.42 | 1.42 | 0.56 | 42.01 | 1.20 | 0.52 | 41.35 | 0/8 |
+| split 2/6 learned | 2.94 | 1.70 | 0.89 | 39.99 | 1.34 | 0.67 | 40.40 | 0/8 |
+| split 3/8 learned | 2.39 | 2.08 | 1.20 | 37.96 | 1.51 | 0.82 | 38.89 | 0/8 |
+| grain + split 2/6 | 2.71 | 1.84 | 0.98 | 38.61 | 1.39 | 0.72 | 39.76 | 0/8 |
+
+- The split allowance is a real gain over uniform +-k: split 2/6 is 9% smaller than +-4 with lower dE (1.70 vs 1.91).
+  Its blurred error is higher though: loose red/blue steps show as slightly blotchy, oversaturated colour.
+- Grain mode on top: 8% smaller again; pixel scores rise by design (new grain).
+- Near-lossless (+-1) beats JPEG XL; from +-2 down, JPEG XL wins every photo at matched size. A max-error coder spends
+  bits evenly; a transform codec puts its error where eyes do not look. By eye, at 2x on the crops, all five look alike.
