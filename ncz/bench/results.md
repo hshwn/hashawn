@@ -644,3 +644,28 @@ Regrowth cuts the bytes by 2.5-3x but wrecks the picture: kodim13's finest band 
 structure (water sparkle, leaf edges); phase-random noise with the right energy and spectrum reads as speckle, by eye
 too. Statistical regrowth works for grain (low-amplitude noise, grain mode), not for real texture. The plain pyramid
 coder is also far behind JPEG XL (57 vs 81 at 2.6 bpp): a base coder needs work too.
+
+### Wonder format, prototype 1: fine detail generated from the coarse picture by small networks (2026-10-22)
+
+`bench/wonder/train.py` (rig, 3090), `bench/wonder/proto1.py`. Two 66k-parameter conv nets (~16k MAC per pixel, half
+resolution inside), trained on 1,071 COCO photos halved in size (kills JPEG blocks); Kodak held out. Input: the
+coarse picture (everything but the finest band, quantisation simulated). P (L2) predicts the finest brightness band:
+error 106 vs 289 for predicting zero (63% of the band's energy explained). T (L1 + local energy + patch critic, noise
+and one stored energy byte per 16x16 block as inputs) generates it. Profiled before training: P 5 ms/step, T 9 ms/step
+at batch 32 (batch 128 only +17% throughput); P 20k steps 1.7 min, T 45k steps 6.9 min.
+
+Kodak 03 05 13 23, pyramid coder of proto.py, SSIMULACRA2 at matched size:
+
+| q | plain bpp / score | + P predictor | + P + T regrowth | JPEG XL at the P size |
+|---|---|---|---|---|
+| 6 | 3.20 / 77.3 | 3.01 / 77.7 | 1.92 / -0.6 | 91.2 |
+| 10 | 2.27 / 62.2 | 2.18 / 63.4 | 1.37 / -4.5 | 87.2 |
+| 16 | 1.63 / 40.2 | 1.64 / 41.4 | 0.99 / -12.3 | 82.1 |
+
+- P helps a little (3-6% fewer bytes at q 6-10, same score).
+- T's texture has real shapes (parrot feathers look right; water reads as water, a little wormy), far better than
+  prototype 0's speckle by eye, but SSIMULACRA2 punishes any regrown detail hard: 46 regrown blocks of 1,536 take
+  kodim23 from 54 to 16. A full-reference metric cannot judge regrowth; the eye has to. Fixed on the way: picture
+  borders (mirror padding; the nets only saw interior crops) and regrowth in smooth areas (strong detail only).
+- The real gap is the base coder: before any texture, at the same bytes JPEG XL scores 87-91 and this pyramid coder
+  54-78. Regrowth cannot close that; the base has to be competitive first.
