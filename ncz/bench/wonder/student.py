@@ -8,6 +8,10 @@
 The teacher's encoder is fixed, so the latents (and the files) do not change: only the decoder is new. Every training
 photo is encoded once (latents kept on the GPU next to the photo); crops are cut in step (latent L x L <-> pixels
 16L x 16L). Loss: MSE against the original photo (the student learns its own best decoding, not the teacher's).
+DISTIL=1 adds the teacher's decoder: MSE to its output (weight DW_OUT; computed once per photo, kept on the GPU as
+uint8) and to its features at 1/8 and 1/4 resolution (its low-resolution layers run alongside, frozen, bf16) through
+1x1 projections, each normalised by the teacher feature's RMS (weight DW_FEAT). The projections are training-only;
+the student is unchanged.
 """
 import os, sys, time
 import torch, torch.nn as nn, torch.nn.functional as F
@@ -28,25 +32,38 @@ class Student(nn.Module):
         s.n = nn.Sequential(nn.Conv2d(M, N, 3, padding=1), nn.LeakyReLU(0.1), Res(N), upb(N, N), upb(N, 64), upb(64, 48), upb(48, 32), nn.Conv2d(32, 3, 3, padding=1))
     def forward(s, y): return s.n(y * s.inv) + 0.5
 
-def setup(wpath, idir, L):
+def setup(wpath, idir, L, keep_teacher=False):
     T = teacher(wpath); ims = load_imgs(idir, 16 * L); lats = []
     t = time.time()
     with torch.no_grad():
         for i, im in enumerate(ims):
             H, W = im.shape[-2:]; H, W = H // 64 * 64, W // 64 * 64; ims[i] = im[:, :H, :W].contiguous()
             lats.append(torch.round(T.g_a(ims[i][None].float() / 255))[0].to(torch.int16))
+    gs = T.g_s if keep_teacher else None; recs = []
+    if keep_teacher:
+        with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
+            for l in lats: recs.append((gs(l[None].float()).float().clamp(0, 1)[0] * 255 + 0.5).to(torch.uint8))
     del T; torch.cuda.empty_cache(); torch.cuda.synchronize()
     print(f"latents of {len(ims)} photos in {time.time() - t:.0f}s", flush=True)
     torch.backends.cudnn.benchmark = True; torch.backends.cuda.matmul.allow_tf32 = True; torch.backends.cudnn.allow_tf32 = True
-    return ims, lats
+    return ims, lats, gs, recs
 
-def pair_batch(ims, lats, B, L):
-    ys, xs = [], []
+T_TAPS, S_TAPS = (2, 4), (3, 4)             # teacher g_s / student layers at 1/8 and 1/4 resolution
+def run_taps(seq, x, taps):
+    feats = []
+    for i, m in enumerate(seq):
+        x = m(x)
+        if i in taps: feats.append(x)
+    return x, feats
+
+def pair_batch(ims, lats, B, L, recs=None):
+    ys, xs, ts = [], [], []
     for _ in range(B):
         k = torch.randint(len(ims), (1,)).item(); y = lats[k]; H, W = y.shape[-2:]
         a, b = torch.randint(H - L + 1, (1,)).item(), torch.randint(W - L + 1, (1,)).item()
         ys.append(y[:, a:a + L, b:b + L]); xs.append(ims[k][:, 16 * a:16 * (a + L), 16 * b:16 * (b + L)])
-    return torch.stack(ys).float(), torch.stack(xs).float() / 255
+        if recs: ts.append(recs[k][:, 16 * a:16 * (a + L), 16 * b:16 * (b + L)])
+    return torch.stack(ys).float(), torch.stack(xs).float() / 255, (torch.stack(ts).float() / 255 if recs else None)
 
 def macs_per_px(net, M):
     tot = 0
@@ -62,18 +79,31 @@ if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd in ("prof", "train"):
         B = int(os.environ.get("BATCH", "16")); L = int(os.environ.get("LCROP", "16"))
-        ims, lats = setup(sys.argv[2], sys.argv[3], L); M = lats[0].shape[0]
+        DISTIL = bool(os.environ.get("DISTIL")); DW_OUT = float(os.environ.get("DW_OUT", "1")); DW_FEAT = float(os.environ.get("DW_FEAT", "0.1"))
+        ims, lats, gs, recs = setup(sys.argv[2], sys.argv[3], L, DISTIL); M = lats[0].shape[0]
         S = Student(M).to(dev, memory_format=torch.channels_last)
         sd_ = torch.stack([l.float().pow(2).mean((1, 2)) for l in lats]).mean(0).sqrt().clamp_min(0.05)
         S.inv.copy_((1 / sd_).view(1, M, 1, 1))
         print(f"student: {sum(p.numel() for p in S.parameters()) / 1e6:.2f}M params, {macs_per_px(S, M) / 1e3:.0f}k MAC per pixel", flush=True)
         LR = float(os.environ.get("LR", "5e-4"))
-        opt = torch.optim.AdamW(S.parameters(), LR, weight_decay=1e-5)
+        proj = nn.ModuleList([nn.Conv2d(c, 192 if M == 192 else 128, 1) for c in (96, 64)]).to(dev, memory_format=torch.channels_last)
+        if DISTIL: gs = gs[:T_TAPS[-1] + 1].to(memory_format=torch.channels_last)     # only the low-resolution part runs per step
+        params = list(S.parameters()) + (list(proj.parameters()) if DISTIL else [])
+        opt = torch.optim.AdamW(params, LR, weight_decay=1e-5)
         def step():
-            y, x = pair_batch(ims, lats, B, L)
-            with torch.autocast("cuda", torch.bfloat16): xh = S(y.contiguous(memory_format=torch.channels_last))
-            loss = F.mse_loss(xh.float(), x); opt.zero_grad(set_to_none=True); loss.backward()
-            torch.nn.utils.clip_grad_norm_(S.parameters(), 0.5); opt.step(); return loss.detach()
+            y, x, xt = pair_batch(ims, lats, B, L, recs); yc = y.contiguous(memory_format=torch.channels_last)
+            with torch.autocast("cuda", torch.bfloat16):
+                if DISTIL:
+                    with torch.no_grad(): _, tf = run_taps(gs, yc, T_TAPS)
+                    xh, sf = run_taps(S.n, yc * S.inv, S_TAPS); xh = xh + 0.5
+                else: xh = S(yc)
+            loss_px = F.mse_loss(xh.float(), x); loss = loss_px
+            if DISTIL:
+                loss = loss + DW_OUT * F.mse_loss(xh.float(), xt)
+                for pj, a, b in zip(proj, sf, tf):
+                    b = b.float(); loss = loss + DW_FEAT * F.mse_loss(pj(a.float()), b) / b.pow(2).mean().clamp_min(1e-6)
+            opt.zero_grad(set_to_none=True); loss.backward()
+            torch.nn.utils.clip_grad_norm_(params, 0.5); opt.step(); return loss_px.detach()
         if os.environ.get("COMPILE"): step = torch.compile(step)
         if cmd == "prof":
             for _ in range(15): step()

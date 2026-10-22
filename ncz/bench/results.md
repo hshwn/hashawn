@@ -738,3 +738,17 @@ clip 0.5, lr 5e-4. Kodak 8, same latents (same file size):
 | student, 30k steps | 34.6 | 29.0 dB |
 
 Visibly softer (bushes, water, feathers, logo edges). Undertrained: train-crop PSNR still climbing at the end.
+
+Distilled student (same 1.35M / 64k MAC): + MSE to the teacher's output (computed once per photo, uint8 on the GPU)
+and to its features at 1/8 and 1/4 resolution (its low-resolution layers run per step; 1x1 projections, RMS-
+normalised, weight 0.1). Profiled: full teacher per step 35.6 ms/step; cached output + low-res features 18.8 ms.
+100k steps, 33 min. Kodak 8, same latents:
+
+| | SSIMULACRA2 | PSNR |
+|---|---|---|
+| teacher decoder (11.8M) | 53.8 | 32.8 dB |
+| student, plain, 30k steps | 34.6 | 29.0 dB |
+| student, distilled, 100k steps | 40.9 | 30.0 dB |
+
++6.3 SSIMULACRA2 / +1.0 dB; parrot feathers mostly back, foliage and water still soft. The remaining 2.8 dB looks
+like capacity (train-crop PSNR flattening at 30.3 near the end of the schedule).
