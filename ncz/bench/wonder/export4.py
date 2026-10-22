@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a student decoder with 4-bit weights for the browser.
+"""Export a student decoder with 4-bit (or QBITS=8) weights for the browser.
 
     python export4.py <student.pt> <out.onnx>        (then: nczcli compress out.onnx out.onnx.ncz)
 
@@ -20,7 +20,7 @@ levels = {}
 with torch.no_grad():
     for name, m in S.named_modules():
         if isinstance(m, stu.QConv):
-            sc = stu.QConv.scale(m.weight); k = torch.clamp(torch.round(m.weight / sc), -8, 7)
+            lo, hi = stu.QConv.levels(); sc = stu.QConv.scale(m.weight); k = torch.clamp(torch.round(m.weight / sc), lo, hi)
             m.weight.copy_(k * sc); levels["S." + name + ".weight"] = (k.to(torch.int8).numpy(), sc.flatten().numpy().astype(np.float32))
 stu.QConv.qat = False
 class Dec(nn.Module):
@@ -42,4 +42,4 @@ for init in g.initializer:
 if done != len(levels): sys.exit(f"matched {done} of {len(levels)} quantised weights (initializer names differ)")
 del g.initializer[:]; g.initializer.extend(inits); rest = list(g.node); del g.node[:]; g.node.extend(nodes + rest)
 onnx.checker.check_model(m); onnx.save(m, sys.argv[2]); os.remove(tmp)
-print(f"{done} 4-bit convs, {sum(v[0].size for v in levels.values()) / 1e6:.2f}M levels, onnx {os.path.getsize(sys.argv[2])} bytes")
+print(f"{done} {stu.QConv.bits}-bit convs, {sum(v[0].size for v in levels.values()) / 1e6:.2f}M levels, onnx {os.path.getsize(sys.argv[2])} bytes")

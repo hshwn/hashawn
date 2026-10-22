@@ -111,14 +111,22 @@ async function fetchProgress(url, id, label, part) {
   for (;;) { const { value, done } = await reader.read(); if (done) break; chunks.push(value); got += value.byteLength; postMessage({ id, type: 'model', done: got, total, label, part }); }
   const out = new Uint8Array(got); let off = 0; for (const c of chunks) { out.set(c, off); off += c.byteLength; } return out;
 }
-// which network files are packed with ncz (4-bit decoder weights pack to ~3 bits a weight); unpacked by our own codec
-const PACKED = { dec: false };
+// the network files; '.ncz' ones are packed with our own codec (8-bit weights pack to ~6 bits, 4-bit to ~3) and unpacked here
+const FILES = { enc: `learned/q${LQ}.enc.onnx.ncz`, dec: `learned/q${LQ}.dec.onnx`, pred: `learned/q${LQ}.pred.ncz` };
+const LABEL = { enc: 'the encoder', dec: 'the decoder', pred: 'the predictor' };
+async function fetchModel(name, id) {
+  let bytes = await fetchProgress(FILES[name], id, LABEL[name], name);
+  if (FILES[name].endsWith('.ncz')) {
+    await load(); const p = put(bytes); const d = wasm.nczl_dec_new(p, bytes.length); wasm.nczl_free(p, bytes.length);
+    if (!d) throw new Error(`${LABEL[name]} is damaged`);
+    while (wasm.nczl_dec_step(d, 1 << 20) > 0); const o = wasm.nczl_dec_finish(d); if (!o) throw new Error(`${LABEL[name]} is damaged`); bytes = takeOut(o);
+  }
+  return bytes;
+}
 async function session(name, id) {
   if (sessions[name]) return sessions[name];
   await ortLoad();
-  let bytes = await fetchProgress(`learned/q${LQ}.${name}.onnx${PACKED[name] ? '.ncz' : ''}`, id, name === 'enc' ? 'the encoder' : 'the decoder', name);
-  if (PACKED[name]) { await load(); const p = put(bytes); const d = wasm.nczl_dec_new(p, bytes.length); wasm.nczl_free(p, bytes.length);
-    if (!d) throw new Error('the decoder network is damaged'); while (wasm.nczl_dec_step(d, 1 << 20) > 0); const o = wasm.nczl_dec_finish(d); if (!o) throw new Error('the decoder network is damaged'); bytes = takeOut(o); }
+  const bytes = await fetchModel(name, id);
   let s;
   try { s = await ort.InferenceSession.create(bytes, { executionProviders: ['webgpu'] }); s.ep = 'webgpu'; }
   catch { s = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] }); s.ep = 'wasm'; }
@@ -126,7 +134,7 @@ async function session(name, id) {
 }
 async function predictor(q, id) {
   if (predLoaded[q]) return;
-  const b = await fetchProgress(`learned/q${q}.pred`, id, 'the predictor', 'pred');
+  const b = await fetchModel('pred', id);
   const p = put(b); const ok = wasm.nczl_w_load(p, b.length, q); wasm.nczl_free(p, b.length);
   if (!ok) throw new Error('the predictor did not load'); predLoaded[q] = true;
 }
@@ -173,7 +181,9 @@ async function learnedDecode(u8, id) {
   await predictor(q, id);
   const dec = await session('dec', id);
   postMessage({ id, type: 'progress', done: 0, total: 2, phase: 'learn-unpack' }); await new Promise((r) => setTimeout(r, 0));
-  const p = put(u8); const lp = wasm.nczl_w_dec(p, u8.length); wasm.nczl_free(p, u8.length);
+  const p = put(u8);
+  if (!wasm.nczl_w_match(p, u8.length)) { wasm.nczl_free(p, u8.length); throw new Error('made with a different version of tiny mode'); }
+  const lp = wasm.nczl_w_dec(p, u8.length); wasm.nczl_free(p, u8.length);
   if (!lp) throw new Error('the file is damaged');
   const raw = takeOut(lp); const lat = new Int16Array(raw.buffer, raw.byteOffset, raw.length / 2);
   const [c, h, w, pw, ph] = [0, 1, 2, 3, 4].map((i) => wasm.nczl_w_dim(i));

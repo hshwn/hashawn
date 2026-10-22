@@ -134,9 +134,14 @@ fn leak(mut v: Vec<u8>) -> *mut u8 { v.shrink_to_fit(); unsafe { OUT_LEN = v.len
     match ncz::wonder::compress(std::slice::from_raw_parts(lat, c * h * w), c, h, w, pw, ph, q as u8, pr) { Some(v) => leak(v), None => std::ptr::null_mut() }
 }
 #[no_mangle] pub unsafe extern "C" fn nczl_is_nczw(p: *const u8, n: usize) -> u32 { ncz::wonder::info(std::slice::from_raw_parts(p, n)).map_or(0, |i| i.0 as u32 | 256) }
+/// Was this NCZW stream made with the predictor loaded for its quality? (1 yes, 0 no or not loaded)
+#[no_mangle] pub unsafe extern "C" fn nczl_w_match(p: *const u8, n: usize) -> u32 {
+    let Some((q, _, _, id)) = ncz::wonder::info(std::slice::from_raw_parts(p, n)) else { return 0 };
+    predictor(q).map_or(0, |pr| (pr.id == id) as u32)
+}
 #[no_mangle] pub unsafe extern "C" fn nczl_w_dec(p: *const u8, n: usize) -> *mut u8 {
     let b = std::slice::from_raw_parts(p, n);
-    let Some((q, pw, ph)) = ncz::wonder::info(b) else { return std::ptr::null_mut() };
+    let Some((q, pw, ph, _)) = ncz::wonder::info(b) else { return std::ptr::null_mut() };
     let Some(pr) = predictor(q) else { return std::ptr::null_mut() };
     match ncz::wonder::decompress(b, pr) {
         Some((lat, c, h, w)) => { WDIM = [c as u32, h as u32, w as u32, pw as u32, ph as u32, q as u32]; leak(lat.iter().flat_map(|v| v.to_le_bytes()).collect()) }

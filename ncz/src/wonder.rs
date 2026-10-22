@@ -6,12 +6,14 @@
 //! (Rust never fuses), no exp/log (scale buckets by comparison against constants). Pixels are decoded outside this
 //! crate (a small learned decoder); they need not be bit-exact, the latents are.
 //!
-//! Container: "NCZW" | version | quality | picture width u16 | height u16 | NCZY v2 stream.
+//! Container: "NCZW" | version | quality | picture width u16 | height u16 | predictor id u32 | NCZY v2 stream.
+//! The predictor id (FNV-1a of its file) ties a file to the exact predictor that made it: another one would decode
+//! garbage, so the decoder refuses.
 use crate::lat::{self, GroupModel};
 
 pub const MAGIC: &[u8; 4] = b"NCZW";
-pub const VERSION: u8 = 1;
-const HEAD: usize = 4 + 1 + 1 + 4;
+pub const VERSION: u8 = 2;
+const HEAD: usize = 4 + 1 + 1 + 4 + 4;
 
 // scale buckets: log(scale) against log((((11 << b) >> 2) - 0.5) / 64); scale >= 0.11
 const LN_T: [f32; 23] = [-3.753418, -2.654806, -1.807508, -1.09083, -0.3861221, 0.3127557, 1.008756, 1.703327, 2.397185, 3.090687, 3.784012, 4.477248,
@@ -59,35 +61,51 @@ fn lrelu(v: &mut [f32]) { for x in v.iter_mut() { if *x < 0.0 { *x *= 0.1; } } }
 
 enum Net { Bias(Vec<f32>), Conv { red: Conv, a: Conv, b: Conv, out: Conv } }
 
+struct Reader<'a> { b: &'a [u8], at: usize }
+impl Reader<'_> {
+    fn u16(&mut self) -> Option<usize> { let v = u16::from_le_bytes(self.b.get(self.at..self.at + 2)?.try_into().ok()?) as usize; self.at += 2; Some(v) }
+    fn f32s(&mut self, n: usize) -> Option<Vec<f32>> {
+        let v = self.b.get(self.at..self.at + 4 * n)?.chunks_exact(4).map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]])).collect(); self.at += 4 * n; Some(v)
+    }
+    /// A rows x cols weight matrix: f32, or (q8) per-row scales then int8 levels, weight = level * scale.
+    fn mat(&mut self, rows: usize, cols: usize, q8: bool) -> Option<Vec<f32>> {
+        if !q8 { return self.f32s(rows * cols); }
+        let sc = self.f32s(rows)?; let lv = self.b.get(self.at..self.at + rows * cols)?; self.at += rows * cols;
+        Some((0..rows * cols).map(|i| (lv[i] as i8) as f32 * sc[i / cols]).collect())
+    }
+}
+
 /// The group predictor. Weights file: "NCZP" | u16 C | u16 groups | u16 width | u16 group sizes | u16 channel order
 /// (coding order -> channel) | per group f32 LE: bias (2g) or red(w x cin), red bias, a(w x w x 3 x 3), a bias, b, b bias,
 /// out(2g x w x 3 x 3), out bias. Inputs: earlier groups in coding order, latents / 4.
-pub struct Predictor { c: usize, groups: Vec<Vec<usize>>, order: Vec<usize>, nets: Vec<Net> }
+/// "NCZQ": the same with every weight matrix stored as 8 bits: per row an f32 scale, then the rows' int8 levels; a
+/// weight is level * scale (one f32 multiply, the same everywhere). Biases stay f32. A quarter of the size.
+pub struct Predictor { c: usize, groups: Vec<Vec<usize>>, order: Vec<usize>, nets: Vec<Net>, pub id: u32 }
 impl Predictor {
     pub fn load(b: &[u8]) -> Option<Predictor> {
-        if b.len() < 10 || &b[..4] != b"NCZP" { return None; }
-        let mut i = 4;
-        let mut u16_ = || -> Option<usize> { let v = u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?) as usize; i += 2; Some(v) };
-        let (c, ng, wd) = (u16_()?, u16_()?, u16_()?);
-        let sizes: Vec<usize> = (0..ng).map(|_| u16_()).collect::<Option<_>>()?;
-        let order: Vec<usize> = (0..c).map(|_| u16_()).collect::<Option<_>>()?;
+        if b.len() < 10 || !(&b[..4] == b"NCZP" || &b[..4] == b"NCZQ") { return None; }
+        let q8 = &b[..4] == b"NCZQ";
+        let mut r = Reader { b, at: 4 };
+        let (c, ng, wd) = (r.u16()?, r.u16()?, r.u16()?);
+        let sizes: Vec<usize> = (0..ng).map(|_| r.u16()).collect::<Option<_>>()?;
+        let order: Vec<usize> = (0..c).map(|_| r.u16()).collect::<Option<_>>()?;
         if sizes.iter().sum::<usize>() != c || order.iter().any(|&o| o >= c) { return None; }
-        let mut f = b.get(i..)?.chunks_exact(4).map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]]));
-        let mut take = |n: usize| -> Option<Vec<f32>> { let v: Vec<f32> = f.by_ref().take(n).collect(); if v.len() == n { Some(v) } else { None } };
         let mut nets = Vec::new(); let mut groups = Vec::new(); let mut st = 0;
         for &g in &sizes {
             groups.push(order[st..st + g].to_vec());
-            if st == 0 { nets.push(Net::Bias(take(2 * g)?)); }
+            if st == 0 { nets.push(Net::Bias(r.f32s(2 * g)?)); }
             else {
-                let red = Conv { ci: st, co: wd, k: 1, w: take(wd * st)?, b: take(wd)? };
-                let a = Conv { ci: wd, co: wd, k: 3, w: take(wd * wd * 9)?, b: take(wd)? };
-                let bb = Conv { ci: wd, co: wd, k: 3, w: take(wd * wd * 9)?, b: take(wd)? };
-                let out = Conv { ci: wd, co: 2 * g, k: 3, w: take(2 * g * wd * 9)?, b: take(2 * g)? };
+                let red = Conv { ci: st, co: wd, k: 1, w: r.mat(wd, st, q8)?, b: r.f32s(wd)? };
+                let a = Conv { ci: wd, co: wd, k: 3, w: r.mat(wd, wd * 9, q8)?, b: r.f32s(wd)? };
+                let bb = Conv { ci: wd, co: wd, k: 3, w: r.mat(wd, wd * 9, q8)?, b: r.f32s(wd)? };
+                let out = Conv { ci: wd, co: 2 * g, k: 3, w: r.mat(2 * g, wd * 9, q8)?, b: r.f32s(2 * g)? };
                 nets.push(Net::Conv { red, a, b: bb, out });
             }
             st += g;
         }
-        Some(Predictor { c, groups, order, nets })
+        if r.at != b.len() { return None; }
+        let mut id = 0x811c_9dc5u32; for &x in b { id = (id ^ x as u32).wrapping_mul(0x0100_0193); }
+        Some(Predictor { c, groups, order, nets, id })
     }
     pub fn channels(&self) -> usize { self.c }
     /// Raw (mean, log-scale) for group g: 2 x g planes.
@@ -124,12 +142,16 @@ pub fn compress(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph: usize,
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC); out.push(VERSION); out.push(q);
     out.extend_from_slice(&(pw as u16).to_le_bytes()); out.extend_from_slice(&(ph as u16).to_le_bytes());
+    out.extend_from_slice(&p.id.to_le_bytes());
     out.extend_from_slice(&lat::compress_groups(lat, c, h, w, p)); Some(out)
 }
-/// (quality, picture width, height) of an NCZW stream, without decoding it.
-pub fn info(b: &[u8]) -> Option<(u8, usize, usize)> {
+/// (quality, picture width, height, predictor id) of an NCZW stream, without decoding it.
+pub fn info(b: &[u8]) -> Option<(u8, usize, usize, u32)> {
     if b.len() < HEAD || &b[..4] != MAGIC || b[4] != VERSION { return None; }
-    Some((b[5], u16::from_le_bytes([b[6], b[7]]) as usize, u16::from_le_bytes([b[8], b[9]]) as usize))
+    Some((b[5], u16::from_le_bytes([b[6], b[7]]) as usize, u16::from_le_bytes([b[8], b[9]]) as usize, u32::from_le_bytes(b[10..14].try_into().ok()?)))
 }
-/// Returns (latents, c, h, w).
-pub fn decompress(b: &[u8], p: &Predictor) -> Option<(Vec<i16>, usize, usize, usize)> { info(b)?; lat::decompress_groups(&b[HEAD..], p) }
+/// Returns (latents, c, h, w). None if damaged, or made with a different predictor.
+pub fn decompress(b: &[u8], p: &Predictor) -> Option<(Vec<i16>, usize, usize, usize)> {
+    let (_, _, _, id) = info(b)?; if id != p.id { return None; }
+    lat::decompress_groups(&b[HEAD..], p)
+}

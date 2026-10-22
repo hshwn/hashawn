@@ -811,3 +811,12 @@ distillation, 100k steps, 4-bit weights trained in from step 60k (QConv: per-cha
 - 4-bit ONNX path works: int8 levels + DequantizeLinear, file packed with ncz to 2.9 bits a weight (v1: 1.35M weights
   -> 489 KB, fp16 was 2.7 MB); browser output equals ONNX Runtime in Python.
 - Downloads: the decoder is 2.7 of tiny mode's 14.4 MB; the encoder (8.4 MB fp16) is the big one.
+
+Tiny mode downloads 14.4 -> 6.4 MB:
+- Encoder: conv weights 8-bit per output channel (DequantizeLinear; GDN parameters fp16), packed with ncz: 8.36 MB ->
+  3.08 MB. Kodak 8: 29.76 -> 29.90 KB per photo (+0.5%), 30.00 -> 29.98 dB, 1.07% of latents differ (`quant_onnx.py`).
+- Predictor: NCZQ format, weight matrices as per-row f32 scale + int8 levels (weight = level * scale, one f32
+  multiply: deterministic), biases f32: 3.34 MB -> 847 KB, packed 637 KB. 0.6201 -> 0.6205 bpp; streams identical to
+  the f32 file with the dequantised values; native and both wasm builds identical (`pred_q8.py`).
+- NCZW v2 header carries the predictor id (FNV-1a of its file); a file from another predictor is refused ("made with a
+  different version of tiny mode"), never decoded into garbage. Browser: kodim03 12,606 B, 33.15 dB.

@@ -22,14 +22,19 @@ import numpy as np
 from PIL import Image
 
 class QConv(nn.Conv2d):
-    """Conv whose weights can be trained for 4-bit storage (quantisation-aware: the forward pass sees the 16-level weights,
-    gradients pass straight through). Per output channel, symmetric, levels -8..7 times a scale of min(max|w|, 3 rms) / 7."""
-    qat = False
+    """Conv whose weights can be trained for low-bit storage (quantisation-aware: the forward pass sees the quantised
+    weights, gradients pass straight through). Per output channel, symmetric. 4-bit: levels -8..7, scale
+    min(max|w|, 3 rms) / 7. 8-bit: levels -128..127, scale max|w| / 127. QConv.bits picks (env QBITS)."""
+    qat = False; bits = int(os.environ.get("QBITS", "4"))
     @staticmethod
-    def scale(w): return torch.minimum(w.abs().amax((1, 2, 3), keepdim=True), 3 * w.pow(2).mean((1, 2, 3), keepdim=True).sqrt()).clamp_min(1e-8) / 7
+    def scale(w):
+        if QConv.bits == 8: return w.abs().amax((1, 2, 3), keepdim=True).clamp_min(1e-8) / 127
+        return torch.minimum(w.abs().amax((1, 2, 3), keepdim=True), 3 * w.pow(2).mean((1, 2, 3), keepdim=True).sqrt()).clamp_min(1e-8) / 7
+    @staticmethod
+    def levels(): return (-128, 127) if QConv.bits == 8 else (-8, 7)
     def forward(s, x):
         if not QConv.qat: return super().forward(x)
-        sc = QConv.scale(s.weight); wq = torch.clamp(torch.round(s.weight / sc), -8, 7) * sc
+        lo, hi = QConv.levels(); sc = QConv.scale(s.weight); wq = torch.clamp(torch.round(s.weight / sc), lo, hi) * sc
         return F.conv2d(x, s.weight + (wq - s.weight).detach(), s.bias, s.stride, s.padding)
 class Res(nn.Module):
     def __init__(s, c): super().__init__(); s.a = QConv(c, c, 3, padding=1); s.b = QConv(c, c, 3, padding=1)
@@ -139,7 +144,9 @@ if __name__ == "__main__":
         sched = torch.optim.lr_scheduler.OneCycleLR(opt, LR, total_steps=steps, pct_start=0.03)
         t0 = time.time(); acc = 0.0
         for i in range(1, steps + 1):
-            if not QConv.qat and i > QAT_FROM * steps: QConv.qat = True; print(f"{i}: 4-bit weights from here", flush=True)
+            if not QConv.qat and i > QAT_FROM * steps:
+                torch.save(S.state_dict(), out.replace(".pt", ".float.pt"))      # the float model, before quantising
+                QConv.qat = True; print(f"{i}: {QConv.bits}-bit weights from here", flush=True)
             l = step(); sched.step()
             if i % 50 == 0: acc += float(l)
             every = int(os.environ.get("EVERY", "2000"))
