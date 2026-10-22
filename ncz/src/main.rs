@@ -3,6 +3,21 @@ use std::{env, fs, process};
 
 fn main() {
     let a: Vec<String> = env::args().collect();
+    if a.len() >= 4 && a[1] == "wonder" {
+        // nczcli wonder <q.pred> <a.lat>...: learned-mode streams (NCZW) from latent files, round trip checked,
+        // bits per pixel and time; WONDER_OUT=<dir> writes the streams
+        let p = ncz::wonder::Predictor::load(&fs::read(&a[2]).expect("pred")).expect("bad predictor");
+        for f in &a[3..] {
+            let b = fs::read(f).expect("read"); let g = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as usize;
+            let (c, h, w) = (g(0), g(2), g(4));
+            let lat: Vec<i16> = b[6..].chunks_exact(2).map(|x| i16::from_le_bytes([x[0], x[1]])).collect();
+            let t = std::time::Instant::now(); let z = ncz::wonder::compress(&lat, c, h, w, w * 16, h * 16, 4, &p).expect("compress"); let te = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now(); let back = ncz::wonder::decompress(&z, &p).expect("decode"); let td = t.elapsed().as_secs_f64();
+            if let Ok(d) = std::env::var("WONDER_OUT") { fs::write(format!("{}/{}.nczw", d, f.rsplit('/').next().unwrap().trim_end_matches(".lat")), &z).unwrap(); }
+            println!("{} {} B  {:.4} bpp  enc {:.2}s dec {:.2}s  {}", f.rsplit('/').next().unwrap(), z.len(), 8.0 * z.len() as f64 / (h * 16 * w * 16) as f64, te, td, if back.0 == lat { "exact" } else { "MISMATCH" });
+        }
+        return;
+    }
     if a.len() >= 3 && a[1] == "lat" {
         // nczcli lat <a.lat>...: latent files (u16 C,H,W + i16 channel-major) -> NCZY; round trip checked;
         // bits per image pixel (latents at 1/16 per side) and where the bits go

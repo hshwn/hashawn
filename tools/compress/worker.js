@@ -70,6 +70,7 @@ const pngMode = (u8) => { const p = put(u8); const m = wasm.nczl_png_mode(p, u8.
 
 async function decompress(u8, id) {
   await load();
+  if (u8.length > 10 && u8[0] === 0x4e && u8[1] === 0x43 && u8[2] === 0x5a && u8[3] === 0x57) return { out: await learnedDecode(u8, id), mode: 'tiny' };
   let inPtr = put(u8);
   if (wasm.nczl_needs_model(inPtr, u8.length)) { wasm.nczl_free(inPtr, u8.length); await loadModel(id); inPtr = put(u8); }
   const dec = wasm.nczl_dec_new(inPtr, u8.length);
@@ -91,6 +92,85 @@ async function decompress(u8, id) {
   return { out: takeOut(ptr), mode };
 }
 
+// ---------- learned mode ("tiny"): any photo -> a learned encoder's latents -> NCZW; back through our small decoder ----------
+// The networks run in ONNX Runtime Web (WebGPU if the browser has it, else WebAssembly); the latents are coded by the
+// codec's wasm, whose mean/scale predictor is bit-exact on every machine, so files always decode. Pictures are not
+// exact: they look close to the original, at a fraction of the size.
+const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+const LQ = 4;                                                  // the one quality shipped so far
+let ortReady = null; const sessions = {}; const predLoaded = {};
+function ortLoad() {
+  if (!ortReady) ortReady = (async () => { importScripts(ORT + 'ort.webgpu.min.js'); ort.env.wasm.wasmPaths = ORT;
+    // the CPU fallback can only use threads when the page is cross-origin isolated
+    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1; })();
+  return ortReady;
+}
+async function fetchProgress(url, id, label, part) {
+  const res = await fetch(url); if (!res.ok) throw new Error(`could not fetch ${url}`);
+  const total = Number(res.headers.get('content-length')) || 0; const chunks = []; let got = 0; const reader = res.body.getReader();
+  for (;;) { const { value, done } = await reader.read(); if (done) break; chunks.push(value); got += value.byteLength; postMessage({ id, type: 'model', done: got, total, label, part }); }
+  const out = new Uint8Array(got); let off = 0; for (const c of chunks) { out.set(c, off); off += c.byteLength; } return out;
+}
+async function session(name, id) {
+  if (sessions[name]) return sessions[name];
+  await ortLoad();
+  const bytes = await fetchProgress(`learned/q${LQ}.${name}.onnx`, id, name === 'enc' ? 'the encoder' : 'the decoder', name);
+  let s;
+  try { s = await ort.InferenceSession.create(bytes, { executionProviders: ['webgpu'] }); s.ep = 'webgpu'; }
+  catch { s = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] }); s.ep = 'wasm'; }
+  return (sessions[name] = s);
+}
+async function predictor(q, id) {
+  if (predLoaded[q]) return;
+  const b = await fetchProgress(`learned/q${q}.pred`, id, 'the predictor', 'pred');
+  const p = put(b); const ok = wasm.nczl_w_load(p, b.length, q); wasm.nczl_free(p, b.length);
+  if (!ok) throw new Error('the predictor did not load'); predLoaded[q] = true;
+}
+async function learnedEncode(u8, id) {
+  await load();
+  const bmp = await createImageBitmap(new Blob([u8]));
+  const pw = bmp.width, ph = bmp.height;
+  if (pw * ph > 16e6) throw new Error('that picture is too big for tiny mode (16 megapixels max)');
+  const W = Math.ceil(pw / 64) * 64, H = Math.ceil(ph / 64) * 64;
+  const cv = new OffscreenCanvas(pw, ph); const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0);
+  const rgba = cx.getImageData(0, 0, pw, ph).data;
+  const x = new Float32Array(3 * H * W);                     // planes, edge pixels repeated into the padding
+  for (let yy = 0; yy < H; yy++) { const sy = Math.min(yy, ph - 1);
+    for (let xx = 0; xx < W; xx++) { const s = (sy * pw + Math.min(xx, pw - 1)) * 4, d = yy * W + xx;
+      x[d] = rgba[s] / 255; x[H * W + d] = rgba[s + 1] / 255; x[2 * H * W + d] = rgba[s + 2] / 255; } }
+  await predictor(LQ, id);
+  const enc = await session('enc', id);
+  postMessage({ id, type: 'progress', done: 0, total: 1, phase: 'learn-enc' }); await new Promise((r) => setTimeout(r, 0));
+  const y = (await enc.run({ x: new ort.Tensor('float32', x, [1, 3, H, W]) })).y;
+  const [, c, h, w] = y.dims; const lat = new Int16Array(c * h * w);
+  for (let i = 0; i < lat.length; i++) lat[i] = Math.max(-32767, Math.min(32767, Math.round(y.data[i])));
+  postMessage({ id, type: 'progress', done: 1, total: 2, phase: 'learn-pack' }); await new Promise((r) => setTimeout(r, 0));
+  const lp = put(new Uint8Array(lat.buffer)); const zp = wasm.nczl_w_enc(lp, c, h, w, pw, ph, LQ); wasm.nczl_free(lp, lat.length * 2);
+  if (!zp) throw new Error('could not pack the latents');
+  return { out: takeOut(zp), ep: enc.ep };
+}
+async function learnedDecode(u8, id) {
+  const pp = put(u8.subarray(0, 16)); const q = wasm.nczl_is_nczw(pp, 16) & 255; wasm.nczl_free(pp, 16);
+  if (q !== LQ) throw new Error('made with a quality this page does not have');
+  await predictor(q, id);
+  const dec = await session('dec', id);
+  postMessage({ id, type: 'progress', done: 0, total: 2, phase: 'learn-unpack' }); await new Promise((r) => setTimeout(r, 0));
+  const p = put(u8); const lp = wasm.nczl_w_dec(p, u8.length); wasm.nczl_free(p, u8.length);
+  if (!lp) throw new Error('the file is damaged');
+  const raw = takeOut(lp); const lat = new Int16Array(raw.buffer, raw.byteOffset, raw.length / 2);
+  const [c, h, w, pw, ph] = [0, 1, 2, 3, 4].map((i) => wasm.nczl_w_dim(i));
+  const yf = new Float32Array(lat.length); for (let i = 0; i < lat.length; i++) yf[i] = lat[i];
+  postMessage({ id, type: 'progress', done: 1, total: 2, phase: 'learn-dec' }); await new Promise((r) => setTimeout(r, 0));
+  const xo = (await dec.run({ y: new ort.Tensor('float32', yf, [1, c, h, w]) })).x; const H = h * 16, W = w * 16;
+  const img = new ImageData(pw, ph); const d = img.data;
+  for (let yy = 0; yy < ph; yy++) for (let xx = 0; xx < pw; xx++) { const s = yy * W + xx, o = (yy * pw + xx) * 4;
+    d[o] = xo.data[s] * 255 + 0.5; d[o + 1] = xo.data[H * W + s] * 255 + 0.5; d[o + 2] = xo.data[2 * H * W + s] * 255 + 0.5; d[o + 3] = 255; }
+  const cv = new OffscreenCanvas(pw, ph); cv.getContext('2d').putImageData(img, 0, 0);
+  return new Uint8Array(await (await cv.convertToBlob({ type: 'image/png' })).arrayBuffer());
+}
+const isImage = (u8) => (u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47) || (u8[0] === 0xff && u8[1] === 0xd8 && u8[2] === 0xff)
+  || (u8[0] === 0x52 && u8[1] === 0x49 && u8[2] === 0x46 && u8[3] === 0x46 && u8[8] === 0x57 && u8[9] === 0x45 && u8[10] === 0x42 && u8[11] === 0x50);
+
 // segment plan for big inputs: the split comes from the same Rust function the native build uses
 async function plan(u8) {
   await load();
@@ -110,6 +190,10 @@ onmessage = async (e) => {
       postMessage({ id, type: 'done', ...(await plan(u8)) });
     } else if (type === 'gzip') {
       postMessage({ id, type: 'done', gz: await gzipSize(u8) });
+    } else if (type === 'learned') {
+      if (!isImage(u8)) throw new Error('tiny mode takes photos (PNG, JPEG, WebP)');
+      const t = performance.now(); const { out, ep } = await learnedEncode(u8, id);
+      postMessage({ id, type: 'done', buf: out.buffer, ms: performance.now() - t, gz: null, pngMode: 'tiny', ep }, [out.buffer]);
     } else if (type === 'compress') {
       const t = performance.now();
       const out = await compress(u8, id, mode);

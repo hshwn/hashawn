@@ -30,11 +30,12 @@
     <span>drop anything here</span>
     <small>or click to choose · text, code and PNGs do best</small>
   </div>
-  <div class="modes" id="modes" role="radiogroup" aria-label="what PNGs may lose">
-    <span>PNGs</span>
+  <div class="modes" id="modes" role="radiogroup" aria-label="what pictures may lose">
+    <span>pictures</span>
     <button type="button" role="radio" data-m="0" title="every pixel comes back exactly">exact</button>
     <button type="button" role="radio" data-m="1" title="every colour value within 1 of the original: about a third smaller, invisible">±1</button>
     <button type="button" role="radio" data-m="2" title="the film grain is taken out and grown back fresh on unpack: much smaller, looks the same, but the pixels are not the originals">looks the same</button>
+    <button type="button" role="radio" data-m="3" title="photos (PNG, JPEG, WebP) through a learned codec: tens of times smaller, looks close, not the original. Fetches 14 MB of networks once">tiny</button>
   </div>
   <input type="file" id="file" hidden>
 
@@ -45,6 +46,7 @@
     <p>A context-mixing compressor, the family that wins the benchmarks and that nobody ships because it's slow. It predicts every bit from what came before, with a tiny neural net that learns as it goes, and a range coder turns the predictions into bytes. The decoder runs the exact same net, so the output is bit-exact. It beats gzip, bzip2 and xz on text and code. It won't beat anything on photos, video or zips, those are already squeezed.</p>
     <p>PNGs get their own model: every pixel is predicted from the ones before it (and red and blue from green), and only the surprise is stored. You get back a PNG with exactly the same pixels and the same metadata (colour profile, text, everything); only PNG's own internal packing is redone, so the file's bytes can differ. Photos come out around half the size of their PNG; flat graphics and palette images less so.</p>
     <p>PNGs can also go lossy, if you pick it. <b>±1</b> lets every colour value move by one step out of 255: nobody can see that, and photos shrink by about a third. <b>Looks the same</b> goes further: it takes the grain out of the photo, keeps a tiny fingerprint of it (how strong it is at each brightness, its size, its colour, how it clumps), stores the clean picture within ±2, and grows new grain with the same fingerprint when you unpack. The grain looks the same, but it's new grain, so the pixels are not the originals. Pictures without grain just get the ±2. Transparent and palette PNGs always stay exact.</p>
+    <p><b>Tiny</b> is a learned codec, for photos. A neural encoder turns the picture into a small grid of numbers, our coder packs them (each group of numbers predicted from the ones before it, by a small network that gives the same answer on every machine, so files always open), and on the way back our own small decoder network paints the picture from them. A whole photo fits in tens of kilobytes; it looks close, but fine texture goes soft and it is not the original. The first time it fetches the networks (14 MB). The encoder is from CompressAI's cheng2020-anchor, © 2021-2025 InterDigital Communications, Inc., BSD 3-Clause Clear License; the coder, the predictor and the decoder are ours.</p>
     <p>For text it also runs a 3-million-parameter language model, the smallest one that still reads English, and feeds its guesses into the mixer as one more input. That part is slow, tens of kilobytes a second, and the first time it fetches the model once (3 MB). Everything else goes through the context mixer alone at around 2MB a second. The bar is honest either way.</p>
   </details>
 </main>

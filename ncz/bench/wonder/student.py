@@ -24,12 +24,21 @@ from PIL import Image
 class Res(nn.Module):
     def __init__(s, c): super().__init__(); s.a = nn.Conv2d(c, c, 3, padding=1); s.b = nn.Conv2d(c, c, 3, padding=1)
     def forward(s, x): return x + s.b(F.leaky_relu(s.a(x), 0.1))
-def upb(ci, co): return nn.Sequential(nn.Conv2d(ci, co * 4, 3, padding=1), nn.PixelShuffle(2), nn.LeakyReLU(0.1), Res(co))
+class Loop(nn.Module):
+    """The same block applied `r` times (weight-tied: more computation, no more weights), with a learned per-channel
+    gain per pass (a few hundred numbers) so the passes can differ."""
+    def __init__(s, block, c, r):
+        super().__init__(); s.block, s.r = block, r; s.g = nn.Parameter(torch.ones(r, c))
+    def forward(s, x):
+        for i in range(s.r): x = x + (s.block(x) - x) * s.g[i].view(1, -1, 1, 1)
+        return x
+def res(c, r): return Res(c) if r == 1 else Loop(Res(c), c, r)
+def upb(ci, co, r=1): return nn.Sequential(nn.Conv2d(ci, co * 4, 3, padding=1), nn.PixelShuffle(2), nn.LeakyReLU(0.1), res(co, r))
 class Student(nn.Module):
     # channels shrink as resolution grows: the cost per decoded pixel stays browser-sized
-    def __init__(s, M, N=96):
+    def __init__(s, M, N=96, r=1):
         super().__init__(); s.register_buffer("inv", torch.ones(1, M, 1, 1))     # 1 / per-channel std of the latents (set from data)
-        s.n = nn.Sequential(nn.Conv2d(M, N, 3, padding=1), nn.LeakyReLU(0.1), Res(N), upb(N, N), upb(N, 64), upb(64, 48), upb(48, 32), nn.Conv2d(32, 3, 3, padding=1))
+        s.n = nn.Sequential(nn.Conv2d(M, N, 3, padding=1), nn.LeakyReLU(0.1), res(N, r), upb(N, N, r), upb(N, 64, r), upb(64, 48, r), upb(48, 32, r), nn.Conv2d(32, 3, 3, padding=1))
     def forward(s, y): return s.n(y * s.inv) + 0.5
 
 def setup(wpath, idir, L, keep_teacher=False):
@@ -81,7 +90,8 @@ if __name__ == "__main__":
         B = int(os.environ.get("BATCH", "16")); L = int(os.environ.get("LCROP", "16"))
         DISTIL = bool(os.environ.get("DISTIL")); DW_OUT = float(os.environ.get("DW_OUT", "1")); DW_FEAT = float(os.environ.get("DW_FEAT", "0.1"))
         ims, lats, gs, recs = setup(sys.argv[2], sys.argv[3], L, DISTIL); M = lats[0].shape[0]
-        S = Student(M).to(dev, memory_format=torch.channels_last)
+        LOOPS = int(os.environ.get("LOOPS", "1"))
+        S = Student(M, r=LOOPS).to(dev, memory_format=torch.channels_last)
         sd_ = torch.stack([l.float().pow(2).mean((1, 2)) for l in lats]).mean(0).sqrt().clamp_min(0.05)
         S.inv.copy_((1 / sd_).view(1, M, 1, 1))
         print(f"student: {sum(p.numel() for p in S.parameters()) / 1e6:.2f}M params, {macs_per_px(S, M) / 1e3:.0f}k MAC per pixel", flush=True)
@@ -124,7 +134,8 @@ if __name__ == "__main__":
                 torch.save(S.state_dict(), out)
     elif cmd == "dump":
         T = teacher(sys.argv[2]); sd = torch.load(sys.argv[3]); M = sd["n.0.weight"].shape[1]
-        S = Student(M).to(dev); S.load_state_dict(sd); S.eval()
+        r = sd["n.2.g"].shape[0] if "n.2.g" in sd else 1
+        S = Student(M, r=r).to(dev); S.load_state_dict(sd); S.eval()
         kd, od = sys.argv[4], sys.argv[5]; os.makedirs(od, exist_ok=True); q = int(os.path.basename(sys.argv[2]).split("-")[2])
         for name in sys.argv[6:]:
             x = torch.from_numpy(np.asarray(Image.open(f"{kd}/{name}.ppm").convert("RGB"), dtype=np.float32) / 255).permute(2, 0, 1)[None].to(dev)

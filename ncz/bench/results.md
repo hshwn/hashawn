@@ -752,3 +752,21 @@ normalised, weight 0.1). Profiled: full teacher per step 35.6 ms/step; cached ou
 
 +6.3 SSIMULACRA2 / +1.0 dB; parrot feathers mostly back, foliage and water still soft. The remaining 2.8 dB looks
 like capacity (train-crop PSNR flattening at 30.3 near the end of the schedule).
+
+### Tiny mode in the browser tool (learned codec, q4) (2026-10-22)
+
+`tools/compress` gets a fourth picture mode, "tiny", for photos (PNG, JPEG, WebP). Encode: the teacher's encoder
+(ONNX, fp16-stored weights, 8.4 MB) in ONNX Runtime Web (WebGPU, else WebAssembly) -> rounded latents -> NCZW
+(`src/wonder.rs`: "NCZW" | version | quality | picture size | NCZY v2). NCZY v2 codes the channels in the predictor's
+group order; before each group, our predictor (`wonder::Predictor`, 3.3 MB, plain f32 with a fixed order of every sum,
+no exp/log: scale buckets by comparison) predicts it from the groups already decoded. Decode: NCZW -> latents (wasm)
+-> our student decoder (ONNX, 2.7 MB) -> PNG. Encoder weights: CompressAI cheng2020-anchor q4, BSD 3-Clause Clear,
+notice on the page.
+
+- Native round trip exact on the 8 Kodak test photos, 0.6201 bpp, 0.2 s each way for the latents. Native and both
+  wasm builds (relaxed and plain SIMD) write byte-identical NCZW streams and decode each other's exactly
+  (`bench/wasm_wonder_check.mjs`).
+- Browser (Chrome, WebGPU): kodim03 PNG 551,636 B -> 12,514 B, compress 2.4 s with the network fetch, unpack 0.5 s,
+  33.15 dB (the same decoder in PyTorch: 33.21). kodim05 as a q92 JPEG 174 KB -> 37.9 KB. A 2048x1024 WebP 301 KB ->
+  6.7 KB, back at full size. CPU fallback (forced): same 12,514 B file, but 29 s / 6 s on one thread (threads need a
+  cross-origin isolated page, not set up).

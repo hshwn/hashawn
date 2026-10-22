@@ -6,12 +6,19 @@
 //!   nczl_enc_new(p, n) -> enc ; nczl_enc_step(enc, n) -> coded ; nczl_enc_done(enc) ; nczl_enc_finish(enc) -> ptr (len: nczl_out_len)
 //!   nczl_dec_new(p, n) -> dec (0 = bad header / wrong model) ; nczl_dec_step(dec, n) ; nczl_dec_total(dec) ; nczl_dec_finish(dec) -> ptr or 0
 //!   nczl_enc_new_mode(p, n, mode): PNGs only, mode 0 exact, 1 within +-1, 2 grain (looks the same) ; nczl_png_mode(p, n)
+//!   learned mode: nczl_w_load(p, n, q) predictor for quality q ; nczl_w_enc(lat i16*, c, h, w, pw, ph, q) -> ptr ;
+//!   nczl_w_dec(p, n) -> i16 latents ptr (0 = bad) ; nczl_w_dim(i) = c, h, w, picture width, height, q of the last decode ;
+//!   nczl_is_nczw(p, n). The learned encoder and decoder networks run outside (ONNX in the page's worker).
 #![allow(clippy::missing_safety_doc)]
 use crate::codec::{Assets, LmDecoder, LmEncoder, looks_like_text, header, MODE_NCZ, MODE_STORE, HEADER};
 use ncz::v3::Encoder;
 
 static mut ASSETS: Option<Box<Assets>> = None;
 static mut OUT_LEN: usize = 0;
+static mut PREDICTORS: Vec<(u8, ncz::wonder::Predictor)> = Vec::new();
+static mut WDIM: [u32; 6] = [0; 6];
+#[allow(static_mut_refs)]
+fn predictor(q: u8) -> Option<&'static ncz::wonder::Predictor> { unsafe { PREDICTORS.iter().find(|p| p.0 == q).map(|p| &p.1) } }
 #[allow(static_mut_refs)]
 fn assets() -> Option<&'static Assets> { unsafe { ASSETS.as_deref() } }
 
@@ -115,3 +122,25 @@ fn leak(mut v: Vec<u8>) -> *mut u8 { v.shrink_to_fit(); unsafe { OUT_LEN = v.len
 #[no_mangle] pub extern "C" fn nczl_seg_size() -> usize { crate::codec::SEG_MIN }
 #[no_mangle] pub extern "C" fn nczl_version() -> u32 { crate::codec::VERSION as u32 }
 #[no_mangle] pub extern "C" fn nczl_mode_seg() -> u32 { crate::codec::MODE_SEG as u32 }
+
+#[no_mangle] #[allow(static_mut_refs)] pub unsafe extern "C" fn nczl_w_load(p: *const u8, n: usize, q: u32) -> u32 {
+    match ncz::wonder::Predictor::load(std::slice::from_raw_parts(p, n)) {
+        Some(pr) => { PREDICTORS.retain(|x| x.0 != q as u8); PREDICTORS.push((q as u8, pr)); 1 }
+        None => 0,
+    }
+}
+#[no_mangle] pub unsafe extern "C" fn nczl_w_enc(lat: *const i16, c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u32) -> *mut u8 {
+    let Some(pr) = predictor(q as u8) else { return std::ptr::null_mut() };
+    match ncz::wonder::compress(std::slice::from_raw_parts(lat, c * h * w), c, h, w, pw, ph, q as u8, pr) { Some(v) => leak(v), None => std::ptr::null_mut() }
+}
+#[no_mangle] pub unsafe extern "C" fn nczl_is_nczw(p: *const u8, n: usize) -> u32 { ncz::wonder::info(std::slice::from_raw_parts(p, n)).map_or(0, |i| i.0 as u32 | 256) }
+#[no_mangle] pub unsafe extern "C" fn nczl_w_dec(p: *const u8, n: usize) -> *mut u8 {
+    let b = std::slice::from_raw_parts(p, n);
+    let Some((q, pw, ph)) = ncz::wonder::info(b) else { return std::ptr::null_mut() };
+    let Some(pr) = predictor(q) else { return std::ptr::null_mut() };
+    match ncz::wonder::decompress(b, pr) {
+        Some((lat, c, h, w)) => { WDIM = [c as u32, h as u32, w as u32, pw as u32, ph as u32, q as u32]; leak(lat.iter().flat_map(|v| v.to_le_bytes()).collect()) }
+        None => std::ptr::null_mut(),
+    }
+}
+#[no_mangle] pub unsafe extern "C" fn nczl_w_dim(i: usize) -> u32 { WDIM[i.min(5)] }

@@ -42,8 +42,8 @@ struct Model {
     ctx: [u32; NSETS], sctx: [u32; NSETS], st: [i32; N_IN], sidx: [usize; NSETS],
     ch: usize, qexp: usize, qloc: usize,
     pub bits: [f64; 4], chbits: Vec<f64>,
-    /// Diagnostic only: an outside model's mean (x16) and scale (x64) per latent, used as context.
-    aux: Option<(Vec<i16>, Vec<u16>)>, pred: i32,
+    /// A predictor's mean (x16) and scale buckets (two offsets) per latent, used as context (and the mean as prediction).
+    aux: Option<(Vec<i16>, Vec<u8>, Vec<u8>)>, pred: i32,
 }
 
 impl Model {
@@ -111,11 +111,10 @@ impl Model {
         let chn = ch as u32 + 1;
         self.qexp = qexp as usize; self.qloc = qloc as usize; self.ch = ch;
         self.pred = 0;
-        if let Some((mu, sc)) = &self.aux {
+        if let Some((mu, qsv, qs2v)) = &self.aux {
             let i = base + pos; let m = mu[i] as i32; let pr = (m + 8).div_euclid(16); self.pred = pr;
             let fr = ((m - pr * 16 + 8) / 4).clamp(0, 3) as u32;          // where the mean sits inside the bin
-            let qs = { let v = sc[i] as i32; let mut b = 0u32; while b < 23 && v >= (11 << b) >> 2 { b += 1; } b };   // log2 scale, half-octave-ish
-            let qs2 = { let v = sc[i] as i32 * 3 / 2; let mut b = 0u32; while b < 23 && v >= (11 << b) >> 2 { b += 1; } b };
+            let (qs, qs2) = (qsv[i] as u32, qs2v[i] as u32);
             self.qexp = qs.min(16) as usize;
             self.ctx = [qs | fr << 5, k | qs << 5 | fr << 10, qs2 | fr << 5 | 1 << 20, k | qloc << 5 | qs << 10, qs | qlocn << 5 | 2 << 20, chn << 8 | qs, chn << 8 | qs | fr << 5 << 8,
                 k | m3(vw) << 5 | m3(vn) << 7 | qs << 11, k | qexp << 5 | qs << 10 | 3 << 20, qs | qexp3 << 5 | fr << 10 | 4 << 20];
@@ -154,21 +153,43 @@ impl Model {
         if neg { -mag } else { mag }
     }
 
+    /// One channel, every position, then its energy joins the cross-channel map.
+    fn channel<I: BitIo>(&mut self, io: &mut I, src: &[i16], ch: usize) {
+        let (h, w) = (self.h, self.w);
+        for y in 0..h { for x in 0..w {
+            let i = ch * h * w + y * w + x;
+            let v = self.value(io, ch, x, y, src[i] as i32);
+            self.lat[i] = v;
+            self.enext[y * w + x] = ((v.abs() * 16) << 8) / self.s16[ch];
+        } }
+        for p in 0..h * w { self.esum[p] += self.enext[p].min(256 * 64); }
+        self.ecount += 1; self.prev.push(ch);
+    }
+
+    /// Group by group: the model predicts each group from the groups already decoded, then the group is coded.
+    fn run_groups<I: BitIo>(&mut self, io: &mut I, src: &[i16], gm: &dyn GroupModel) {
+        let n = self.c * self.h * self.w; let hw = self.h * self.w;
+        self.aux = Some((vec![0; n], vec![0; n], vec![0; n]));
+        for (g, chans) in gm.groups().iter().enumerate() {
+            let (mu, qs, qs2) = gm.predict(&self.lat, self.c, self.h, self.w, g);
+            if let Some((am, aq, aq2)) = &mut self.aux {
+                for (k, &ch) in chans.iter().enumerate() {
+                    am[ch * hw..(ch + 1) * hw].copy_from_slice(&mu[k * hw..(k + 1) * hw]);
+                    aq[ch * hw..(ch + 1) * hw].copy_from_slice(&qs[k * hw..(k + 1) * hw]);
+                    aq2[ch * hw..(ch + 1) * hw].copy_from_slice(&qs2[k * hw..(k + 1) * hw]);
+                }
+            }
+            for &ch in chans { self.channel(io, src, ch); }
+        }
+    }
+
     /// Code (or decode) all latents. `src`: the values (encoder) or zeros (decoder). Classes must be set.
     fn run<I: BitIo>(&mut self, io: &mut I, src: &[i16]) {
         let (h, w) = (self.h, self.w);
         let mut order: Vec<usize> = (0..self.c).filter(|&c| self.cls[c] > 0).collect();
         order.sort_by_key(|&c| std::cmp::Reverse(self.cls[c]));              // stable: ties keep channel order
-        for &ch in &order {
-            for y in 0..h { for x in 0..w {
-                let i = ch * h * w + y * w + x;
-                let v = self.value(io, ch, x, y, src[i] as i32);
-                self.lat[i] = v;
-                self.enext[y * w + x] = ((v.abs() * 16) << 8) / self.s16[ch];
-            } }
-            for p in 0..h * w { self.esum[p] += self.enext[p].min(256 * 64); }
-            self.ecount += 1; self.prev.push(ch);
-        }
+        let _ = (h, w);
+        for &ch in &order { self.channel(io, src, ch); }
     }
 }
 
@@ -230,9 +251,12 @@ pub fn channel_bits(lat: &[i16], c: usize, h: usize, w: usize) -> Vec<f64> {
     for ch in 0..c { m.cls[ch] = class_of(&lat[ch * h * w..(ch + 1) * h * w]); m.s16[ch] = s16_of(m.cls[ch]); }
     m.run(&mut Null, lat); m.chbits
 }
+/// Scale buckets from a scale x64 (diagnostic input path).
+fn qs_of(v: i32) -> u8 { let mut b = 0; while b < 23 && v >= (11 << b) >> 2 { b += 1; } b as u8 }
 /// Diagnostic: bits with an outside model's mean/scale as context (round trip not provided).
 pub fn compress_aux(lat: &[i16], c: usize, h: usize, w: usize, mu16: Vec<i16>, sc64: Vec<u16>) -> (usize, [f64; 4]) {
-    let mut m = Model::new(c, h, w); m.aux = Some((mu16, sc64));
+    let qs = sc64.iter().map(|&v| qs_of(v as i32)).collect(); let qs2 = sc64.iter().map(|&v| qs_of(v as i32 * 3 / 2)).collect();
+    let mut m = Model::new(c, h, w); m.aux = Some((mu16, qs, qs2));
     let mut cls: Vec<u8> = (0..c).map(|ch| class_of(&lat[ch * h * w..(ch + 1) * h * w])).collect();
     let mut e = Enc { x1: 0, x2: 0xFFFF_FFFF, out: Vec::new() };
     let mut csm = vec![SM_INIT; NCLS * 32]; code_classes(&mut e, &mut cls, &mut csm);
@@ -254,5 +278,47 @@ pub fn decompress(blob: &[u8], prior: Option<&Prior>) -> Option<(Vec<i16>, usize
     for ch in 0..c { m.cls[ch] = cls[ch]; m.s16[ch] = s16_of(cls[ch]); }
     let zeros = vec![0i16; c * h * w];
     m.run(&mut d, &zeros);
+    Some((m.lat.iter().map(|&v| v as i16).collect(), c, h, w))
+}
+
+/// A model that predicts each channel group's mean and scale from the groups before it (see wonder::Predictor).
+/// Must give identical output for identical input on every machine: it feeds the entropy decoder.
+pub trait GroupModel {
+    /// Channel groups in coding order.
+    fn groups(&self) -> &[Vec<usize>];
+    /// For group `g`, from the latents decoded so far (earlier groups filled, the rest zero): per channel of the group
+    /// (in group order) x position: mean x16, scale bucket, scale bucket at 1.5x.
+    fn predict(&self, lat: &[i32], c: usize, h: usize, w: usize, g: usize) -> (Vec<i16>, Vec<u8>, Vec<u8>);
+}
+
+pub const VERSION_GROUPS: u8 = 2;
+/// Compress latents with a group model (NCZY version 2: channels in the model's group order).
+pub fn compress_groups(lat: &[i16], c: usize, h: usize, w: usize, gm: &dyn GroupModel) -> Vec<u8> {
+    assert_eq!(lat.len(), c * h * w);
+    let mut m = Model::new(c, h, w);
+    let mut cls: Vec<u8> = (0..c).map(|ch| class_of(&lat[ch * h * w..(ch + 1) * h * w])).collect();
+    let mut e = Enc { x1: 0, x2: 0xFFFF_FFFF, out: Vec::new() };
+    let mut csm = vec![SM_INIT; NCLS * 32]; code_classes(&mut e, &mut cls, &mut csm);
+    for ch in 0..c { m.cls[ch] = cls[ch].max(1); m.s16[ch] = s16_of(cls[ch]); }
+    m.run_groups(&mut e, lat, gm);
+    e.out.extend_from_slice(&e.x1.to_be_bytes());
+    let mut out = Vec::with_capacity(HEADER + e.out.len());
+    out.extend_from_slice(MAGIC); out.push(VERSION_GROUPS);
+    for v in [c, h, w] { out.extend_from_slice(&(v as u16).to_le_bytes()); }
+    out.extend_from_slice(&e.out); out
+}
+/// Returns (latents, c, h, w).
+pub fn decompress_groups(blob: &[u8], gm: &dyn GroupModel) -> Option<(Vec<i16>, usize, usize, usize)> {
+    if blob.len() < HEADER || &blob[..4] != MAGIC || blob[4] != VERSION_GROUPS { return None; }
+    let g = |i: usize| u16::from_le_bytes([blob[i], blob[i + 1]]) as usize;
+    let (c, h, w) = (g(5), g(7), g(9));
+    if c == 0 || h == 0 || w == 0 || c * h * w > 1 << 26 || gm.groups().iter().map(|v| v.len()).sum::<usize>() != c { return None; }
+    let mut d = Dec { x1: 0, x2: 0xFFFF_FFFF, x: 0, buf: blob[HEADER..].to_vec(), pos: 0 };
+    for _ in 0..4 { d.x = (d.x << 8) | d.next_in(); }
+    let mut cls = vec![0u8; c]; let mut csm = vec![SM_INIT; NCLS * 32]; code_classes(&mut d, &mut cls, &mut csm);
+    let mut m = Model::new(c, h, w);
+    for ch in 0..c { m.cls[ch] = cls[ch].max(1); m.s16[ch] = s16_of(cls[ch]); }
+    let zeros = vec![0i16; c * h * w];
+    m.run_groups(&mut d, &zeros, gm);
     Some((m.lat.iter().map(|&v| v as i16).collect(), c, h, w))
 }
