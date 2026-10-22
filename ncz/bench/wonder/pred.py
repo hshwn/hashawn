@@ -21,10 +21,18 @@ exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "teacher.py")
 import numpy as np
 from PIL import Image
 dev = "cuda"
-GROUPS = {128: [4, 4, 8, 8, 16, 24, 32, 32], 192: [4, 4, 8, 8, 16, 24, 32, 48, 48]}
+GROUPS = {128: [4, 4, 8, 8, 16, 24, 32, 32], 192: [4, 4, 8, 8, 16, 24, 32, 48, 48], 320: [8, 8, 16, 16, 32, 48, 64, 64, 64]}
+# TEACHER=hpcm: HPCM-Base (ICCV 2025, ~/wonder/hpcm) instead of cheng2020-anchor; its latents are 320 channels
+TEACHER = os.environ.get("TEACHER", "cheng"); STRIDE = 16           # both downsample by 16
 WIDTH = int(os.environ.get("WIDTH", "64"))
 
 def teacher(path):
+    if TEACHER == "hpcm":
+        sys.path.insert(0, os.path.expanduser("~/wonder/hpcm")); from src.models.HPCM_Base import HPCM
+        net = HPCM(); net.load_state_dict(torch.load(path, map_location="cpu"), strict=False)     # adaptive_params: never saved, never trained (1.0)
+        net = net.to(dev).eval()
+        for p in net.parameters(): p.requires_grad_(False)
+        return net
     net = Cheng2020Anchor.from_state_dict(load_state_dict(torch.load(path, map_location="cpu"))).to(dev).eval()
     for p in net.parameters(): p.requires_grad_(False)
     return net
@@ -90,7 +98,7 @@ def lat_batch(lats, B, L):
     return torch.stack(out).float()
 
 def setup(wpath, idir, L):
-    T = teacher(wpath); ims = load_imgs(idir, 16 * L)
+    T = teacher(wpath); ims = load_imgs(idir, STRIDE * L)
     t = time.time(); lats = latents(T, ims); del ims; torch.cuda.synchronize()
     print(f"latents of {len(lats)} photos in {time.time() - t:.0f}s, {sum(l.numel() for l in lats) * 2 / 1e9:.2f} GB", flush=True)
     torch.backends.cudnn.benchmark = True; torch.backends.cuda.matmul.allow_tf32 = True; torch.backends.cudnn.allow_tf32 = True
@@ -107,7 +115,7 @@ def step_fn(T, lats, P, B, L):
         with torch.autocast("cuda", torch.bfloat16): yo, mu, ls = P(y)
         bits = nll_bits(yo, mu.float(), ls.float())
         loss = bits.mean(); opt.zero_grad(set_to_none=True); loss.backward(); opt.step()
-        return bits.detach().sum() / (B * L * L * 256)      # bits per image pixel
+        return bits.detach().sum() / (B * L * L * STRIDE * STRIDE)      # bits per image pixel
     return opt, step
 
 if __name__ == "__main__":
@@ -137,7 +145,7 @@ if __name__ == "__main__":
         T = teacher(sys.argv[2]); sd = torch.load(sys.argv[3]); C = sd["order"].numel()
         P = Predictor(C).to(dev); P.load_state_dict(sd); P.eval()
         kd, od = sys.argv[4], sys.argv[5]; os.makedirs(od, exist_ok=True)
-        q = int(os.path.basename(sys.argv[2]).split("-")[2])
+        q = int(os.environ.get("Q", "0")) or int(os.path.basename(sys.argv[2]).split("-")[2])
         inv = torch.argsort(P.order)
         for name in sys.argv[6:]:
             x = torch.from_numpy(np.asarray(Image.open(f"{kd}/{name}.ppm").convert("RGB"), dtype=np.float32) / 255).permute(2, 0, 1)[None].to(dev)

@@ -836,3 +836,22 @@ measurable grain, fingerprints 1309-1549 B (+5-11% on these 12-55 KB files); 30.
 43.9 (both metrics count new grain as error); by eye the smooth areas read as film instead of plastic. Browser:
 kodim23 12,584 B with grain, 34.58 dB (native prototype 34.59); native and both wasm builds identical on every
 NCZW and PNG-mode check.
+
+### Better teacher? HPCM-Base (ICCV 2025, MIT) vs cheng2020-anchor, through our pipeline (2026-10-22)
+
+HPCM-Base lambda 0.013 (`~/wonder/hpcm`; its rANS coder rebuilt for Python 3.14; the checkpoint predates the
+adaptive_params fix, they were never saved or trained, loaded at 1.0). Its latents: 320 channels at 1/16 (cheng q4:
+192). Our predictor trained on them the same way (15k steps on DIV2K, groups 8/8/16/16/32/48/64/64/64, 1.0M params).
+Kodak 8:
+
+| | bpp | PSNR |
+|---|---|---|
+| HPCM own codec (real bitstream) | 0.554 | 33.69 |
+| HPCM latents through our pipeline (NCZY + our predictor, its decoder on round(y)) | 0.724 | 33.45 |
+| cheng2020 own (likelihoods) q4 | 0.557 | ~32.8 |
+| cheng2020 through our pipeline q4 / q5 | 0.620 / 0.848 | 32.84 / 34.64 |
+
+At equal quality (cheng interpolated in log bpp): at 33.45 dB cheng through our pipeline needs 0.689 bpp, HPCM 0.724
+(+5%); at HPCM's 0.724 bpp cheng gives 33.73 dB (+0.28). HPCM's ~15-18% edge is real for its own codec, but it lives in
+its entropy model: our predictor is 31% above HPCM's own rate on its latents (11% on cheng's). Not switching teachers
+until our predictor closes that gap (side information for the first groups, more capacity for 320 channels).
