@@ -787,3 +787,16 @@ Tiny mode: encoder and decoder networks run in tiles (1024 px cores, 128 px marg
 output channels (accumulators in cache, same order of every sum: streams bit-identical): 48 MP-sized latents 14.6 ->
 8.8 s native, 14.3 s wasm. Browser, a 48 MP JPEG (10.4 MB) -> 669 KB, 8000x6000 back; compress 146 -> 46 s, unpack
 115 -> 24.5 s. Cap 16 MP -> 65535 px a side.
+
+Weight-tied student (each residual block run twice, a learned per-channel gain per pass; same 1.35M weights, 100k vs
+64k MAC per pixel, CPU decode 147 vs 85 ms for 768x512), same distillation and 100k steps (52 min). Kodak 8:
+
+| | SSIMULACRA2 | PSNR |
+|---|---|---|
+| teacher | 53.8 | 32.8 dB |
+| 1 pass | 40.9 | 30.0 dB |
+| 2 passes | 41.2 | 30.1 dB |
+
++0.3 / +0.1 dB for 1.7x the decode time; indistinguishable by eye. Kept the 1-pass student in tiny mode. Reusing the
+blocks does not add capacity here; the gap to the teacher needs real capacity (wider/deeper with its own weights) or a
+different loss.
