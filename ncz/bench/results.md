@@ -689,3 +689,30 @@ At the teacher's own rate it beats JPEG XL by 6-19 points at every quality (q1: 
 JPEG XL cannot reach). Our generic coder spends 36-60% more bits on the same latents, which hands the win back to
 JPEG XL: the latent coder is the gap. Next: a latent-aware context-mixing coder (contexts: spatial neighbours in the
 same channel, co-located values in earlier channels, channel id), target <= the teacher's own rate.
+
+### Latent coder (NCZY, `src/lat.rs`): context mixing on the teacher's integer latents (2026-10-22)
+
+Integer-only contexts (entropy decoding never reads a network output): per-channel 5-bit size class (empty channels
+free, strongest channels first, order implied by the classes), cross-channel energy at the same spot (normalised by
+channel size), same-channel neighbours, signs nearby; two mixers + APM. Round trip exact on all 48 test files, 0.02 s
+per picture. `bench/wonder/latcmp.sh`; 8 test photos, bits per image pixel:
+
+| quality | teacher own | generic ncz | NCZY cold | NCZY primed (16 other Kodak) | NCZY + teacher's mean/scale as context (ceiling) |
+|---|---|---|---|---|---|
+| 1 | 0.161 | 0.259 | 0.223 | 0.220 | 0.177 |
+| 2 | 0.248 | 0.368 | 0.321 | 0.317 | |
+| 3 | 0.361 | 0.508 | 0.448 | 0.443 | |
+| 4 | 0.557 | 0.778 | 0.685 | 0.679 | 0.574 |
+| 5 | 0.775 | 1.038 | 0.924 | 0.917 | |
+| 6 | 1.019 | 1.385 | 1.187 | 1.179 | 1.040 |
+
+- NCZY cuts 12-17% off the generic coder but stays 16-38% above the teacher. Priming on other photos: only 1-2%
+  (cold start is not the problem).
+- Per channel (teacher_chan.py), we lose by a similar factor in every channel group, strongest first: the teacher's
+  learned (nonlinear) mean/scale prediction is what we lack. Linear prediction from neighbours and earlier channels
+  (ridge, fitted on 16, tested on 8): only ~10% off the order-0 entropy.
+- Teacher's own Gaussian model on OUR symbols (plain round(y)): 0.182 / 0.567 / 1.027 at q1/4/6, i.e. its edge over
+  us is partly mean-centred quantisation, round(y - mean), which needs the exact same mean on both sides.
+- With the teacher's mean/scale as context, NCZY beats the teacher's Gaussian on the same symbols at q1 (0.177 vs
+  0.182) and nearly matches at q4/q6. So the coder is fine; the missing piece is a deterministic learned predictor of
+  mean and scale, which would also allow mean-centred quantisation.

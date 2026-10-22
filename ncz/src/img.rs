@@ -43,8 +43,8 @@ const MIX_SHIFT: i32 = 11;
 // ---------------------------------------------------------------------------
 // range coder (same as ncz v3: 32-bit, 12-bit probabilities of a 1)
 // ---------------------------------------------------------------------------
-trait BitIo { fn bit(&mut self, p12: u32, want: u32) -> u32; }
-struct Enc { x1: u32, x2: u32, out: Vec<u8> }
+pub(crate) trait BitIo { fn bit(&mut self, p12: u32, want: u32) -> u32; }
+pub(crate) struct Enc { pub(crate) x1: u32, pub(crate) x2: u32, pub(crate) out: Vec<u8> }
 impl BitIo for Enc {
     #[inline(always)] fn bit(&mut self, p12: u32, y: u32) -> u32 {
         let p = p12.clamp(1, 4095);
@@ -54,8 +54,8 @@ impl BitIo for Enc {
         y
     }
 }
-struct Dec { x1: u32, x2: u32, x: u32, buf: Vec<u8>, pos: usize }
-impl Dec { #[inline(always)] fn next_in(&mut self) -> u32 { let b = *self.buf.get(self.pos).unwrap_or(&0); self.pos += 1; b as u32 } }
+pub(crate) struct Dec { pub(crate) x1: u32, pub(crate) x2: u32, pub(crate) x: u32, pub(crate) buf: Vec<u8>, pub(crate) pos: usize }
+impl Dec { #[inline(always)] pub(crate) fn next_in(&mut self) -> u32 { let b = *self.buf.get(self.pos).unwrap_or(&0); self.pos += 1; b as u32 } }
 impl BitIo for Dec {
     #[inline(always)] fn bit(&mut self, p12: u32, _want: u32) -> u32 {
         let p = p12.clamp(1, 4095);
@@ -70,29 +70,30 @@ impl BitIo for Dec {
 // adaptive probability tables, mixer, APM
 // ---------------------------------------------------------------------------
 /// p in 16 bits and a hit count in the low bits: fast adaptation first, slower once the context is known.
-#[inline(always)] fn sm_p(v: u32) -> i32 { (v >> 20) as i32 }                       // 12-bit probability
-#[inline(always)] fn sm_update(v: u32, y: u32) -> u32 {
+#[inline(always)] pub(crate) fn sm_p(v: u32) -> i32 { (v >> 20) as i32 }                       // 12-bit probability
+#[inline(always)] pub(crate) fn sm_update(v: u32, y: u32) -> u32 {
     let (mut p, mut n) = ((v >> 16) as i32, v & 0xFFFF);
     let target = if y != 0 { 65535 } else { 0 };
     p += (target - p) / (n as i32 + 2);
     if n < LIMIT { n += 1; }
     ((p.clamp(16, 65519) as u32) << 16) | n
 }
-const SM_INIT: u32 = 32768 << 16;
+pub(crate) const SM_INIT: u32 = 32768 << 16;
 
-struct Apm { t: Vec<u16>, idx: usize }
+#[derive(Clone)]
+pub(crate) struct Apm { t: Vec<u16>, idx: usize }
 impl Apm {
-    fn new(n: usize) -> Apm {
+    pub(crate) fn new(n: usize) -> Apm {
         let mut t = vec![0u16; n * 33];
         for i in 0..n { for j in 0..33 { let k = ((j as i32 - 16) * 128 + 2048).clamp(1, 4095) as usize; t[i * 33 + j] = (SQUASH[k] * 16) as u16; } }
         Apm { t, idx: 0 }
     }
-    #[inline(always)] fn refine(&mut self, pr: i32, cxt: usize) -> i32 {
+    #[inline(always)] pub(crate) fn refine(&mut self, pr: i32, cxt: usize) -> i32 {
         let s = STRETCH[pr as usize] + 2048; let w = s & 127; let i = (s >> 7) as usize + cxt * 33;
         self.idx = i;
         (self.t[i] as i32 * (128 - w) + self.t[i + 1] as i32 * w) >> 11
     }
-    #[inline(always)] fn update(&mut self, y: u32) {
+    #[inline(always)] pub(crate) fn update(&mut self, y: u32) {
         let g: i32 = if y != 0 { 65535 } else { 0 }; let i = self.idx;
         self.t[i] = (self.t[i] as i32 + ((g - self.t[i] as i32) >> 6)) as u16;
         self.t[i + 1] = (self.t[i + 1] as i32 + ((g - self.t[i + 1] as i32) >> 6)) as u16;
@@ -100,7 +101,7 @@ impl Apm {
 }
 
 /// Quantise a non-negative activity-like number into 0..16 buckets on a log-ish scale.
-#[inline(always)] fn q16(v: i32) -> usize {
+#[inline(always)] pub(crate) fn q16(v: i32) -> usize {
     const T: [i32; 15] = [1, 2, 3, 4, 6, 8, 11, 15, 20, 27, 36, 48, 64, 90, 128];
     let mut i = 0; while i < 15 && v >= T[i] { i += 1; } i
 }

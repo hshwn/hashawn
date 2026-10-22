@@ -3,6 +3,38 @@ use std::{env, fs, process};
 
 fn main() {
     let a: Vec<String> = env::args().collect();
+    if a.len() >= 3 && a[1] == "lat" {
+        // nczcli lat <a.lat>...: latent files (u16 C,H,W + i16 channel-major) -> NCZY; round trip checked;
+        // bits per image pixel (latents at 1/16 per side) and where the bits go
+        // LAT_PRIME="a.lat b.lat ...": examples the model learns from first (encoder and decoder alike)
+        let read = |p: &str| { let b = fs::read(p).expect("read"); let g = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as usize;
+            let lat: Vec<i16> = b[6..].chunks_exact(2).map(|x| i16::from_le_bytes([x[0], x[1]])).collect(); (lat, g(0), g(2), g(4)) };
+        let prime: Vec<String> = std::env::var("LAT_PRIME").map(|v| v.split_whitespace().map(String::from).collect()).unwrap_or_default();
+        let prior = if prime.is_empty() { None } else {
+            let mut pr: Option<ncz::lat::Prior> = None;
+            for p in &prime { let (l, c, h, w) = read(p); pr.get_or_insert_with(|| ncz::lat::Prior::new(c, h, w)).learn(&l, c, h, w); }
+            pr };
+        for p in &a[2..] {
+            let b = fs::read(p).expect("read"); let g = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as usize;
+            let (c, h, w) = (g(0), g(2), g(4));
+            let lat: Vec<i16> = b[6..].chunks_exact(2).map(|x| i16::from_le_bytes([x[0], x[1]])).collect();
+            let t = std::time::Instant::now(); let (z, bits) = ncz::lat::compress_stats(&lat, c, h, w, prior.as_ref()); let te = t.elapsed().as_secs_f64();
+            let back = ncz::lat::decompress(&z, prior.as_ref()).expect("decode"); let ok = back.0 == lat;
+            if let Ok(dir) = std::env::var("LAT_AUX") {   // <dir>/<name minus .lat>.par: i16 mean x16, u16 scale x64
+                let pb = fs::read(format!("{}/{}.par", dir, p.rsplit('/').next().unwrap().trim_end_matches(".lat"))).expect("par"); let k = c * h * w;
+                let mu: Vec<i16> = pb[6..6 + 2 * k].chunks_exact(2).map(|x| i16::from_le_bytes([x[0], x[1]])).collect();
+                let sc: Vec<u16> = pb[6 + 2 * k..].chunks_exact(2).map(|x| u16::from_le_bytes([x[0], x[1]])).collect();
+                let (n, bb) = ncz::lat::compress_aux(&lat, c, h, w, mu, sc); let px = (h * 16 * w * 16) as f64;
+                println!("  with outside mean/scale: {} B {:.4} bpp (zero {:.4} sign {:.4} mag {:.4} esc {:.4})", n, 8.0 * n as f64 / px, bb[0] / px, bb[1] / px, bb[2] / px, bb[3] / px);
+            }
+            if let Ok(dir) = std::env::var("LAT_CHAN") { let cb = ncz::lat::channel_bits(&lat, c, h, w);
+                fs::write(format!("{}/{}.chan", dir, p.rsplit('/').next().unwrap()), cb.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(" ")).unwrap(); }
+            let px = (h * 16 * w * 16) as f64;
+            println!("{} {} B  {:.4} bpp  (zero {:.4} sign {:.4} mag {:.4} esc {:.4})  {:.2}s  {}", p.rsplit('/').next().unwrap(), z.len(), 8.0 * z.len() as f64 / px,
+                bits[0] / px, bits[1] / px, bits[2] / px, bits[3] / px, te, if ok { "exact" } else { "MISMATCH" });
+        }
+        return;
+    }
     if a.len() == 6 && a[1] == "png-mode" {
         // nczcli png-mode <0 exact | 1 near +-1 | 2 grain> <in.png> <out.ncz> <out.png>: what the browser tool writes
         // (fast mode); prints sizes, the mode actually used, and the max per-sample error of the rebuilt PNG
