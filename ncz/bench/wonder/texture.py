@@ -20,6 +20,10 @@ from pred import teacher, dev
 from PIL import Image
 
 W_PX = float(os.environ.get("W_PX", "1")); W_GAN = float(os.environ.get("W_GAN", "0.05")); W_FM = float(os.environ.get("W_FM", "1"))
+# W_CON: consistency, the decoded picture must re-encode (teacher encoder, frozen) to the file's latents; in units of
+# rounding noise (1/12). With it, the pixel term can be a small anchor: the file pins down what it pins down, the critic
+# draws the rest.
+W_CON = float(os.environ.get("W_CON", "0"))
 B = int(os.environ.get("BATCH", "12")); L = int(os.environ.get("LCROP", "16")); DUMP_EVERY = int(os.environ.get("DUMP_EVERY", "5000"))
 TEST = ["kodak_kodim" + t for t in ["01", "03", "05", "08", "13", "19", "21", "23"]]
 
@@ -40,17 +44,21 @@ def load_student(path, M):
     S = stu.Student(M, chans=chans); S.load_state_dict(sd); return S.to(dev)
 
 def dump(S, T, kd, od):
-    os.makedirs(od, exist_ok=True); S.eval()
+    os.makedirs(od, exist_ok=True); S.eval(); agree = []
     for n in TEST:
         x = torch.from_numpy(np.asarray(Image.open(f"{kd}/{n}.ppm").convert("RGB"), dtype=np.float32) / 255).permute(2, 0, 1)[None].to(dev)
-        with torch.no_grad(): xh = S(torch.round(T.g_a(x))).clamp(0, 1)
+        with torch.no_grad():
+            y = torch.round(T.g_a(x)); xh = S(y).clamp(0, 1)
+            xq = torch.round(xh * 255) / 255; agree.append((torch.round(T.g_a(xq)) == y).float().mean().item())   # re-encode the saved picture
         Image.fromarray((xh[0].permute(1, 2, 0).cpu().numpy() * 255 + 0.5).astype(np.uint8)).save(f"{od}/{n}.png")
+    print(f"  {od}: re-encodes to the same latents: {100 * np.mean(agree):.2f}%", flush=True)
     S.train()
 
 if __name__ == "__main__":
     cmd = rest[0]; wpath, spath = rest[1], rest[2]
     ims, lats, _, _ = stu.setup(wpath, rest[3], L, False); M = lats[0].shape[0]
     S = load_student(spath, M); D = Critic(M).to(dev)
+    TE = teacher(wpath) if W_CON else None
     print(f"student {sum(p.numel() for p in S.parameters()) / 1e6:.2f}M, critic {sum(p.numel() for p in D.parameters()) / 1e6:.2f}M", flush=True)
     with torch.no_grad():   # the student's own pixel error, to normalise
         ref = np.mean([F.mse_loss(S(y).clamp(0, 1), x).item() for y, x, _ in (stu.pair_batch(ims, lats, B, L) for _ in range(8))])
@@ -67,6 +75,9 @@ if __name__ == "__main__":
         fm = sum(F.l1_loss(a, b) for a, b in zip(ff, fr)) / len(ff)
         px = F.mse_loss(xh, x) / ref; adv = -g.mean()
         loss = W_PX * px + W_GAN * adv + W_FM * fm
+        if W_CON:
+            with torch.autocast("cuda", torch.bfloat16): ye = TE.g_a(xh.clamp(0, 1)).float()
+            con = F.mse_loss(ye, y) * 12; loss = loss + W_CON * con; px = con.detach()      # report consistency in the px slot
         optg.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(S.parameters(), 1.0); optg.step()
         return px.detach(), adv.detach(), fm.detach(), ld.detach()
     if cmd == "prof":

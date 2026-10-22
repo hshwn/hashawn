@@ -899,3 +899,16 @@ same size:
 The students sit 0.5-0.6 dB under the teacher here (q4: 2 dB). Page: a size row under tiny (smallest / small / sharp),
 remembered per browser; each size fetches its own networks once (4.0 / 4.0 / 5.9 MB); unpacking reads the size from
 the file. Browser (WebGPU), bikes: q1 15.2 KB 25.67 dB, q2 21.1 KB 27.15 dB, q4 40.2 KB 29.81 dB.
+
+### Text model check: SupraLabs/Supra2.5-Pico vs our GPT-S3-3M (2026-10-23)
+
+Same size class (2.98M vs 2.97M params, Apache-2.0, 4104-token BPE, 10 transformer layers, trained on 12B tokens).
+`bench/lm_bpb.py`, first 300 KB, bits per byte (its custom modelling code read first: torch/transformers only):
+
+| text | GPT-S3-3M | Supra2.5-Pico |
+|---|---|---|
+| Nardo docs | 1.857 | 1.938 (+4%) |
+| enwik8 | 1.510 | 1.687 (+12%) |
+| JS/Python code | 2.090 | 2.370 (+13%) |
+
+Worse on all three; the card's "bits-per-byte gap of 0.09 vs GPT-S3-3M" is its deficit. Keeping GPT-S3-3M.
