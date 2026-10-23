@@ -312,6 +312,8 @@ onmessage = async (e) => {
   try {
     if (type === 'plan') {
       postMessage({ id, type: 'done', ...(await plan(u8)) });
+    } else if (type === 'mem') {     // diagnostics: how big the codec's wasm memory has grown
+      postMessage({ id, type: 'done', wasmBytes: wasm ? wasm.memory.buffer.byteLength : 0 });
     } else if (type === 'gzip') {
       postMessage({ id, type: 'done', gz: await gzipSize(u8) });
     } else if (type === 'learned') {

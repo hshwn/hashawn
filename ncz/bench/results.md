@@ -1027,3 +1027,24 @@ it (files from before keep the texture decoder). End to end in the browser, Koda
 Every photo smaller than its q2 (-4% to -27%, -18.9% total). kodim13: encode 4.1 s (WebGPU), unpack textured 0.69 s
 vs smooth 0.44 s. By eye vs q2: foliage textured where q2 is blur, plaster grain, bikes clean; a few bush patches still
 land in the kodim13 river.
+
+### Swatches on big photos (2026-10-23)
+
+First version (whole-picture planes): 12 MP native encode 71 s, lay 9.4 s, 809 MB peak; 48 MP 825 s, 2.6 GB (would not
+fit a browser). Now: stripes of 16 block rows (256 px) with 32 px filter margins (patches cross-fade across stripe
+borders as anywhere); grain field normalised from a fixed 256 x 256 field instead of the whole picture; dot products in 8
+running sums (vectorise); above 4 MP, swatch spots on a 2 px grid and the encoder tries only the 3 swatches whose kind is
+nearest the block's, and swatches dropped for too few blocks leave those blocks bare instead of a second pass
+(section v2 records the stride; v1 decodes). Kodak unchanged (stride 1: same choices, 2.5x faster).
+
+| | native encode / lay | wasm (node) encode / lay | wasm memory | section |
+|---|---|---|---|---|
+| 12 MP | 5.1 / 0.9 s | 6.7 / 1.2 s | 196 MB | 11.2 KB |
+| 48 MP | 39 / 1.3 s | 48 / 2.3 s | 402 MB (288 MB of it the two pictures) | 20.7 KB |
+
+(48 MP: native peak RSS 677 MB including the three 144 MB pictures the CLI holds.) Labels cost ~1.3 bits a block, the
+same share of the file as on Kodak; coding them as a 2-D plane with the latent coder was no smaller than ncz v3.
+Browser end to end (WebGPU; the pane was hidden, so the page ran as a background page and every time below is
+inflated, e.g. 48 MP smooth unpack 196 s vs 24.5 s measured visible on 10-22): 12 MP JPEG -> 101.7 KB, textured unpack
+works (31.33 dB vs smooth 32.13; fur and stone texture back); 48 MP -> 301 KB, textured unpack works, wasm memory 518 MB.
+Bug on the way: std::time::Instant::now() panics on wasm32-unknown-unknown ("unreachable"); the timing probes are gone.
