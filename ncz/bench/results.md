@@ -912,3 +912,26 @@ Same size class (2.98M vs 2.97M params, Apache-2.0, 4104-token BPE, 10 transform
 | JS/Python code | 2.090 | 2.370 (+13%) |
 
 Worse on all three; the card's "bits-per-byte gap of 0.09 vs GPT-S3-3M" is its deficit. Keeping GPT-S3-3M.
+
+### Texture decoder for the smallest size (q1) (2026-10-23)
+
+`bench/wonder/texture.py` / `texture2.py`: fine-tune of the q1 v2 student (same files) with a patch critic that also
+sees the latents. Runs, 15k steps each (58-82 ms/step), Kodak 4 (bikes, river, parrots, houses), PSNR vs smooth
+25.73 / 23.82 / 31.53 / 25.38:
+- critic weight 0.05: barely any texture (-0.1 dB).
+- critic 0.3 + feature matching 5: real texture (leaves, tiles, treads, feathers), -1.1..-1.4 dB, but fuzz on
+  smooth plastic (red tank, fenders).
+- + consistency (the decoded picture must re-encode to the file's latents, frozen teacher encoder; pixel term 0.1):
+  -1.6..-1.9 dB; re-encodes 99.1% to the same latents (the smooth decoder: 97.4%). Fuzz unchanged.
+- blending smooth/textured per 32 px block to the original's measured detail (~144 B map): +0.2-0.4 dB, fuzz
+  unchanged (fender blocks also hold edges and lettering).
+- v2: detail map as decoder + critic input, penalty on more 8 px detail than the original (0.3): yellow/green
+  fenders clean, red tank still blotchy; 99.24% re-encode.
+- v3: penalty 1.5 + critic pressure only where the map says the original had detail: same picture as v2, a bit
+  calmer; 99.26% re-encode; -0.05..-0.25 dB vs v2. The red tank's blotches are most likely the original's film grain
+  imitated as texture (the map sees grain as detail). Next: grain-free training targets.
+
+Shipped v3 as an unpack choice: NCZW v4 carries the detail map (~150 B, packed with ncz; v2/v3 files still decode),
+the page computes it when packing the smallest size, and "unpack: smooth / textured" picks the decoder (2.05 MB
+packed, 8-bit, first layer fp16; ONNX within 46-50 dB of PyTorch). Browser, bikes q1: 15,375 B; smooth 25.67 dB,
+textured 23.83 dB (PyTorch 23.84).

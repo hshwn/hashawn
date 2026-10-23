@@ -134,9 +134,18 @@ fn leak(mut v: Vec<u8>) -> *mut u8 { v.shrink_to_fit(); unsafe { OUT_LEN = v.len
 }
 /// With a grain fingerprint (from nczl_grain_measure; n 0: none).
 #[no_mangle] #[allow(clippy::too_many_arguments)] pub unsafe extern "C" fn nczl_w_enc_grain(lat: *const i16, c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u32, g: *const u8, gn: usize) -> *mut u8 {
+    nczl_w_enc_full(lat, c, h, w, pw, ph, q, g, gn, std::ptr::null(), 0)
+}
+/// With a grain fingerprint and a detail map (opaque bytes, from the page); n 0: none.
+#[no_mangle] #[allow(clippy::too_many_arguments)] pub unsafe extern "C" fn nczl_w_enc_full(lat: *const i16, c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u32, g: *const u8, gn: usize, m: *const u8, mn: usize) -> *mut u8 {
     let Some(pr) = predictor(q as u8) else { return std::ptr::null_mut() };
     let grain = if gn == 0 { &[][..] } else { std::slice::from_raw_parts(g, gn) };
-    match ncz::wonder::compress_grain(std::slice::from_raw_parts(lat, c * h * w), c, h, w, pw, ph, q as u8, pr, grain) { Some(v) => leak(v), None => std::ptr::null_mut() }
+    let dmap = if mn == 0 { &[][..] } else { std::slice::from_raw_parts(m, mn) };
+    match ncz::wonder::compress_full(std::slice::from_raw_parts(lat, c * h * w), c, h, w, pw, ph, q as u8, pr, grain, dmap) { Some(v) => leak(v), None => std::ptr::null_mut() }
+}
+/// The detail map stored in an NCZW stream: ptr (len nczl_out_len), 0 = none.
+#[no_mangle] pub unsafe extern "C" fn nczl_w_dmap(p: *const u8, n: usize) -> *mut u8 {
+    match ncz::wonder::detail_map(std::slice::from_raw_parts(p, n)) { Some(g) if !g.is_empty() => leak(g.to_vec()), _ => { OUT_LEN = 0; std::ptr::null_mut() } }
 }
 /// Grain fingerprint of an RGB picture, measured on a centre crop of at most est x est: ptr (len nczl_out_len), 0 = no grain.
 #[no_mangle] pub unsafe extern "C" fn nczl_grain_measure(rgb: *const u8, w: usize, h: usize, est: usize) -> *mut u8 {

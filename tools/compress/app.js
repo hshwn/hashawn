@@ -17,11 +17,19 @@
   const showQ = () => tinyq.querySelectorAll('button').forEach((b) => { const on = +b.dataset.q === tq; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); });
   tinyq.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || busy) return; tq = +b.dataset.q; showQ(); try { localStorage.setItem('tinyQ', tq); } catch {} });
   showQ();
-  const showMode = () => { modes.querySelectorAll('button').forEach((b) => { const on = +b.dataset.m === mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); }); tinyq.hidden = mode !== 3; };
+  // how tiny files unpack (sizes that have a texture decoder): smooth, or with texture drawn in
+  const tinytex = document.getElementById('tinytex');
+  let texPref = true; try { texPref = localStorage.getItem('tinyTex') !== '0'; } catch {}
+  const showTex = () => tinytex.querySelectorAll('button').forEach((b) => { const on = (b.dataset.t === '1') === texPref; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); });
+  tinytex.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || busy) return; texPref = b.dataset.t === '1'; showTex(); try { localStorage.setItem('tinyTex', texPref ? '1' : '0'); } catch {} });
+  showTex();
+  const showMode = () => { modes.querySelectorAll('button').forEach((b) => { const on = +b.dataset.m === mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); }); tinyq.hidden = mode !== 3; tinytex.hidden = mode !== 3; };
   modes.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || busy) return; mode = +b.dataset.m; showMode(); try { localStorage.setItem('pngMode', mode); } catch {} });
   showMode();
   // what came back: 0 exact, k within +-k, 255 grain mode
-  const pngNote = (m) => m === 'tiny' ? 'tiny: a learned codec, it looks close but it is not the original · ' : m === 255 ? 'looks the same: the grain is regrown, the pixels are not the originals · '
+  const isTiny = (m) => m === 'tiny' || m === 'tiny-tex';
+  const pngNote = (m) => m === 'tiny-tex' ? 'tiny, textured: the decoder draws texture the file only hints at, so it looks real but is not the original · '
+    : m === 'tiny' ? 'tiny: a learned codec, it looks close but it is not the original · ' : m === 255 ? 'looks the same: the grain is regrown, the pixels are not the originals · '
     : m > 0 ? `every pixel within ±${m} of the original, metadata kept · ` : 'every pixel comes back, metadata too · ';
 
   // ---------- him ----------
@@ -136,7 +144,7 @@
   const decompressAll = async (u8, onProgress) => {
     const t0 = performance.now();
     const seg = u8.length >= 22 && u8[0] === 78 && u8[1] === 67 && u8[2] === 90 && u8[3] === 76 && u8[5] === 3;
-    if (!seg) { const buf = u8.slice().buffer; return call(pool[0], { type: 'decompress', buf }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.total ? p.done / p.total * u8.length : p.done, phase: p.phase, k: 1 })); }
+    if (!seg) { const buf = u8.slice().buffer; return call(pool[0], { type: 'decompress', buf, tex: texPref }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.total ? p.done / p.total * u8.length : p.done, phase: p.phase, k: 1 })); }
     const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
     const total = Number(dv.getBigUint64(10, true)), n = dv.getUint32(18, true);
     const lens = Array.from({ length: n }, (_, i) => dv.getUint32(22 + 4 * i, true));
@@ -175,13 +183,13 @@
     const out = new Uint8Array(done.buf); dropUrls();
     if (isNcz) {
       let name = file.name.replace(/\.ncz$/i, '');
-      if (done.pngMode === 'tiny') name = name.replace(/\.(jpe?g|webp|png)$/i, '') + '.png';
+      if (isTiny(done.pngMode)) name = name.replace(/\.(jpe?g|webp|png)$/i, '') + '.png';
       const pic = isPng(out) ? viewer(blobUrl(out, 'image/png')) : '';
-      render(`<div class="job"><p class="label">unpacked</p><p class="big">${fmt(out.length)}</p>${pic}<p class="sub">${esc(name)} · ${(done.ms / 1000).toFixed(1)}s${done.pngMode ? ' · ' + pngNote(done.pngMode === 'tiny' ? 'tiny' : done.pngMode | 0).replace(/ · $/, '') : ''}</p><button class="btn" id="dl">save it</button></div>`);
+      render(`<div class="job"><p class="label">unpacked</p><p class="big">${fmt(out.length)}</p>${pic}<p class="sub">${esc(name)} · ${(done.ms / 1000).toFixed(1)}s${done.pngMode ? ' · ' + pngNote(isTiny(done.pngMode) ? done.pngMode : done.pngMode | 0).replace(/ · $/, '') : ''}</p><button class="btn" id="dl">save it</button></div>`);
       document.getElementById('dl').onclick = () => download(out, name);
       const png = out.length > 8 && out[0] === 0x89 && out[1] === 0x50 && out[2] === 0x4e && out[3] === 0x47;
       const m = done.pngMode | 0;
-      say(done.pngMode === 'tiny' ? "there it is. close enough to fool you." : !png ? "there it is. every byte." : m === 255 ? "there it is. same look, fresh grain." : m > 0 ? "there it is. every pixel, give or take one." : "there it is. every pixel.");
+      say(isTiny(done.pngMode) ? "there it is. close enough to fool you." : !png ? "there it is. every byte." : m === 255 ? "there it is. same look, fresh grain." : m > 0 ? "there it is. every pixel, give or take one." : "there it is. every pixel.");
       return;
     }
     const ratio = total / out.length, gzRatio = done.gz ? total / done.gz : null;
@@ -194,14 +202,14 @@
         ${done.gz ? `<div class="row"><span>gzip</span><div class="bar"><i style="width:${pct(done.gz)};background:#7a766f"></i></div><b>${fmt(done.gz)}</b></div>` : ''}
         <div class="row"><span>ncz</span><div class="bar"><i style="width:${pct(out.length)};background:#009f4d"></i></div><b>${fmt(out.length)}</b></div>
       </div>
-      <p class="sub">${(done.ms / 1000).toFixed(1)}s · ${done.pngMode || /\.png$/i.test(file.name) ? pngNote(done.pngMode === 'tiny' ? 'tiny' : done.pngMode | 0) : ''}nothing left your browser</p>
+      <p class="sub">${(done.ms / 1000).toFixed(1)}s · ${done.pngMode || /\.png$/i.test(file.name) ? pngNote(isTiny(done.pngMode) ? done.pngMode : done.pngMode | 0) : ''}nothing left your browser</p>
       <div id="peek"></div>
       <button class="btn" id="dl">save .ncz</button><button class="btn ghost" id="dlpic" hidden>save the picture</button>
     </div>`);
     document.getElementById('dl').onclick = () => download(out, file.name + '.ncz');
     say(lineFor(ratio, gzRatio));
     // a lossy picture mode: unpack it straight away and show it next to the original
-    const lossy = done.pngMode === 'tiny' || (done.pngMode | 0) > 0;
+    const lossy = isTiny(done.pngMode) || (done.pngMode | 0) > 0;
     if (lossy) {
       const peek = document.getElementById('peek'); peek.innerHTML = '<p class="sub">unpacking it so you can see it…</p>';
       const back = await decompressAll(out.slice(), () => {});

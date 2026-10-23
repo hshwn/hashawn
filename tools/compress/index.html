@@ -43,6 +43,11 @@
     <button type="button" role="radio" data-q="2" title="small files, more detail">small</button>
     <button type="button" role="radio" data-q="4" title="bigger files, the most detail">sharp</button>
   </div>
+  <div class="modes sub" id="tinytex" role="radiogroup" aria-label="how tiny files unpack" hidden>
+    <span>unpack</span>
+    <button type="button" role="radio" data-t="0" title="the decoder paints the safe average: smooth, a little soft">smooth</button>
+    <button type="button" role="radio" data-t="1" title="the decoder draws plausible texture where the photo had detail (smallest size for now)">textured</button>
+  </div>
   <input type="file" id="file" hidden>
 
   <section class="result" id="result" hidden></section>
