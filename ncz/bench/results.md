@@ -935,3 +935,23 @@ Shipped v3 as an unpack choice: NCZW v4 carries the detail map (~150 B, packed w
 the page computes it when packing the smallest size, and "unpack: smooth / textured" picks the decoder (2.05 MB
 packed, 8-bit, first layer fp16; ONNX within 46-50 dB of PyTorch). Browser, bikes q1: 15,375 B; smooth 25.67 dB,
 textured 23.83 dB (PyTorch 23.84).
+
+### Texture decoder v5: the grid fixed (2026-10-23)
+
+v4 (noise added after each upsampling stage, gains started at zero, spectrum loss 0.2) left the grid: the learned noise
+gains stayed ~0.002, the decoder copied texture per 16 px latent cell. v5 (texture2.py NOISE=2 MSCRIT=1 W_SPEC=2): 8 more
+noise channels mixed (1x1 conv, weights started at sd 0.1) into the last two stages before their residual blocks, the
+critic also judges the picture at 1/2 and 1/4 size, spectrum loss x10. 15k steps, 51 min (GPU shared). Grid peaks in
+(textured - smooth), 16 / 8 / 4 px period, 1 = no grid:
+
+| | kodim13 | PSNR | kodim08 | PSNR |
+|---|---|---|---|---|
+| v3 (was shipping) | 10.4 / 6.6 / 9.9 | 21.90 | 2.4 / 2.4 / 2.4 | 23.53 |
+| v4 | 9.9 / 8.2 / 13.1 | 22.21 | 2.2 / 2.4 / 3.5 | 23.75 |
+| v5 | 2.9 / 4.3 / 5.3 | 22.13 | 2.2 / 2.8 / 2.6 | 23.66 |
+
+Re-encodes to the same latents: 99.09%. Browser: the decoder takes the noise as input z (1 x 9 x H x W); the page makes
+it from a hash of the pixel position (sum of 4 hash bytes, sd 1), so tiles agree and a file always unpacks the same.
+Hash noise vs randn through the 8-bit ONNX (texparity.py): same PSNR (22.14) and grid peaks; ONNX vs PyTorch with the
+same noise, max 0.037 (8-bit weights), PSNR 22.14 vs 22.13. In the browser: kodim13 q1 17.2 KB, textured 22.11 dB,
+2.8 s to unpack. Download 2.05 MB (same as v3). The red tank still has some fuzz.

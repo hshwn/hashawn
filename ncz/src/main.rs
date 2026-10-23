@@ -3,6 +3,13 @@ use std::{env, fs, process};
 
 fn main() {
     let a: Vec<String> = env::args().collect();
+    if a.len() == 4 && a[1] == "grain-clean" {
+        // nczcli grain-clean <in.ppm> <out.ppm>: grain mode's clean picture (the grain split off), for inspection
+        let (rgb, w, h) = ncz::img::read_ppm(&fs::read(&a[2]).expect("read")).expect("not a P6 PPM");
+        let e = ncz::grain::compress_with(&rgb, w, h, 0, 0, 0).expect("too small");
+        let mut v = format!("P6\n{w} {h}\n255\n").into_bytes(); v.extend_from_slice(&e.clean); fs::write(&a[3], v).expect("write");
+        return;
+    }
     if a.len() == 5 && a[1] == "add-grain" {
         // nczcli add-grain <original.ppm> <decoded.png> <out.ppm>: grain fingerprint of the original, regrown on the decoded picture
         let (rgb, w, h) = ncz::img::read_ppm(&fs::read(&a[2]).expect("read")).expect("not a P6 PPM");

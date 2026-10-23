@@ -113,7 +113,7 @@ async function fetchProgress(url, id, label, part) {
   const out = new Uint8Array(got); let off = 0; for (const c of chunks) { out.set(c, off); off += c.byteLength; } return out;
 }
 // the network files; '.ncz' ones are packed with our own codec (8-bit weights pack to ~6 bits, 4-bit to ~3) and unpacked here
-const file = (name, q) => `learned/q${q}.${name}${name === 'pred' ? '' : '.onnx'}.ncz`;
+const file = (name, q) => `learned/q${q}.${name}${name === 'pred' ? '' : '.onnx'}.ncz${name === 'tex' ? '?v=5' : ''}`;   // ?v: the texture decoder was replaced (v5, noise input)
 const LABEL = { enc: 'the encoder', dec: 'the decoder', pred: 'the predictor', tex: 'the texture decoder' };
 // The texture decoder's side input: the original's fine-detail energy per 32 x 32 block (brightness minus its Gaussian
 // blur, sigma 1.5, rms; log2 in half steps, -4..15), measured on the picture padded to W x H by repeating its edges.
@@ -203,6 +203,19 @@ async function learnedEncode(u8, id, q) {
   if (!zp) throw new Error('could not pack the latents');
   return { out: takeOut(zp), ep: enc.ep };
 }
+// The texture decoder draws its texture from noise (input z: 9 channels at full resolution). Standard-normal-ish
+// values from a hash of the picture position (sum of 4 hash bytes, mean 0, sd 1), so tiles agree where they overlap
+// and the same file always unpacks to the same picture. Matches randn in PSNR and grid measures (bench texparity).
+function texNoise(px0, py0, PW, PH) {
+  const z = new Float32Array(9 * PW * PH); let i = 0;
+  for (let c = 0; c < 9; c++) { const hc = Math.imul(c, 0xC2B2AE3D);
+    for (let y = 0; y < PH; y++) { const hy = Math.imul(py0 + y, 0x85EBCA77) ^ hc;
+      for (let x = 0; x < PW; x++) {
+        let h = Math.imul(px0 + x, 0x9E3779B1) ^ hy;
+        h ^= h >>> 16; h = Math.imul(h, 0x7feb352d); h ^= h >>> 15; h = Math.imul(h, 0x846ca68b); h ^= h >>> 16;
+        z[i++] = ((h & 255) + ((h >>> 8) & 255) + ((h >>> 16) & 255) + (h >>> 24) - 510) / 147.8; } } }
+  return z;
+}
 async function learnedDecode(u8, id, wantTex) {
   const pp = put(u8.subarray(0, 16)); const q = wasm.nczl_is_nczw(pp, 16) & 255; wasm.nczl_free(pp, 16);
   if (!QUALITIES.includes(q)) throw new Error('made with a quality this page does not have');
@@ -232,6 +245,7 @@ async function learnedDecode(u8, id, wantTex) {
       const mw = w / 2, mf = new Float32Array((th / 2) * (tw / 2));
       for (let yy = 0; yy < th / 2; yy++) for (let xx = 0; xx < tw / 2; xx++) mf[yy * (tw / 2) + xx] = mraw[(y0 / 2 + yy) * mw + x0 / 2 + xx] - 4;
       feeds.m = new ort.Tensor('float32', mf, [1, 1, th / 2, tw / 2]);
+      if (dec.inputNames.includes('z')) feeds.z = new ort.Tensor('float32', texNoise(x0 * 16, y0 * 16, tw * 16, th * 16), [1, 9, th * 16, tw * 16]);
     }
     const xo = (await dec.run(feeds)).x; const PW = tw * 16, PH = th * 16, P = PW * PH;
     const px0 = tx * 16, py0 = ty * 16, px1 = Math.min(pw, (tx + TL) * 16), py1 = Math.min(ph, (ty + TL) * 16);

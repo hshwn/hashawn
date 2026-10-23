@@ -34,6 +34,19 @@ W_CON = float(os.environ.get("W_CON", "0")); W_FLAT = float(os.environ.get("W_FL
 # ADV_MAP=1: the decoder feels the critic only where the original had detail (map weight 0 below ~1.4 levels of
 # high-pass rms, 1 above ~4), so nothing pulls flat, glossy areas toward texture
 ADV_MAP = bool(os.environ.get("ADV_MAP"))
+# NOISE=1: a full-resolution noise image as one more input; after every upsampling stage it is pooled to that stage's
+# resolution (rescaled to unit spread) and added with a learned per-channel gain (started at zero), so neighbouring
+# cells that look alike still draw different texture (no 16 px tiling). In the browser the noise is a hash of the
+# pixel position, so a file still unpacks the same every time.
+NOISE = bool(os.environ.get("NOISE"))
+# NOISE=2: in addition, 8 noise channels concatenated into the inputs of the last two stages' residual blocks (weights
+# started non-zero), so drawing from noise is the easy path; MSCRIT=1: the critic also judges the picture at 1/2 and
+# 1/4 size, so a pattern repeating every 16 px is visible to it
+NOISE2 = os.environ.get("NOISE") == "2"; MSCRIT = bool(os.environ.get("MSCRIT"))
+# W_SPEC: the drawn fine detail's power spectrum (batch mean, log) must match the original's: no grid spikes
+W_SPEC = float(os.environ.get("W_SPEC", "0"))
+def log_spectrum(h):
+    f = torch.fft.rfft2(h - h.mean((-2, -1), keepdim=True)); return torch.log(f.abs().pow(2).mean(0) + 1e-3)
 _g = torch.exp(-torch.arange(-4, 5, dtype=torch.float32) ** 2 / (2 * 1.5 ** 2)); _g = (_g / _g.sum()).to(dev)
 def highpass(x):
     """Brightness minus its Gaussian blur (sigma 1.5), in 8-bit units."""
@@ -60,22 +73,39 @@ class Critic(nn.Module):
         return s.out(h), feats
 
 class MapStudent(nn.Module):
-    """A student whose first conv also takes the detail map (one more input channel, started at zero)."""
-    def __init__(s, S, M):
-        super().__init__(); s.S = S; c0 = S.n[0].out_channels
+    """A student whose first conv also takes the detail map (one more input channel, started at zero); NOISE: plus
+    per-stage noise with learned gains."""
+    def __init__(s, S, M, noise=False):
+        super().__init__(); s.S = S; c0 = S.n[0].out_channels; s.noise = noise
         conv = stu.QConv(M + 1, c0, 3, padding=1)
         with torch.no_grad(): conv.weight.zero_(); conv.weight[:, :M] = S.n[0].weight; conv.bias.copy_(S.n[0].bias)
         S.n[0] = conv
-    def forward(s, y, m):
+        if noise: s.ng = nn.ParameterList([nn.Parameter(torch.zeros(1, S.n[i][0].out_channels // 4, 1, 1)) for i in (3, 4, 5, 6)])
+        if NOISE2:   # stages 5 and 6 (1/2 and full resolution): a 1x1 mix of 8 noise channels into their features
+            s.nmix = nn.ModuleList([nn.Conv2d(8, S.n[i][0].out_channels // 4, 1) for i in (5, 6)])
+            for c in s.nmix: nn.init.normal_(c.weight, std=0.1); nn.init.zeros_(c.bias)
+    def forward(s, y, m, nz=None):
         mm = F.interpolate(m / 8, scale_factor=2, mode="nearest")[..., :y.shape[-2], :y.shape[-1]]
-        return s.S.n(torch.cat([y * s.S.inv, mm], 1)) + 0.5
+        h = torch.cat([y * s.S.inv, mm], 1)
+        if not s.noise: return s.S.n(h) + 0.5
+        if nz is None: nz = torch.randn(y.shape[0], 9 if NOISE2 else 1, y.shape[-2] * 16, y.shape[-1] * 16, device=y.device, dtype=h.dtype)
+        for i, layer in enumerate(s.S.n):
+            if NOISE2 and i in (5, 6):  # the stage's upsampling conv, then noise mixed in before its residual block
+                h = layer[2](layer[1](layer[0](h)))
+                k = 2 ** (6 - i); n8 = nz[:, 1:9]; n8 = F.avg_pool2d(n8, k) * k if k > 1 else n8
+                h = layer[3](h + s.nmix[i - 5](n8))
+            else: h = layer(h)
+            if 3 <= i <= 6:            # after upsampling stage i-3: resolution 1/8, 1/4, 1/2, 1
+                k = 2 ** (6 - i); n = F.avg_pool2d(nz[:, :1], k) * k if k > 1 else nz[:, :1]
+                h = h + s.ng[i - 3] * n
+        return h + 0.5
 def load_student(path, M):
     sd = torch.load(path, map_location="cpu")
     if "S.n.0.weight" in sd:   # already a map student
         chans = (sd["S.n.0.weight"].shape[0],) + tuple(sd[f"S.n.{i}.0.weight"].shape[0] // 4 for i in (3, 4, 5, 6))
-        S = MapStudent(stu.Student(M, chans=chans), M); S.load_state_dict(sd); return S.to(dev)
+        S = MapStudent(stu.Student(M, chans=chans), M, noise="ng.0" in sd); S.load_state_dict(sd); return S.to(dev)
     chans = (sd["n.0.weight"].shape[0],) + tuple(sd[f"n.{i}.0.weight"].shape[0] // 4 for i in (3, 4, 5, 6))
-    S = stu.Student(M, chans=chans); S.load_state_dict(sd); return MapStudent(S, M).to(dev)
+    S = stu.Student(M, chans=chans); S.load_state_dict(sd); return MapStudent(S, M, NOISE).to(dev)
 
 def dump(S, T, kd, od):
     os.makedirs(od, exist_ok=True); S.eval(); agree = []
@@ -92,30 +122,42 @@ if __name__ == "__main__":
     cmd = rest[0]; wpath, spath = rest[1], rest[2]
     ims, lats, _, _ = stu.setup(wpath, rest[3], L, False); M = lats[0].shape[0]
     S = load_student(spath, M); D = Critic(M).to(dev)
+    D2 = Critic(M).to(dev) if MSCRIT else None; D4 = Critic(M).to(dev) if MSCRIT else None
+    def crit(xi, y, m):
+        """(output, features) of the full-size critic, plus the 1/2 and 1/4 critics' outputs when MSCRIT."""
+        o, f = D(xi, y, m)
+        if not MSCRIT: return [o], f
+        x2, x4 = F.avg_pool2d(xi, 2), F.avg_pool2d(xi, 4)
+        y2, y4 = F.avg_pool2d(y, 2), F.avg_pool2d(y, 4); m2, m4 = F.avg_pool2d(m, 2), F.avg_pool2d(m, 4)
+        return [o, D2(x2, y2, m2)[0], D4(x4, y4, m4)[0]], f
     TE = teacher(wpath) if W_CON else None
     print(f"student {sum(p.numel() for p in S.parameters()) / 1e6:.2f}M, critic {sum(p.numel() for p in D.parameters()) / 1e6:.2f}M", flush=True)
     with torch.no_grad():   # the student's own pixel error, to normalise
         ref = np.mean([F.mse_loss(S(y, detail_map(x)).clamp(0, 1), x).item() for y, x, _ in (stu.pair_batch(ims, lats, B, L) for _ in range(8))])
     print(f"student MSE {ref:.5f} ({10 * np.log10(1 / ref):.2f} dB on train crops)", flush=True)
     optg = torch.optim.Adam(S.parameters(), float(os.environ.get("LR_G", "5e-5")), betas=(0.5, 0.9))
-    optd = torch.optim.Adam(D.parameters(), float(os.environ.get("LR_D", "2e-4")), betas=(0.5, 0.9))
+    dparams = list(D.parameters()) + (list(D2.parameters()) + list(D4.parameters()) if MSCRIT else [])
+    optd = torch.optim.Adam(dparams, float(os.environ.get("LR_D", "2e-4")), betas=(0.5, 0.9))
     def step():
         y, x, _ = stu.pair_batch(ims, lats, B, L); m = detail_map(x)
         with torch.autocast("cuda", torch.bfloat16): xh = S(y, m).float()
-        dr, _ = D(x, y, m); df, _ = D(xh.detach().clamp(0, 1), y, m)
-        ld = F.relu(1 - dr).mean() + F.relu(1 + df).mean(); optd.zero_grad(set_to_none=True); ld.backward(); optd.step()
-        g, ff = D(xh, y, m)
-        with torch.no_grad(): _, fr = D(x, y, m)
+        drs, _ = crit(x, y, m); dfs, _ = crit(xh.detach().clamp(0, 1), y, m)
+        ld = sum(F.relu(1 - dr).mean() + F.relu(1 + df).mean() for dr, df in zip(drs, dfs)); optd.zero_grad(set_to_none=True); ld.backward(); optd.step()
+        gs, ff = crit(xh, y, m); g = gs[0]
+        with torch.no_grad(): _, fr = crit(x, y, m)
         fm = sum(F.l1_loss(a, b) for a, b in zip(ff, fr)) / len(ff)
         if ADV_MAP:
             wgt = F.interpolate(torch.clamp((m - 1) / 4, 0, 1), size=g.shape[-2:], mode="nearest")
             adv = -(g * wgt).sum() / wgt.sum().clamp_min(1.0)
         else: adv = -g.mean()
+        if MSCRIT: adv = adv - sum(gg.mean() for gg in gs[1:])
         px = F.mse_loss(xh, x) / ref
         loss = W_PX * px + W_GAN * adv + W_FM * fm
         # flat areas: no more fine detail than the original has (8 x 8 blocks, 8-bit units, 25% + 0.5 slack)
-        flat = F.relu(block_rms(highpass(xh), 8) - 1.25 * block_rms(highpass(x), 8) - 0.5).pow(2).mean()
+        hh, hx = highpass(xh), highpass(x)
+        flat = F.relu(block_rms(hh, 8) - 1.25 * block_rms(hx, 8) - 0.5).pow(2).mean()
         loss = loss + W_FLAT * flat; ld_flat = flat.detach()
+        if W_SPEC: loss = loss + W_SPEC * (log_spectrum(hh.float()) - log_spectrum(hx.float())).abs().mean()
         if W_CON:
             with torch.autocast("cuda", torch.bfloat16): ye = TE.g_a(xh.clamp(0, 1)).float()
             con = F.mse_loss(ye, y) * 12; loss = loss + W_CON * con; px = con.detach()      # report consistency in the px slot
