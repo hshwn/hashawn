@@ -1106,3 +1106,5 @@ Where it is: at equal latent bytes the teacher's own decoder beats AVIF by 0.8 d
 vs 28.28) and loses on SSIMULACRA2 (3.9 vs 11.7, 23.2 vs 28.4); our student is ~0.5 dB below the teacher. Queued on
 the rig (behind the qcompress jobs): q0 (teacher fine-tuned to lambda 0.0006 + predictor + student) and a wider q1
 student (v3: 128/128/128/96/64).
+Decode-side sharpening (unsharp mask, sigma 0.8 / 1.5, amount 0.3-1.0) on tiny q1: SSIMULACRA2 0.7 -> 0.8 at best
+(sigma 0.8, 0.3), worse above, PSNR always down. AVIF's lead on that metric is not edge softness; rejected.
