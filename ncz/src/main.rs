@@ -76,9 +76,12 @@ fn main() {
         return;
     }
     if a.len() == 6 && a[1] == "png-mode" {
-        // nczcli png-mode <0 exact | 1 near +-1 | 2 grain> <in.png> <out.ncz> <out.png>: what the browser tool writes
-        // (fast mode); prints sizes, the mode actually used, and the max per-sample error of the rebuilt PNG
-        let mode = match a[2].as_str() { "0" => ncz::pngc::Mode::Exact, "1" => ncz::pngc::Mode::Near(1), _ => ncz::pngc::Mode::Grain };
+        // nczcli png-mode <0 exact | 1 near +-1 | 2 grain | nK near +-K> <in.png> <out.ncz> <out.png>: what the browser
+        // tool writes (fast mode); prints sizes, the mode actually used, and the max per-sample error of the rebuilt PNG
+        let mode = match a[2].as_str() {
+            "0" => ncz::pngc::Mode::Exact, "1" => ncz::pngc::Mode::Near(1),
+            m if m.starts_with('n') => ncz::pngc::Mode::Near(m[1..].parse().expect("nK: K a number")),
+            _ => ncz::pngc::Mode::Grain };
         let b = fs::read(&a[3]).expect("read");
         let c = ncz::pngc::compress_mode(&b, 0, mode).expect("not handled or not smaller");
         let back = ncz::pngc::decompress(&c).expect("decode");

@@ -973,3 +973,20 @@ v3 0.197 on kodim13). v7 = v6 + W_PHASE 0.2 (that energy may not exceed the orig
 
 Shipped v7 (ONNX vs PyTorch max 0.045, browser kodim13 22.05 dB, repeatable). By eye the texture still reads as
 pixel-level speckle ("bit-crushed"): matching energy, spectrum and grid statistics does not make it look like leaves.
+
+### Swatches: real texture instead of invented texture (2026-10-23, CPU test, bench/wonder/swatch_ceiling.py)
+
+The file carries a few small grey samples ("swatches", 48 px) of the photo's own textures, cut from areas where every
+16 px block is texture the smooth picture lost (no edges inside: they get pasted onto bare walls); per block a swatch
+index (or none: only blocks where the smooth picture kept < 60% of the original's fine detail); per 32 px block the
+detail level. The decoder lays the swatch's fine detail (sigma 2 band) on top of the smooth q1 picture, patch by patch
+(cost: coarse-shape match + 4 px overlap match, mirror allowed), scaled to the detail the smooth picture lacks.
+
+- Perfect swatches: foliage reads as real leaves, no speckle or grid; mean PSNR 26.4 dB (v7: 25.6).
+- Coded pixel-wise (ncz near +-K): +-8 costs 2.1-6.4 KB (too much); +-16 fits but its quantisation noise is as strong
+  as the texture: dots on walls, sparkle on paint (bit-crushed again).
+- Transform-coded (8 x 8 DCT, dead zone, step 10; bytes estimated from adaptive level costs): swatches 1.1-3.0 KB +
+  labels/levels 0.35-0.45 KB. q1 + swatches 107.2 KB vs q2 125.1 KB over the 8 photos (each photo at or below q2's
+  size, within 0.4% on kodim03/19/23). Mean PSNR 26.44 vs q2 28.50.
+- By eye vs q2: foliage clearly better (texture vs blur); walls get 8 x 8 DCT basis stripes; on the bikes, swatches of
+  tread land on red paint and springs (wrong kind of texture for the block).
