@@ -3,7 +3,7 @@
 //! At ~0.1 bits per pixel the latents keep a photo's shapes and colours but not its fine texture, and a decoder that
 //! invents texture draws its statistics (speckle). Instead the file carries a few small grey samples of the photo's
 //! own textures ("swatches", 48 x 48, transform coded) and, per 16 x 16 block, what fills in the detail lost there: a
-//! swatch, grain, or nothing. The decoder lays the swatch's fine detail (picture minus its blur, sigma 2) onto the
+//! swatch, grain (at one of three strengths), or nothing. The decoder lays the swatch's fine detail (picture minus its blur, sigma 2) onto the
 //! decoded picture patch by patch: in the swatch (or its mirror image) it takes the spot whose coarse shape matches the
 //! picture there and whose detail joins the patches already laid (4 px overlaps, cross-faded), scaled to the detail the
 //! picture lacks (the original's level per 32 x 32 block, stored). The detail goes on all three channels.
@@ -22,16 +22,18 @@
 //!
 //! Section: "NCZS" | version | swatch count | swatch size | grain softness index | DCT step | blocks across u16 |
 //! blocks down u16 | atlas length u32 | [v2: spot stride] | atlas (DCT levels: the NCZY latent coder, 64 frequency
-//! channels) | side info (ncz v3 stream: label + 2 per 16 x 16 block, level + 4 per 32 x 32 block).
+//! channels) | side info (ncz v3 stream: label + 4 per 16 x 16 block (v1, v2: + 2), level + 4 per 32 x 32
+//! block).
 
 pub const MAGIC: &[u8; 4] = b"NCZS";
-pub const VERSION: u8 = 2;      // 2: + spot stride byte; 1 (stride 1) still decodes
+pub const VERSION: u8 = 3;      // 3: grain at three strengths (labels + 4); 2: + spot stride byte; 1, 2 still decode
 const B: usize = 16;
 const OV: usize = 4;
 const P: usize = B + OV;
 const PP: usize = P * P;
 const NONE: i32 = -1;
-const GRAIN: i32 = -2;
+const GRAIN: i32 = -2;           // -2, -3, -4: grain at full, 0.6 and 0.35 of the missing level (a 32 px block's level
+const GRAIN_AMP: [f32; 3] = [1.0, 0.6, 0.35];   // can overstate a 16 px block's: foam edges, a lone bright leaf)
 const SOFTS: [f32; 6] = [0.0, 0.3, 0.45, 0.6, 0.75, 0.9];
 const SW: usize = 48;
 const KINDS: usize = 8;
@@ -238,7 +240,7 @@ impl<'a> Layer<'a> {
     /// The detail block (by, bx) gets from option k, scaled.
     fn patch(&self, st: &Strip, k: i32, by: usize, bx: usize, cur: &[f32], ws: &[f32]) -> Vec<f32> {
         let miss = self.miss(st, by, bx);
-        if k == GRAIN { return st.grain.window(bx * B, by * B, P).iter().map(|v| v * miss).collect(); }
+        if k <= GRAIN { let a = miss * GRAIN_AMP[(GRAIN - k) as usize]; return st.grain.window(bx * B, by * B, P).iter().map(|v| v * a).collect(); }
         let s = &self.src[k as usize]; let t0 = st.sl.window(bx * B, by * B, P); let tm = mean(&t0); let t: Vec<f32> = t0.iter().map(|v| v - tm).collect();
         let tt = dot(&t, &t); let tv = ms(&t) + 4.0;
         let mask: Vec<f32> = ws.iter().map(|&v| (v > 0.0) as u8 as f32).collect(); let np = mask.iter().sum::<f32>();
@@ -267,7 +269,7 @@ impl<'a> Layer<'a> {
                     let (cur, ws) = self.cur(cv, by, bx);
                     let fo = feats(&ob.window(bx * B, by * B, P)); let base = st.sb.window(bx * B, by * B, P);
                     let mut best = f32::INFINITY; let mut bk = NONE;
-                    for k in [NONE, GRAIN].into_iter().chain(tries(i)) {
+                    for k in [NONE, GRAIN, GRAIN - 1, GRAIN - 2].into_iter().chain(tries(i)) {
                         let add = if k == NONE { vec![0.0; PP] } else { self.patch(st, k, by, bx, &cur, &ws) };
                         let r: Vec<f32> = (0..PP).map(|j| base[j] + if k == NONE { if ws[j] > 0.0 { cur[j] } else { 0.0 } }
                             else if ws[j] > 0.0 { (cur[j] * ws[j] + add[j] * self.fw[j]) / (ws[j] + self.fw[j]) } else { add[j] }).collect();
@@ -457,12 +459,12 @@ pub fn encode(orig: &[u8], pic: &[u8], w: usize, h: usize) -> Option<(Vec<u8>, S
     let ns = swatches.len(); let aw = ns.max(1) * SW;
     let mut atlas = vec![128f32; aw * SW]; for (k, (p, _)) in swatches.iter().enumerate() { for y in 0..SW { for xx in 0..SW { atlas[y * aw + k * SW + xx] = p.v[y * SW + xx]; } } }
     let a = if ns > 0 { crate::lat::compress(&dct_levels(&atlas, aw, SW, STEP as f32), 64, SW / 8, aw / 8, None) } else { Vec::new() };
-    let mut side: Vec<u8> = lab.iter().map(|&l| (l + 2) as u8).collect(); side.extend_from_slice(&lvl);
+    let mut side: Vec<u8> = lab.iter().map(|&l| (l + 4) as u8).collect(); side.extend_from_slice(&lvl);
     let sz = crate::compress(&side);
     let mut out = Vec::new(); out.extend_from_slice(MAGIC); out.extend_from_slice(&[VERSION, ns as u8, SW as u8, si as u8, STEP]);
     out.extend_from_slice(&(bw as u16).to_le_bytes()); out.extend_from_slice(&(bh as u16).to_le_bytes());
     out.extend_from_slice(&(a.len() as u32).to_le_bytes()); out.push(stride as u8); out.extend_from_slice(&a); out.extend_from_slice(&sz);
-    let st = Stats { swatches: ns, none: lab.iter().filter(|&&l| l == NONE).count(), grain: lab.iter().filter(|&&l| l == GRAIN).count(), swatch: lab.iter().filter(|&&l| l >= 0).count(), atlas_bytes: a.len(), side_bytes: sz.len() };
+    let st = Stats { swatches: ns, none: lab.iter().filter(|&&l| l == NONE).count(), grain: lab.iter().filter(|&&l| l <= GRAIN).count(), swatch: lab.iter().filter(|&&l| l >= 0).count(), atlas_bytes: a.len(), side_bytes: sz.len() };
     Some((out, st))
 }
 
@@ -481,8 +483,9 @@ pub fn apply(rgb: &mut [u8], w: usize, h: usize, sec: &[u8]) -> Option<()> {
     } else { Vec::new() };
     let side = crate::decompress(sec.get(a0 + an..)?)?; let (lw, lh) = (w / 32, h / 32);
     if side.len() != bw * bh + lw * lh { return None; }
-    let mut lab: Vec<i32> = side[..bw * bh].iter().map(|&b| b as i32 - 2).collect();
-    if lab.iter().any(|&l| l < GRAIN || l >= ns as i32) { return None; }
+    let off = if sec[4] >= 3 { 4 } else { 2 };
+    let mut lab: Vec<i32> = side[..bw * bh].iter().map(|&b| b as i32 - off).collect();
+    if lab.iter().any(|&l| l < GRAIN - 2 || l >= ns as i32) { return None; }
     let src: Vec<Source> = swatches.iter().map(|p| source(p, stride)).collect();
     let pic = rgb.to_vec();
     run(&pic, None, w, h, &src, &side[bw * bh..], SOFTS[si], &mut lab, None, Some(rgb)); Some(())

@@ -224,12 +224,14 @@ fn unit_grain_tile(fp: &Fingerprint, x0: usize, y0: usize, tw: usize, th: usize,
     let mut f: Vec<Vec<f64>> = (0..3).map(|c| {
         let ker = kernel(&fp.psd[c]); let sd = ker.iter().map(|k| k * k).sum::<f64>().sqrt().max(1e-12);
         let noise: Vec<f64> = (0..pw * ph).map(|i| hnoise(fp.seed, c as u64, (x0 + i % pw) as i64 - KR as i64, (y0 + i / pw) as i64 - KR as i64)).collect();
+        // each output adds its terms in kernel order (row, then column), as a per-pixel loop would; looping over the
+        // pixels innermost lets that loop vectorise
         let mut out = vec![0.0; tw * th];
-        for y in 0..th { for x in 0..tw {
-            let mut s = 0.0;
-            for ky in 0..n { let row = (y + ky) * pw + x; let kr = ky * n; for kx in 0..n { s += ker[kr + kx] * noise[row + kx]; } }
-            out[y * tw + x] = s / sd;
-        } }
+        for y in 0..th {
+            let o = &mut out[y * tw..(y + 1) * tw];
+            for ky in 0..n { for kx in 0..n { let k = ker[ky * n + kx]; let src = &noise[(y + ky) * pw + kx..(y + ky) * pw + kx + tw]; for x in 0..tw { o[x] += k * src[x]; } } }
+            for v in o.iter_mut() { *v /= sd; }
+        }
         out
     }).collect();
     if env > 0.0 {
@@ -238,8 +240,13 @@ fn unit_grain_tile(fp: &Fingerprint, x0: usize, y0: usize, tw: usize, th: usize,
         let (qw, qh) = (tw + 2 * r, th + 2 * r);
         let noise: Vec<f64> = (0..qw * qh).map(|i| hnoise(fp.seed, 3, (x0 + i % qw) as i64 - r as i64, (y0 + i / qw) as i64 - r as i64)).collect();
         let mut t = vec![0.0; tw * qh];
-        for y in 0..qh { for x in 0..tw { let mut s = 0.0; for i in 0..k.len() { s += k[i] * noise[y * qw + x + i]; } t[y * tw + x] = s; } }
-        for y in 0..th { for x in 0..tw { let mut s = 0.0; for i in 0..k.len() { s += k[i] * t[(y + i) * tw + x]; } let m = s / esd; let e = dexp(env * m); for c in 0..3 { f[c][y * tw + x] *= e; } } }
+        for y in 0..qh { let o = &mut t[y * tw..(y + 1) * tw]; for i in 0..k.len() { let src = &noise[y * qw + i..y * qw + i + tw]; for x in 0..tw { o[x] += k[i] * src[x]; } } }
+        let mut s = vec![0.0; tw];
+        for y in 0..th {
+            for v in s.iter_mut() { *v = 0.0; }
+            for i in 0..k.len() { let src = &t[(y + i) * tw..(y + i + 1) * tw]; for x in 0..tw { s[x] += k[i] * src[x]; } }
+            for x in 0..tw { let e = dexp(env * (s[x] / esd)); for c in 0..3 { f[c][y * tw + x] *= e; } }
+        }
     }
     let l = &fp.chol; let step = 8.0 / (NZ - 1) as f64; let em = dexp(env * env);
     let sd: Vec<f64> = (0..3).map(|c| ((0..=c).map(|j| l[c][j] * l[c][j]).sum::<f64>()).sqrt().max(1e-12) * em).collect();

@@ -1048,3 +1048,27 @@ Browser end to end (WebGPU; the pane was hidden, so the page ran as a background
 inflated, e.g. 48 MP smooth unpack 196 s vs 24.5 s measured visible on 10-22): 12 MP JPEG -> 101.7 KB, textured unpack
 works (31.33 dB vs smooth 32.13; fur and stone texture back); 48 MP -> 301 KB, textured unpack works, wasm memory 518 MB.
 Bug on the way: std::time::Instant::now() panics on wasm32-unknown-unknown ("unreachable"); the timing probes are gone.
+
+### Swatches: browser timings, wrong-surface patches, all three sizes, faster grain (2026-10-24)
+
+Browser, pane visible (WebGPU): 12 MP JPEG compress 29.5 s, unpack smooth 13.4 s / textured 14.4 s; 48 MP compress
+112 s, unpack 56.5 / 58.2 s, wasm 518 MB. Laying swatches adds 1-2 s. The 48 MP unpack is slower than 10-22's 24.5 s
+because grain regrowth landed after that measurement (~20 s native at 48 MP), not because of swatches.
+
+Bush patches in the kodim13 river: not a wrong kind (a penalty on the distance between a block's descriptor and the
+swatch's kind removed forest texture before river patches) and not skew (foam vs foliage skew as a statistic: no
+change). The cause: grain overshot there (finest detail ~1.9x the original's: the 32 px level is inflated by foam
+edges), so the bush swatch won by default. Section v3: grain at 1, 0.6 or 0.35 of the missing level, chosen per block.
+River patches nearly gone, forest kept, Kodak mean PSNR 26.66 -> 26.73.
+
+Swatches now at every size (browser, Kodak 8, swatch share of the files and mean PSNR smooth / textured):
+
+| | total | swatches | PSNR smooth | textured |
+|---|---|---|---|---|
+| q1 | 101.8 KB | 12.4 KB (12.2%) | 27.24 | 26.66 |
+| q2 | 132.6 KB | 7.4 KB (5.6%) | 28.48 | 28.09 |
+| q4 | 259.2 KB | 2.3 KB (0.9%) | 30.75 | 30.69 |
+
+By eye q2 + swatches: forest, plaster and lighthouse stucco textured where q2 smooth is flat; q4: small gain on
+plaster. Grain regrowth: the noise filters loop over pixels innermost (each output adds the same terms in the same
+order: identical bytes, wasm PNG modes still byte-identical to native), 12 MP regrowth ~6.3 -> ~2.2 s native.

@@ -99,7 +99,7 @@ async function decompress(u8, id, wantTex) {
 const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
 const QUALITIES = [1, 2, 4];                                   // the teacher's qualities shipped: 1 smallest, 4 sharpest
 const TEX = new Set([1]);                                      // sizes with a texture decoder (files made before swatches)
-const SWATCH = new Set([1]);                                   // sizes whose files carry swatches (real texture samples)
+const SWATCH = new Set([1, 2, 4]);                                 // sizes whose files carry swatches (real texture samples)
 let ortReady = null; const sessions = {}; const predLoaded = {};
 function ortLoad() {
   if (!ortReady) ortReady = (async () => { importScripts(ORT + 'ort.webgpu.min.js'); ort.env.wasm.wasmPaths = ORT;
