@@ -46,6 +46,22 @@ def feats(h):
     tot = sum(e) + 1e-3; k = (h ** 4).mean() / ((h ** 2).mean() ** 2 + 1e-3)
     return np.array([np.log(np.sqrt((f * f).mean()) + 0.5), np.log(np.sqrt((m * m).mean()) + 0.5)] + [ei / tot * 4 for ei in e] + [np.log(k + 0.1)])
 
+def regularity(o, cand, R=16):
+    """Per block: how strongly the original's fine detail repeats (normalised autocorrelation peak at 3-10 px
+    offsets, 32 x 32 window). Ribs, springs, gratings: 0.4-0.8; foliage 0.1-0.25; plaster 0.25-0.4."""
+    h = band(o) @ LUMA; hp = np.pad(h, R, mode="reflect"); bh, bw = cand.shape
+    yy, xx = np.mgrid[-2 * R: 2 * R, -2 * R: 2 * R]; rr = np.hypot(yy, xx); ring = (rr >= 3) & (rr <= 10); hw = np.outer(np.hanning(2 * R), np.hanning(2 * R))
+    out = np.zeros((bh, bw))
+    for by, bx in zip(*np.nonzero(cand)):
+        cy, cx = by * B + B // 2 + R, bx * B + B // 2 + R; w = hp[cy - R: cy + R, cx - R: cx + R]; w = (w - w.mean()) * hw
+        ac = np.fft.fftshift(np.fft.ifft2(np.abs(np.fft.fft2(w, s=(4 * R, 4 * R))) ** 2).real); out[by, bx] = ac[ring].max() / (ac[2 * R, 2 * R] + 1e-9)
+    return out
+def regular_blocks(o, cand):
+    """Blocks holding a repeating pattern the smooth picture lost: random texture over it looks wrong, so they get
+    nothing (as the smooth picture). Own score >= 0.5, or >= 0.35 next to one that is."""
+    r = regularity(o, cand); hi = r >= 0.5
+    near = ndi.binary_dilation(hi, structure=np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]]))
+    return hi | ((r >= 0.35) & near)
 def lay(s, sw, lvl, cand, lab=None, o=None, soft=0.6):
     """Lay fine detail on the smooth picture block by block. With the original `o`, choose each block's label (encoder);
     else use `lab` (decoder). Returns (picture, labels)."""
@@ -94,6 +110,7 @@ def lay(s, sw, lvl, cand, lab=None, o=None, soft=0.6):
 
 def run(o, s, K, SW, step, tmp, cli):
     lab0, sw, lvl = encode(o, s, K, SW); cand = lab0 >= 0
+    reg = regular_blocks(o, cand); print(f"regular blocks {reg.sum()} of {cand.sum()} texture blocks"); cand = cand & ~reg
     atlas = np.concatenate([np.round(w @ LUMA).clip(0, 255) for w in sw], 1)
     back, _ = dct_code(atlas, step); swc = [back[:, i * SW:(i + 1) * SW] for i in range(len(sw))]
     soft = grain_soft(o, cand); print("grain size", soft)

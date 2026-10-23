@@ -1000,3 +1000,10 @@ By eye vs q2: plaster walls get stucco-like grain close to the original's (q2: f
 still wrong: the corrugated fork boots on kodim05 get random red speckle (regular structured texture the smooth
 picture lost, no swatch can rebuild it, and the statistics still prefer a swatch to nothing). Bug on the way: the
 swatch gain cap (x2) also capped grain at rms 2.
+
+Regular-texture guard: blocks whose original fine detail repeats (normalised autocorrelation peak at 3-10 px, 32 px
+window: fork boots / springs 0.4-0.8, foliage 0.12-0.24, plaster 0.24-0.41, tread 0.26-0.30) get nothing, as the
+smooth picture: own score >= 0.5, or >= 0.35 next to one that is. Encoder only, no bytes. Fork boots and springs now
+clean (as q2). Cost: some plaster next to windows is caught too and goes flat (kodim08 yellow wall); kodim03 / 23 flag
+about half their texture blocks. Total q1 + swatches 106.6 KB vs q2 125.1 KB (-14.7%). Still seen: a few bush swatch
+patches land in the kodim13 river.
