@@ -1075,3 +1075,26 @@ order: identical bytes, wasm PNG modes still byte-identical to native), 12 MP re
 
 Swatch DCT step (Kodak 8, swatch bytes): 10: 11.8 KB, 13: 10.0, 16: 8.3, 20: 7.5. 16 looks the same as 10 by eye
 (foliage, plaster, stucco, stone); 20 starts to flatten. Step 16 now (the step is in the section header).
+
+### Against AVIF at the same size, and a compact grain fingerprint (2026-10-24, bench/wonder/scoreboard.py)
+
+Kodak 8, browser-made tiny files; every other codec at its largest quality whose file fits the tiny file's size
+(imagecodecs: libjxl effort 7, libaom AVIF speed 4, libwebp method 6). SSIMULACRA2 / PSNR, mean:
+
+| | q1 size (12.7 KB) | q2 size (16.6 KB) |
+|---|---|---|
+| tiny textured | -5.3 / 26.66 | 13.5 / 28.09 |
+| tiny smooth | 0.7 / 27.24 | 18.8 / 28.48 |
+| JPEG XL | 0.8 / 25.29 | 15.5 / 26.10 |
+| AVIF | 25.8 / 28.02 (12.1 KB) | 36.7 / 29.09 (16.0 KB) |
+| WebP | cannot get that small | cannot get that small |
+
+AVIF wins clearly on both metrics; by eye its edges and structure are crisper (bikes, window frames), tiny wins only on
+foliage texture. Earlier comparisons were against JPEG XL only, which is weak at these rates. Part of tiny's budget
+was not picture: the grain fingerprint was 1.3-1.5 KB a photo (~11% of a q1 file) and swatches ~1 KB.
+
+Compact grain fingerprint: the 32 x 32 grain spectrum per channel stored as 8 x 8 cell means of its log (rebuilt by
+wrap-around bilinear interpolation, kept point-symmetric), 17 quantiles instead of 65, strengths as u8 on a square-root
+scale: 1.38-1.55 KB -> 0.31-0.32 KB packed. Regrown grain: same rms per channel to 0.01 level, amplified grain fields
+look the same. Old fingerprints (fixed 2139 bytes raw) still decode: a grain-mode file made by the old build unpacks
+to the identical PNG. Grain-mode PNGs shrink by the same ~1.2 KB.

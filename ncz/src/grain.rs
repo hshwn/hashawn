@@ -30,6 +30,10 @@ pub const VERSION: u8 = 2;
 const NB: usize = 16;            // brightness bands
 const PS: usize = 32;            // spectrum patch size
 const NZ: usize = 65;            // quantiles, on z = -4..4
+const PC: usize = 8;             // compact fingerprint: spectrum cells per side
+const QS: usize = 4;             // compact fingerprint: every 4th quantile (17)
+const COMPACT: u8 = 0xC3;        // first byte of a compact fingerprint
+const FULL_LEN: usize = NB * 3 * 2 + 3 * PS * (PS / 2 + 1) + 12 + 3 * NZ * 2 + 1 + 8;   // the original form
 const CLIP: f64 = 6.0;           // normalised grain clipped to +-6
 const FLOOR: f64 = 0.25;         // strength floor when normalising (8-bit levels)
 const NO_GRAIN: f64 = 0.5;       // mean brightness-grain rms below this: treated as grain-free
@@ -114,18 +118,54 @@ fn strength_at(fp: &Fingerprint, yb: f64, c: usize) -> f64 {
 }
 
 impl Fingerprint {
-    fn encode(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        for b in 0..NB { for c in 0..3 { v.extend_from_slice(&((self.strength[b][c] * 100.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes()); } }
-        // the spectrum of a real field is point-symmetric: half of it (v <= PS/2) is enough
-        for c in 0..3 { for u in 0..PS { for vv in 0..=PS / 2 { let q = ((self.psd[c][u * PS + vv].max(1e-5).log10() + 5.0) * 40.0).round().clamp(0.0, 255.0) as u8; v.push(q); } } }
+    /// Compact form (v3, ~360 bytes before packing, vs 2139): the spectrum as 8 x 8 cell means of its log (grain
+    /// spectra are smooth; rebuilt by wrap-around bilinear interpolation, kept point-symmetric), 17 quantiles instead of
+    /// 65 (rebuilt linearly), strengths as u8 on a square-root scale. At ~0.2 bits per pixel the old form was ~11% of a
+    /// tiny-mode file.
+    fn encode_compact(&self) -> Vec<u8> {
+        let mut v = vec![COMPACT];
+        for b in 0..NB { for c in 0..3 { v.push((self.strength[b][c].max(0.0).sqrt() * 40.0).round().clamp(0.0, 255.0) as u8); } }
+        for c in 0..3 { for cu in 0..PC { for cv in 0..PC {
+            let mut s = 0.0; for u in 0..PS / PC { for w in 0..PS / PC { s += self.psd[c][(cu * PS / PC + u) * PS + cv * PS / PC + w].max(1e-5).log10(); } }
+            v.push(((s / ((PS / PC) * (PS / PC)) as f64 + 5.0) * 40.0).round().clamp(0.0, 255.0) as u8);
+        } } }
         for r in 0..3 { for c in 0..=r { v.extend_from_slice(&((self.chol[r][c] * 10000.0).round().clamp(-32767.0, 32767.0) as i16).to_le_bytes()); } }
-        for c in 0..3 { for i in 0..NZ { v.extend_from_slice(&((self.quant[c][i] * 1000.0).round().clamp(-32767.0, 32767.0) as i16).to_le_bytes()); } }
+        for c in 0..3 { for i in (0..NZ).step_by(QS) { v.extend_from_slice(&((self.quant[c][i] * 1000.0).round().clamp(-32767.0, 32767.0) as i16).to_le_bytes()); } }
         v.push((self.env * 100.0).round().clamp(0.0, 255.0) as u8);
         v.extend_from_slice(&self.seed.to_le_bytes());
         v
     }
+    fn decode_compact(b: &[u8]) -> Option<Fingerprint> {
+        let mut i = 1;
+        let mut strength = [[0.0; 3]; NB];
+        for bb in 0..NB { for c in 0..3 { let q = *b.get(i)? as f64 / 40.0; strength[bb][c] = q * q; i += 1; } }
+        let mut psd = vec![[0.0; PS * PS]; 3]; let k = PS / PC;
+        for c in 0..3 {
+            let mut cell = [[0.0f64; PC]; PC]; for cu in 0..PC { for cv in 0..PC { cell[cu][cv] = *b.get(i)? as f64 / 40.0 - 5.0; i += 1; } }
+            // a cell's value sits at its centre; wrap-around bilinear between centres, in log10
+            let at = |u: usize, v: usize| -> f64 {
+                let fu = (u as f64 - (k as f64 - 1.0) / 2.0) / k as f64; let fv = (v as f64 - (k as f64 - 1.0) / 2.0) / k as f64;
+                let (u0, v0) = (fu.floor(), fv.floor()); let (tu, tv) = (fu - u0, fv - v0);
+                let w = |x: f64| ((x as isize).rem_euclid(PC as isize)) as usize;
+                let (a, b2, c2, d) = (cell[w(u0)][w(v0)], cell[w(u0)][w(v0 + 1.0)], cell[w(u0 + 1.0)][w(v0)], cell[w(u0 + 1.0)][w(v0 + 1.0)]);
+                (a * (1.0 - tv) + b2 * tv) * (1.0 - tu) + (c2 * (1.0 - tv) + d * tv) * tu
+            };
+            for u in 0..PS { for v in 0..PS { let l = 0.5 * (at(u, v) + at((PS - u) % PS, (PS - v) % PS)); psd[c][u * PS + v] = dexp(l * std::f64::consts::LN_10); } }
+        }
+        let mut chol = [[0.0; 3]; 3];
+        for r in 0..3 { for c in 0..=r { chol[r][c] = i16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?) as f64 / 10000.0; i += 2; } }
+        let mut quant = [[0.0; NZ]; 3];
+        for c in 0..3 {
+            let mut q = Vec::new(); for _ in (0..NZ).step_by(QS) { q.push(i16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?) as f64 / 1000.0); i += 2; }
+            for k2 in 0..NZ { let j = k2 / QS; let f = (k2 % QS) as f64 / QS as f64; quant[c][k2] = if j + 1 < q.len() { q[j] * (1.0 - f) + q[j + 1] * f } else { q[j] }; }
+        }
+        let env = *b.get(i)? as f64 / 100.0; i += 1;
+        let seed = u64::from_le_bytes(b.get(i..i + 8)?.try_into().ok()?);
+        Some(Fingerprint { strength, psd, chol, quant, env, seed })
+    }
+    /// Either form: the original one (2139 bytes, written before 2026-10-24; still read) or the compact one.
     fn decode(b: &[u8]) -> Option<Fingerprint> {
+        if b.len() != FULL_LEN { return if b.first() == Some(&COMPACT) { Fingerprint::decode_compact(b) } else { None }; }
         let mut i = 0; let mut u16_ = || -> Option<u16> { let v = u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?); i += 2; Some(v) };
         let mut strength = [[0.0; 3]; NB];
         for bb in 0..NB { for c in 0..3 { strength[bb][c] = u16_()? as f64 / 100.0; } }
@@ -581,7 +621,7 @@ fn prepare(rgb: &[u8], w: usize, h: usize, k: u8) -> Option<(Vec<u8>, Vec<u8>, F
     let clean = if !grainy { fp = Fingerprint { strength: [[0.0; 3]; NB], psd: vec![[0.0; PS * PS]; 3], chol: [[0.0; 3]; 3], quant: [[0.0; NZ]; 3], env: 0.0, seed: 0 }; rgb.to_vec() }
         else if big { drop(clean_o); clean_tiled(rgb, w, h, &psd, &fac) } else { from_opp(&clean_o, w * h) };
     drop(crop);
-    let fpz = crate::compress(&fp.encode());
+    let fpz = crate::compress(&fp.encode_compact());
     let mut head = Vec::with_capacity(18 + fpz.len());
     head.extend_from_slice(MAGIC); head.push(VERSION); head.push(k);
     head.extend_from_slice(&(w as u32).to_le_bytes()); head.extend_from_slice(&(h as u32).to_le_bytes());
@@ -602,7 +642,7 @@ pub fn measure_on(rgb: &[u8], w: usize, h: usize, est: usize) -> Option<Vec<u8>>
     let (clean_o, _, _) = separate_full(&crop, cw, ch);
     let fp = fingerprint(&crop, &clean_o, cw, ch, seed);
     if fp.strength.iter().map(|s| s[0]).sum::<f64>() / (NB as f64) < NO_GRAIN { return None; }
-    Some(crate::compress(&fp.encode()))
+    Some(crate::compress(&fp.encode_compact()))
 }
 /// Regrow grain from a `measure`d fingerprint on a decoded picture, in place (version 2 synthesis, constant memory).
 pub fn apply_grain(rgb: &mut [u8], w: usize, h: usize, fpz: &[u8]) -> Option<()> {
