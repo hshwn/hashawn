@@ -113,7 +113,7 @@ async function fetchProgress(url, id, label, part) {
   const out = new Uint8Array(got); let off = 0; for (const c of chunks) { out.set(c, off); off += c.byteLength; } return out;
 }
 // the network files; '.ncz' ones are packed with our own codec (8-bit weights pack to ~6 bits, 4-bit to ~3) and unpacked here
-const file = (name, q) => `learned/q${q}.${name}${name === 'pred' ? '' : '.onnx'}.ncz${name === 'tex' ? '?v=5' : ''}`;   // ?v: the texture decoder was replaced (v5, noise input)
+const file = (name, q) => `learned/q${q}.${name}${name === 'pred' ? '' : '.onnx'}.ncz${name === 'tex' ? '?v=7' : ''}`;   // ?v: the texture decoder was replaced (v7)
 const LABEL = { enc: 'the encoder', dec: 'the decoder', pred: 'the predictor', tex: 'the texture decoder' };
 // The texture decoder's side input: the original's fine-detail energy per 32 x 32 block (brightness minus its Gaussian
 // blur, sigma 1.5, rms; log2 in half steps, -4..15), measured on the picture padded to W x H by repeating its edges.

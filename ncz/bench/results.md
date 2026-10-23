@@ -955,3 +955,21 @@ it from a hash of the pixel position (sum of 4 hash bytes, sd 1), so tiles agree
 Hash noise vs randn through the 8-bit ONNX (texparity.py): same PSNR (22.14) and grid peaks; ONNX vs PyTorch with the
 same noise, max 0.037 (8-bit weights), PSNR 22.14 vs 22.13. In the browser: kodim13 q1 17.2 KB, textured 22.11 dB,
 2.8 s to unpack. Download 2.05 MB (same as v3). The red tank still has some fuzz.
+
+### Texture decoder v6 / v7: colour mottle and the 4 px grid (2026-10-23)
+
+The red-tank fuzz was colour, not texture: v5 drew fine B - Y detail 2.8x the original's on the tank (5.4 vs 1.9; whole
+photos 1.6x), which the brightness-only flat penalty and map never see. v6 = v5 + W_CHROMA 1.5 (per 8 x 8 block, fine
+B - Y / R - Y rms may not exceed the original's + 0.25): tank 5.4 -> 2.5, whole photos at the original's level. It
+brought back a 4 px grid on foliage (kodim13 4 px peak 5.3 -> 8.1). That grid is in the decoder itself, not the noise
+(zero noise: 10.5; noise lowers it), from the 1/4-resolution stage's pixel shuffle. Measure: the part of the fine detail
+that is the same at every pixel with the same (x mod 16, y mod 16) over its rms ("grid share"; originals 0.074-0.105,
+v3 0.197 on kodim13). v7 = v6 + W_PHASE 0.2 (that energy may not exceed the original's; crops are latent-aligned):
+
+| all 8 Kodak | PSNR | grid share | 4 px peak |
+|---|---|---|---|
+| v6 | 25.46 | 0.121 | 3.6 |
+| v7 | 25.59 | 0.080 | 1.2 |
+
+Shipped v7 (ONNX vs PyTorch max 0.045, browser kodim13 22.05 dB, repeatable). By eye the texture still reads as
+pixel-level speckle ("bit-crushed"): matching energy, spectrum and grid statistics does not make it look like leaves.

@@ -31,6 +31,16 @@ W_PX = float(os.environ.get("W_PX", "1")); W_GAN = float(os.environ.get("W_GAN",
 # rounding noise (1/12). With it, the pixel term can be a small anchor: the file pins down what it pins down, the critic
 # draws the rest.
 W_CON = float(os.environ.get("W_CON", "0")); W_FLAT = float(os.environ.get("W_FLAT", "1"))
+# W_CHROMA: no more fine colour detail than the original has (8 x 8 blocks, 0.25 slack); the flat penalty and the map
+# see brightness only, and v5 drew colour mottle (fine B - Y 1.6-2.8x the original's) on smooth red paint
+W_CHROMA = float(os.environ.get("W_CHROMA", "0"))
+# W_PHASE: no repeating pattern on the 16 px latent grid. A grid of period 16, 8, 4 or 2 px is exactly the part of the
+# fine detail that is the same at every pixel with the same (x mod 16, y mod 16): its energy (phase-class means, crops
+# are latent-aligned) may not exceed the original's. v5/v6 drew a 4 px one (the 1/4-resolution stage's pixel shuffle)
+W_PHASE = float(os.environ.get("W_PHASE", "0"))
+def phase_energy(h):
+    B, _, H, W = h.shape; m = h.reshape(B, 1, H // 16, 16, W // 16, 16).mean((2, 4))
+    return (m - m.mean((-2, -1), keepdim=True)).pow(2).mean((1, 2, 3))
 # ADV_MAP=1: the decoder feels the critic only where the original had detail (map weight 0 below ~1.4 levels of
 # high-pass rms, 1 above ~4), so nothing pulls flat, glossy areas toward texture
 ADV_MAP = bool(os.environ.get("ADV_MAP"))
@@ -53,6 +63,12 @@ def highpass(x):
     l = (x[:, 0:1] * 0.299 + x[:, 1:2] * 0.587 + x[:, 2:3] * 0.114) * 255
     b = F.conv2d(F.pad(l, (4, 4, 0, 0), mode="reflect"), _g.view(1, 1, 1, 9)); b = F.conv2d(F.pad(b, (0, 0, 4, 4), mode="reflect"), _g.view(1, 1, 9, 1))
     return l - b
+def chroma_highpass(x):
+    """Colour (B - Y, R - Y) minus its Gaussian blur (sigma 1.5), in 8-bit units: 2 channels."""
+    l = x[:, 0:1] * 0.299 + x[:, 1:2] * 0.587 + x[:, 2:3] * 0.114; c = torch.cat([x[:, 2:3] - l, x[:, 0:1] - l], 1) * 255
+    b = F.conv2d(F.pad(c, (4, 4, 0, 0), mode="reflect"), _g.view(1, 1, 1, 9).expand(2, 1, 1, 9), groups=2)
+    b = F.conv2d(F.pad(b, (0, 0, 4, 4), mode="reflect"), _g.view(1, 1, 9, 1).expand(2, 1, 9, 1), groups=2)
+    return c - b
 def block_rms(h, k): return F.avg_pool2d(h * h, k).clamp_min(1e-6).sqrt()
 def detail_map(x):
     """The map the file carries: per 32 x 32 block, log2 of the high-pass rms in half steps (-4..15)."""
@@ -157,6 +173,12 @@ if __name__ == "__main__":
         hh, hx = highpass(xh), highpass(x)
         flat = F.relu(block_rms(hh, 8) - 1.25 * block_rms(hx, 8) - 0.5).pow(2).mean()
         loss = loss + W_FLAT * flat; ld_flat = flat.detach()
+        if W_CHROMA:
+            chroma = F.relu(block_rms(chroma_highpass(xh), 8) - block_rms(chroma_highpass(x), 8) - 0.25).pow(2).mean()
+            loss = loss + W_CHROMA * chroma; ld_flat = ld_flat + chroma.detach()
+        if W_PHASE:
+            phase = F.relu(phase_energy(hh.float()) - phase_energy(hx.float())).mean()
+            loss = loss + W_PHASE * phase; ld_flat = ld_flat + phase.detach()
         if W_SPEC: loss = loss + W_SPEC * (log_spectrum(hh.float()) - log_spectrum(hx.float())).abs().mean()
         if W_CON:
             with torch.autocast("cuda", torch.bfloat16): ye = TE.g_a(xh.clamp(0, 1)).float()

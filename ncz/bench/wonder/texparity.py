@@ -1,8 +1,8 @@
 import os, sys, numpy as np, torch
 from PIL import Image
-sys.argv = [sys.argv[0], "x"]
+ck = sys.argv[1] if len(sys.argv) > 1 else "student_q1map5.pt"; sys.argv = [sys.argv[0], "x"]
 import texture2 as t2
-T = t2.teacher("teacher/cheng2020-anchor-1-dad2ebff.pth.tar"); S = t2.load_student("student_q1map5.pt", 128).eval()
+T = t2.teacher("teacher/cheng2020-anchor-1-dad2ebff.pth.tar"); S = t2.load_student(ck, 128).eval()
 x = torch.from_numpy(np.asarray(Image.open(os.path.expanduser("~/ncz-img/kodak/kodak_kodim13.ppm")).convert("RGB"), dtype=np.float32) / 255).permute(2, 0, 1)[None].to(t2.dev)
 with torch.no_grad():
     y = torch.round(T.g_a(x)); m = t2.detail_map(x); g = torch.Generator(device="cpu").manual_seed(1)
