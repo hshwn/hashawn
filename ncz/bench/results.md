@@ -990,3 +990,13 @@ detail level. The decoder lays the swatch's fine detail (sigma 2 band) on top of
   size, within 0.4% on kodim03/19/23). Mean PSNR 26.44 vs q2 28.50.
 - By eye vs q2: foliage clearly better (texture vs blur); walls get 8 x 8 DCT basis stripes; on the bikes, swatches of
   tread land on red paint and springs (wrong kind of texture for the block).
+
+Swatches v2 (bench/wonder/swatch2.py): the encoder tries, per block, every swatch, grain, and nothing, and keeps the
+one whose result's texture statistics (energy in two bands, energy by direction, peakiness) are closest to the
+original's there; the decoder repeats the walk from the labels (asserted identical). Grain: position-hashed noise,
+softness matched to the photo (1 byte), scaled to the missing level. Unused swatches are dropped. Blocks: none 55-79%,
+grain 4-18%, swatch 13-27%. q1 + swatches + labels 107.0 KB vs q2 125.1 KB (-14.5%; kodim03/23 +0.6% / +1.3%).
+By eye vs q2: plaster walls get stucco-like grain close to the original's (q2: flat), bushes crisper, water similar;
+still wrong: the corrugated fork boots on kodim05 get random red speckle (regular structured texture the smooth
+picture lost, no swatch can rebuild it, and the statistics still prefer a swatch to nothing). Bug on the way: the
+swatch gain cap (x2) also capped grain at rms 2.
