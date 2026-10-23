@@ -143,6 +143,24 @@ fn leak(mut v: Vec<u8>) -> *mut u8 { v.shrink_to_fit(); unsafe { OUT_LEN = v.len
     let dmap = if mn == 0 { &[][..] } else { std::slice::from_raw_parts(m, mn) };
     match ncz::wonder::compress_full(std::slice::from_raw_parts(lat, c * h * w), c, h, w, pw, ph, q as u8, pr, grain, dmap) { Some(v) => leak(v), None => std::ptr::null_mut() }
 }
+/// With a grain fingerprint, a detail map and a swatch section (nczl_sw_enc); n 0: none.
+#[no_mangle] #[allow(clippy::too_many_arguments)] pub unsafe extern "C" fn nczl_w_enc_sw(lat: *const i16, c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u32, g: *const u8, gn: usize, m: *const u8, mn: usize, s: *const u8, sn: usize) -> *mut u8 {
+    let Some(pr) = predictor(q as u8) else { return std::ptr::null_mut() };
+    let part = |p: *const u8, n: usize| if n == 0 { &[][..] } else { std::slice::from_raw_parts(p, n) };
+    match ncz::wonder::compress_swatch(std::slice::from_raw_parts(lat, c * h * w), c, h, w, pw, ph, q as u8, pr, part(g, gn), part(m, mn), part(s, sn)) { Some(v) => leak(v), None => std::ptr::null_mut() }
+}
+/// Swatch section for a picture (original and decoded-with-grain RGB, w x h): ptr (len nczl_out_len), 0 = none.
+#[no_mangle] pub unsafe extern "C" fn nczl_sw_enc(o: *const u8, d: *const u8, w: usize, h: usize) -> *mut u8 {
+    match ncz::swatch::encode(std::slice::from_raw_parts(o, w * h * 3), std::slice::from_raw_parts(d, w * h * 3), w, h) { Some((v, _)) => leak(v), None => { OUT_LEN = 0; std::ptr::null_mut() } }
+}
+/// Lay a swatch section's texture onto an RGB picture in place: 1 done, 0 not (damaged or not for this size).
+#[no_mangle] pub unsafe extern "C" fn nczl_sw_apply(rgb: *mut u8, w: usize, h: usize, s: *const u8, sn: usize) -> u32 {
+    ncz::swatch::apply(std::slice::from_raw_parts_mut(rgb, w * h * 3), w, h, std::slice::from_raw_parts(s, sn)).is_some() as u32
+}
+/// The swatch section stored in an NCZW stream: ptr (len nczl_out_len), 0 = none.
+#[no_mangle] pub unsafe extern "C" fn nczl_w_swatch(p: *const u8, n: usize) -> *mut u8 {
+    match ncz::wonder::swatches(std::slice::from_raw_parts(p, n)) { Some(g) if !g.is_empty() => leak(g.to_vec()), _ => { OUT_LEN = 0; std::ptr::null_mut() } }
+}
 /// The detail map stored in an NCZW stream: ptr (len nczl_out_len), 0 = none.
 #[no_mangle] pub unsafe extern "C" fn nczl_w_dmap(p: *const u8, n: usize) -> *mut u8 {
     match ncz::wonder::detail_map(std::slice::from_raw_parts(p, n)) { Some(g) if !g.is_empty() => leak(g.to_vec()), _ => { OUT_LEN = 0; std::ptr::null_mut() } }

@@ -28,7 +28,7 @@
   showMode();
   // what came back: 0 exact, k within +-k, 255 grain mode
   const isTiny = (m) => m === 'tiny' || m === 'tiny-tex';
-  const pngNote = (m) => m === 'tiny-tex' ? 'tiny, textured: the decoder draws texture the file only hints at, so it looks real but is not the original · '
+  const pngNote = (m) => m === 'tiny-tex' ? 'tiny, textured: small samples of the photo\'s own texture, carried in the file, laid back where it went soft · '
     : m === 'tiny' ? 'tiny: a learned codec, it looks close but it is not the original · ' : m === 255 ? 'looks the same: the grain is regrown, the pixels are not the originals · '
     : m > 0 ? `every pixel within ±${m} of the original, metadata kept · ` : 'every pixel comes back, metadata too · ';
 
@@ -170,7 +170,7 @@
       if (p.model) {
         const tiny = !!p.model.label;
         render(`<div class="job"><p class="label">${tiny ? `fetching ${p.model.label}` : 'fetching the brain'}</p><div class="bar"><i style="width:${p.model.total ? (p.model.done / p.model.total * 100).toFixed(1) : 0}%"></i></div><p class="sub">${tiny ? `${fmt(p.model.done)} of ${fmt(p.model.total)}, once` : '3 MB, once'}</p></div>`); return; }
-      const lph = { 'learn-grain': 'measuring the grain', 'learn-enc': 'looking at the picture', 'learn-pack': 'packing it', 'learn-unpack': 'unpacking', 'learn-dec': 'painting it back', 'learn-grain-back': 'growing the grain back' }[p.phase];
+      const lph = { 'learn-grain': 'measuring the grain', 'learn-enc': 'looking at the picture', 'learn-pack': 'packing it', 'learn-unpack': 'unpacking', 'learn-dec': 'painting it back', 'learn-grain-back': 'growing the grain back', 'learn-swatch': 'choosing real texture', 'learn-swatch-back': 'laying the texture' }[p.phase];
       if (lph) { progress(lph, Math.min(p.done, total), total); return; }
       const label = p.phase === 'grain' ? (isNcz ? 'growing the grain back' : 'finding the grain') : isNcz ? 'unpacking' : p.png ? 'compressing the pixels' : (p.brain ? 'compressing, with the brain' : 'compressing');
       progress(p.k > 1 ? `${label} · ${p.k} at once` : label, Math.min(p.done, total), total);

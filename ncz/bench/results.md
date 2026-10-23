@@ -1007,3 +1007,23 @@ smooth picture: own score >= 0.5, or >= 0.35 next to one that is. Encoder only, 
 clean (as q2). Cost: some plaster next to windows is caught too and goes flat (kodim08 yellow wall); kodim03 / 23 flag
 about half their texture blocks. Total q1 + swatches 106.6 KB vs q2 125.1 KB (-14.7%). Still seen: a few bush swatch
 patches land in the kodim13 river.
+
+### Swatches in the real format (2026-10-23)
+
+ncz/src/swatch.rs (port of bench/wonder/swatch2.py; f32, deterministic k-means start instead of random): encoder
+(cut swatches, regularity guard, per-block choice, drop unused), DCT atlas coded by the NCZY latent coder as 64
+frequency channels, labels + levels by ncz v3. NCZW v5 adds the section after the detail map (v2-v4 still decode).
+`nczcli swatch` runs it natively: Kodak 8, 0.9-2.0 KB per photo, encode 0.4-1.6 s, lay 0.1-0.2 s, mean PSNR 26.66
+(Python reference 26.66). Browser (tools/compress): q1 files carry swatches (no detail map any more); the encoder
+decodes its own latents and regrows grain to see what unpack will show, then builds the section; "textured" lays
+it (files from before keep the texture decoder). End to end in the browser, Kodak 8:
+
+| | bytes (8 photos) | mean PSNR |
+|---|---|---|
+| q1 + swatches | 101,622 | 26.60 |
+| q1 smooth (same files) | | 27.24 |
+| q2 | 125,264 | 28.48 |
+
+Every photo smaller than its q2 (-4% to -27%, -18.9% total). kodim13: encode 4.1 s (WebGPU), unpack textured 0.69 s
+vs smooth 0.44 s. By eye vs q2: foliage textured where q2 is blur, plaster grain, bikes clean; a few bush patches still
+land in the kodim13 river.

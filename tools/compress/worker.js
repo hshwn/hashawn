@@ -98,7 +98,8 @@ async function decompress(u8, id, wantTex) {
 // exact: they look close to the original, at a fraction of the size.
 const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
 const QUALITIES = [1, 2, 4];                                   // the teacher's qualities shipped: 1 smallest, 4 sharpest
-const TEX = new Set([1]);                                      // sizes with a texture decoder (draws texture instead of blur)
+const TEX = new Set([1]);                                      // sizes with a texture decoder (files made before swatches)
+const SWATCH = new Set([1]);                                   // sizes whose files carry swatches (real texture samples)
 let ortReady = null; const sessions = {}; const predLoaded = {};
 function ortLoad() {
   if (!ortReady) ortReady = (async () => { importScripts(ORT + 'ort.webgpu.min.js'); ort.env.wasm.wasmPaths = ORT;
@@ -195,11 +196,19 @@ async function learnedEncode(u8, id, q) {
       lat[(q * h + ty / 16 + yy) * w + tx / 16 + xx] = Math.max(-32767, Math.min(32767, Math.round(y.data[(q * lh + oy + yy) * lw + ox + xx])));
     y.dispose && y.dispose();
   }
+  // swatches: the picture as unpack will show it (decoded, grain regrown), then which real texture goes where
+  let sw = new Uint8Array(0);
+  if (SWATCH.has(q)) {
+    const d = await paint(lat, c, h, w, pw, ph, await session('dec', q, id), id, null);
+    regrow(d, pw, ph, grain.length ? grain : null, id);
+    postMessage({ id, type: 'progress', done: 0, total: 1, phase: 'learn-swatch' }); await yieldNow();
+    const o = rgbOf(rgba), r = rgbOf(d); const op = put(o), rp = put(r);
+    const sp = wasm.nczl_sw_enc(op, rp, pw, ph); wasm.nczl_free(op, o.length); wasm.nczl_free(rp, r.length); if (sp) sw = takeOut(sp);
+  }
   postMessage({ id, type: 'progress', done: tiles.length, total: tiles.length + 1, phase: 'learn-pack' }); await yieldNow();
-  const dmap = TEX.has(q) ? packBytes(detailMap(rgba, pw, ph, W, H)) : new Uint8Array(0);
-  const lp = put(new Uint8Array(lat.buffer)); const gp = grain.length ? put(grain) : 0; const mp = dmap.length ? put(dmap) : 0;
-  const zp = wasm.nczl_w_enc_full(lp, c, h, w, pw, ph, q, gp, grain.length, mp, dmap.length); wasm.nczl_free(lp, lat.length * 2);
-  if (gp) wasm.nczl_free(gp, grain.length); if (mp) wasm.nczl_free(mp, dmap.length);
+  const lp = put(new Uint8Array(lat.buffer)); const gp = grain.length ? put(grain) : 0; const sp = sw.length ? put(sw) : 0;
+  const zp = wasm.nczl_w_enc_sw(lp, c, h, w, pw, ph, q, gp, grain.length, 0, 0, sp, sw.length); wasm.nczl_free(lp, lat.length * 2);
+  if (gp) wasm.nczl_free(gp, grain.length); if (sp) wasm.nczl_free(sp, sw.length);
   if (!zp) throw new Error('could not pack the latents');
   return { out: takeOut(zp), ep: enc.ep };
 }
@@ -216,23 +225,11 @@ function texNoise(px0, py0, PW, PH) {
         z[i++] = ((h & 255) + ((h >>> 8) & 255) + ((h >>> 16) & 255) + (h >>> 24) - 510) / 147.8; } } }
   return z;
 }
-async function learnedDecode(u8, id, wantTex) {
-  const pp = put(u8.subarray(0, 16)); const q = wasm.nczl_is_nczw(pp, 16) & 255; wasm.nczl_free(pp, 16);
-  if (!QUALITIES.includes(q)) throw new Error('made with a quality this page does not have');
-  await predictor(q, id);
-  // textured: when asked for, this size has a texture decoder, and the file carries the detail map
-  const mq0 = put(u8); const mq = wasm.nczl_w_dmap(mq0, u8.length); wasm.nczl_free(mq0, u8.length);
-  const mraw = mq ? unpackBytes(takeOut(mq)) : null; const tex = !!(wantTex && TEX.has(q) && mraw);
-  const dec = await session(tex ? 'tex' : 'dec', q, id);
-  postMessage({ id, type: 'progress', done: 0, total: 2, phase: 'learn-unpack' }); await new Promise((r) => setTimeout(r, 0));
-  const p = put(u8);
-  if (!wasm.nczl_w_match(p, u8.length)) { wasm.nczl_free(p, u8.length); throw new Error('made with a different version of tiny mode'); }
-  const gq = wasm.nczl_w_grain(p, u8.length); const grain = gq ? takeOut(gq) : null;
-  const lp = wasm.nczl_w_dec(p, u8.length); wasm.nczl_free(p, u8.length);
-  if (!lp) throw new Error('the file is damaged');
-  const raw = takeOut(lp); const lat = new Int16Array(raw.buffer, raw.byteOffset, raw.length / 2);
-  const [c, h, w, pw, ph] = [0, 1, 2, 3, 4].map((i) => wasm.nczl_w_dim(i));
-  const img = new ImageData(pw, ph); const d = img.data;
+const rgbOf = (rgba) => { const rgb = new Uint8Array(rgba.length / 4 * 3); for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { rgb[i] = rgba[j]; rgb[i + 1] = rgba[j + 1]; rgb[i + 2] = rgba[j + 2]; } return rgb; };
+const intoRgba = (d, rgb) => { for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { d[j] = rgb[i]; d[j + 1] = rgb[i + 1]; d[j + 2] = rgb[i + 2]; } };
+// latents -> RGBA picture, through decoder `dec` in tiles; `mraw`: the detail map, for the texture decoder
+async function paint(lat, c, h, w, pw, ph, dec, id, mraw) {
+  const d = new Uint8ClampedArray(pw * ph * 4);
   const tiles = []; for (let ty = 0; ty < h; ty += TL) for (let tx = 0; tx < w; tx += TL) tiles.push([tx, ty]);
   for (let k = 0; k < tiles.length; k++) {
     postMessage({ id, type: 'progress', done: k + 1, total: tiles.length + 1, phase: 'learn-dec' }); await yieldNow();
@@ -241,7 +238,7 @@ async function learnedDecode(u8, id, wantTex) {
     const yf = new Float32Array(c * tw * th);
     for (let q = 0; q < c; q++) for (let yy = 0; yy < th; yy++) for (let xx = 0; xx < tw; xx++) yf[(q * th + yy) * tw + xx] = lat[(q * h + y0 + yy) * w + x0 + xx];
     const feeds = { y: new ort.Tensor('float32', yf, [1, c, th, tw]) };
-    if (tex) {                 // the detail map under this tile (2 latents a block)
+    if (mraw) {                // the detail map under this tile (2 latents a block)
       const mw = w / 2, mf = new Float32Array((th / 2) * (tw / 2));
       for (let yy = 0; yy < th / 2; yy++) for (let xx = 0; xx < tw / 2; xx++) mf[yy * (tw / 2) + xx] = mraw[(y0 / 2 + yy) * mw + x0 / 2 + xx] - 4;
       feeds.m = new ort.Tensor('float32', mf, [1, 1, th / 2, tw / 2]);
@@ -254,13 +251,43 @@ async function learnedDecode(u8, id, wantTex) {
       d[o] = xo.data[s] * 255 + 0.5; d[o + 1] = xo.data[P + s] * 255 + 0.5; d[o + 2] = xo.data[2 * P + s] * 255 + 0.5; d[o + 3] = 255; }
     xo.dispose && xo.dispose();
   }
-  if (grain) {                // regrow the photo's grain on the decoded picture
-    postMessage({ id, type: 'progress', done: tiles.length + 1, total: tiles.length + 1, phase: 'learn-grain-back' }); await yieldNow();
-    const rgb = new Uint8Array(pw * ph * 3); for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { rgb[i] = d[j]; rgb[i + 1] = d[j + 1]; rgb[i + 2] = d[j + 2]; }
-    const rp = put(rgb), gp = put(grain);
-    if (wasm.nczl_grain_apply(rp, pw, ph, gp, grain.length)) { const out = bytes().subarray(rp, rp + rgb.length); for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) { d[j] = out[i]; d[j + 1] = out[i + 1]; d[j + 2] = out[i + 2]; } }
-    wasm.nczl_free(rp, rgb.length); wasm.nczl_free(gp, grain.length);
+  return d;
+}
+// regrow the photo's grain on a decoded RGBA picture, in place
+function regrow(d, pw, ph, grain, id) {
+  if (!grain) return;
+  postMessage({ id, type: 'progress', done: 1, total: 1, phase: 'learn-grain-back' });
+  const rgb = rgbOf(d); const rp = put(rgb), gp = put(grain);
+  if (wasm.nczl_grain_apply(rp, pw, ph, gp, grain.length)) intoRgba(d, bytes().subarray(rp, rp + rgb.length));
+  wasm.nczl_free(rp, rgb.length); wasm.nczl_free(gp, grain.length);
+}
+async function learnedDecode(u8, id, wantTex) {
+  const pp = put(u8.subarray(0, 16)); const q = wasm.nczl_is_nczw(pp, 16) & 255; wasm.nczl_free(pp, 16);
+  if (!QUALITIES.includes(q)) throw new Error('made with a quality this page does not have');
+  await predictor(q, id);
+  // textured, when asked for: the file's swatches (real texture samples) laid on the decoded picture; older files
+  // carry a detail map instead, for the texture decoder
+  const mq0 = put(u8); const sq = wasm.nczl_w_swatch(mq0, u8.length); const sw = sq ? takeOut(sq) : null;
+  const mq = sw ? 0 : wasm.nczl_w_dmap(mq0, u8.length); wasm.nczl_free(mq0, u8.length);
+  const mraw = mq ? unpackBytes(takeOut(mq)) : null; const texDec = !!(wantTex && TEX.has(q) && mraw); const swt = !!(wantTex && sw);
+  const dec = await session(texDec ? 'tex' : 'dec', q, id);
+  postMessage({ id, type: 'progress', done: 0, total: 2, phase: 'learn-unpack' }); await new Promise((r) => setTimeout(r, 0));
+  const p = put(u8);
+  if (!wasm.nczl_w_match(p, u8.length)) { wasm.nczl_free(p, u8.length); throw new Error('made with a different version of tiny mode'); }
+  const gq = wasm.nczl_w_grain(p, u8.length); const grain = gq ? takeOut(gq) : null;
+  const lp = wasm.nczl_w_dec(p, u8.length); wasm.nczl_free(p, u8.length);
+  if (!lp) throw new Error('the file is damaged');
+  const raw = takeOut(lp); const lat = new Int16Array(raw.buffer, raw.byteOffset, raw.length / 2);
+  const [c, h, w, pw, ph] = [0, 1, 2, 3, 4].map((i) => wasm.nczl_w_dim(i));
+  const d = await paint(lat, c, h, w, pw, ph, dec, id, texDec ? mraw : null);
+  regrow(d, pw, ph, grain, id);
+  if (swt) {                  // lay the real texture
+    postMessage({ id, type: 'progress', done: 1, total: 1, phase: 'learn-swatch-back' }); await yieldNow();
+    const rgb = rgbOf(d); const rp = put(rgb), sp = put(sw);
+    if (wasm.nczl_sw_apply(rp, pw, ph, sp, sw.length)) intoRgba(d, bytes().subarray(rp, rp + rgb.length));
+    wasm.nczl_free(rp, rgb.length); wasm.nczl_free(sp, sw.length);
   }
+  const img = new ImageData(d, pw, ph); const tex = texDec || swt;
   const cv = new OffscreenCanvas(pw, ph); cv.getContext('2d').putImageData(img, 0, 0);
   const png = new Uint8Array(await (await cv.convertToBlob({ type: 'image/png' })).arrayBuffer());
   return { png, tex };

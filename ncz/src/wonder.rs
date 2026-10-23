@@ -9,12 +9,14 @@
 //! Container: "NCZW" | version | quality | picture width u16 | height u16 | predictor id u32 | grain length u32 |
 //! grain fingerprint (grain::measure; 0 bytes = none) | NCZY v2 stream. The decoder regrows the photo's grain from the
 //! fingerprint on top of the decoded picture (the learned decoder smooths it away). Version 2 (no grain) still decodes.
+//! Version 4 adds a detail map (length u32 + bytes) after the grain, version 5 a swatch section (swatch.rs; length u32 +
+//! bytes) after that.
 //! The predictor id (FNV-1a of its file) ties a file to the exact predictor that made it: another one would decode
 //! garbage, so the decoder refuses.
 use crate::lat::{self, GroupModel};
 
 pub const MAGIC: &[u8; 4] = b"NCZW";
-pub const VERSION: u8 = 4;      // 4: + detail map section; 3: + grain; 2: neither (all still decode)
+pub const VERSION: u8 = 5;      // 5: + swatch section; 4: + detail map section; 3: + grain; 2: none (all still decode)
 const HEAD2: usize = 4 + 1 + 1 + 4 + 4;
 
 // scale buckets: log(scale) against log((((11 << b) >> 2) - 0.5) / 64); scale >= 0.11
@@ -180,6 +182,11 @@ pub fn compress_grain(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph: 
 /// decoder; opaque bytes here, empty: none).
 #[allow(clippy::too_many_arguments)]
 pub fn compress_full(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u8, p: &Predictor, grain: &[u8], dmap: &[u8]) -> Option<Vec<u8>> {
+    compress_swatch(lat, c, h, w, pw, ph, q, p, grain, dmap, &[])
+}
+/// With a grain fingerprint, a detail map and a swatch section (swatch::encode; empty: none).
+#[allow(clippy::too_many_arguments)]
+pub fn compress_swatch(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u8, p: &Predictor, grain: &[u8], dmap: &[u8], sw: &[u8]) -> Option<Vec<u8>> {
     if c != p.channels() || pw > w * 16 || ph > h * 16 || pw + 64 <= w * 16 || ph + 64 <= h * 16 || pw > 65535 || ph > 65535 { return None; }
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC); out.push(VERSION); out.push(q);
@@ -187,6 +194,7 @@ pub fn compress_full(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph: u
     out.extend_from_slice(&p.id.to_le_bytes());
     out.extend_from_slice(&(grain.len() as u32).to_le_bytes()); out.extend_from_slice(grain);
     out.extend_from_slice(&(dmap.len() as u32).to_le_bytes()); out.extend_from_slice(dmap);
+    out.extend_from_slice(&(sw.len() as u32).to_le_bytes()); out.extend_from_slice(sw);
     out.extend_from_slice(&lat::compress_groups(lat, c, h, w, p)); Some(out)
 }
 /// (quality, picture width, height, predictor id) of an NCZW stream, without decoding it.
@@ -194,23 +202,27 @@ pub fn info(b: &[u8]) -> Option<(u8, usize, usize, u32)> {
     if b.len() < HEAD2 || &b[..4] != MAGIC || !(2..=VERSION).contains(&b[4]) { return None; }
     Some((b[5], u16::from_le_bytes([b[6], b[7]]) as usize, u16::from_le_bytes([b[8], b[9]]) as usize, u32::from_le_bytes(b[10..14].try_into().ok()?)))
 }
-/// (grain fingerprint, latent stream) parts of an NCZW stream.
-/// (grain fingerprint, detail map, latent stream) parts of an NCZW stream.
-fn parts(b: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {
-    info(b)?;
-    if b[4] == 2 { return Some((&b[..0], &b[..0], &b[HEAD2..])); }
+/// (grain fingerprint, detail map, swatch section, latent stream) parts of an NCZW stream.
+fn parts(b: &[u8]) -> Option<(&[u8], &[u8], &[u8], &[u8])> {
+    info(b)?; let e = &b[..0];
+    if b[4] == 2 { return Some((e, e, e, &b[HEAD2..])); }
     let n = u32::from_le_bytes(b.get(HEAD2..HEAD2 + 4)?.try_into().ok()?) as usize; let g0 = HEAD2 + 4;
     let grain = b.get(g0..g0 + n)?;
-    if b[4] == 3 { return Some((grain, &b[..0], b.get(g0 + n..)?)); }
+    if b[4] == 3 { return Some((grain, e, e, b.get(g0 + n..)?)); }
     let m0 = g0 + n; let k = u32::from_le_bytes(b.get(m0..m0 + 4)?.try_into().ok()?) as usize;
-    Some((grain, b.get(m0 + 4..m0 + 4 + k)?, b.get(m0 + 4 + k..)?))
+    let dmap = b.get(m0 + 4..m0 + 4 + k)?;
+    if b[4] == 4 { return Some((grain, dmap, e, b.get(m0 + 4 + k..)?)); }
+    let s0 = m0 + 4 + k; let j = u32::from_le_bytes(b.get(s0..s0 + 4)?.try_into().ok()?) as usize;
+    Some((grain, dmap, b.get(s0 + 4..s0 + 4 + j)?, b.get(s0 + 4 + j..)?))
 }
 /// The grain fingerprint stored in a stream (empty if none).
 pub fn grain(b: &[u8]) -> Option<&[u8]> { parts(b).map(|p| p.0) }
 /// The detail map stored in a stream (empty if none).
 pub fn detail_map(b: &[u8]) -> Option<&[u8]> { parts(b).map(|p| p.1) }
+/// The swatch section stored in a stream (empty if none).
+pub fn swatches(b: &[u8]) -> Option<&[u8]> { parts(b).map(|p| p.2) }
 /// Returns (latents, c, h, w). None if damaged, or made with a different predictor.
 pub fn decompress(b: &[u8], p: &Predictor) -> Option<(Vec<i16>, usize, usize, usize)> {
     let (_, _, _, id) = info(b)?; if id != p.id { return None; }
-    lat::decompress_groups(parts(b)?.2, p)
+    lat::decompress_groups(parts(b)?.3, p)
 }

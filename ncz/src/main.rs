@@ -3,6 +3,22 @@ use std::{env, fs, process};
 
 fn main() {
     let a: Vec<String> = env::args().collect();
+    if a.len() == 5 && a[1] == "swatch" {
+        // nczcli swatch <original.ppm> <decoded.ppm> <out.ppm>: tiny mode's swatch layer, encoded from the original and
+        // the decoded picture, then laid from the section alone; prints what was chosen and the bytes
+        let (o, w, h) = ncz::img::read_ppm(&fs::read(&a[2]).expect("read")).expect("not a P6 PPM");
+        let (mut s, w2, h2) = ncz::img::read_ppm(&fs::read(&a[3]).expect("read")).expect("not a P6 PPM");
+        assert!(w == w2 && h == h2, "sizes differ");
+        let t = std::time::Instant::now();
+        let Some((sec, st)) = ncz::swatch::encode(&o, &s, w, h) else { println!("no swatches"); return; };
+        let te = t.elapsed().as_secs_f64(); let t = std::time::Instant::now();
+        ncz::swatch::apply(&mut s, w, h, &sec).expect("section does not decode");
+        let n = (w / 16 * (h / 16)) as f64;
+        println!("{} swatches; blocks none {:.0}% grain {:.0}% swatch {:.0}%; bytes {} (atlas {} + side {}); encode {:.2} s, lay {:.2} s",
+            st.swatches, st.none as f64 / n * 100.0, st.grain as f64 / n * 100.0, st.swatch as f64 / n * 100.0, sec.len(), st.atlas_bytes, st.side_bytes, te, t.elapsed().as_secs_f64());
+        let mut v = format!("P6\n{w} {h}\n255\n").into_bytes(); v.extend_from_slice(&s); fs::write(&a[4], v).expect("write");
+        return;
+    }
     if a.len() == 4 && a[1] == "grain-clean" {
         // nczcli grain-clean <in.ppm> <out.ppm>: grain mode's clean picture (the grain split off), for inspection
         let (rgb, w, h) = ncz::img::read_ppm(&fs::read(&a[2]).expect("read")).expect("not a P6 PPM");

@@ -10,6 +10,7 @@ pub mod pngc;
 pub mod grain;
 pub mod lat;
 pub mod wonder;
+pub mod swatch;
 
 pub use v3::{Encoder, compress};
 
