@@ -1098,3 +1098,11 @@ wrap-around bilinear interpolation, kept point-symmetric), 17 quantiles instead 
 scale: 1.38-1.55 KB -> 0.31-0.32 KB packed. Regrown grain: same rms per channel to 0.01 level, amplified grain fields
 look the same. Old fingerprints (fixed 2139 bytes raw) still decode: a grain-mode file made by the old build unpacks
 to the identical PNG. Grain-mode PNGs shrink by the same ~1.2 KB.
+
+After the compact fingerprint (browser files again, Kodak 8): q1 12.73 -> 11.19 KB, q2 16.58 -> 15.23 KB. At those sizes,
+SSIMULACRA2 / PSNR: q1 tiny smooth 0.7 / 27.24, textured -5.4 / 26.64, AVIF 19.9 / 27.52, JPEG XL -5.4 / 21.45;
+q2 tiny smooth 18.8 / 28.48, textured 13.4 / 28.09, AVIF 31.9 / 28.61. The PSNR gap to AVIF is now 0.28 / 0.13 dB.
+Where it is: at equal latent bytes the teacher's own decoder beats AVIF by 0.8 dB PSNR (q1 27.72 vs 26.94, q2 29.12
+vs 28.28) and loses on SSIMULACRA2 (3.9 vs 11.7, 23.2 vs 28.4); our student is ~0.5 dB below the teacher. Queued on
+the rig (behind the qcompress jobs): q0 (teacher fine-tuned to lambda 0.0006 + predictor + student) and a wider q1
+student (v3: 128/128/128/96/64).

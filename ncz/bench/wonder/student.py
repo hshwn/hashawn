@@ -50,7 +50,7 @@ class Loop(nn.Module):
 def res(c, r): return Res(c) if r == 1 else Loop(Res(c), c, r)
 def upb(ci, co, r=1): return nn.Sequential(QConv(ci, co * 4, 3, padding=1), nn.PixelShuffle(2), nn.LeakyReLU(0.1), res(co, r))
 # channel plans, coarse to fine (1/16, 1/8, 1/4, 1/2, full resolution)
-ARCHS = {"v1": (96, 96, 64, 48, 32), "v2": (128, 128, 96, 64, 48)}
+ARCHS = {"v1": (96, 96, 64, 48, 32), "v2": (128, 128, 96, 64, 48), "v3": (128, 128, 128, 96, 64)}   # v3: wider at 1/4, 1/2 and full resolution
 class Student(nn.Module):
     # channels shrink as resolution grows: the cost per decoded pixel stays browser-sized
     def __init__(s, M, N=96, r=1, chans=None):
