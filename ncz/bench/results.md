@@ -1072,3 +1072,6 @@ Swatches now at every size (browser, Kodak 8, swatch share of the files and mean
 By eye q2 + swatches: forest, plaster and lighthouse stucco textured where q2 smooth is flat; q4: small gain on
 plaster. Grain regrowth: the noise filters loop over pixels innermost (each output adds the same terms in the same
 order: identical bytes, wasm PNG modes still byte-identical to native), 12 MP regrowth ~6.3 -> ~2.2 s native.
+
+Swatch DCT step (Kodak 8, swatch bytes): 10: 11.8 KB, 13: 10.0, 16: 8.3, 20: 7.5. 16 looks the same as 10 by eye
+(foliage, plaster, stucco, stone); 20 starts to flatten. Step 16 now (the step is in the section header).
