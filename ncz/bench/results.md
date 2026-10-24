@@ -1137,3 +1137,5 @@ a decoder would): Kodak 8 Gaussian bits 0.2238 -> 0.2368 bpp (+5.8%; smooth phot
 latent error 0.0363 -> 0.0296. Our means are not accurate enough: where latents are mostly zero, a small predicted
 offset turns zeros into +-1. The teacher's edge from mean-centring (its own Gaussian 0.161 vs 0.182 on our symbols)
 needs its accurate autoregressive mean; ours would need a predictor trained for mean-centred symbols. Not pursued.
+q0 student (v2, HOST=1, batch 8, 120k steps, lr 2.5e-4): Kodak 8 25.01 dB vs its teacher's 25.17 (gap 0.16 dB; q1's is
+0.39). q0 stays unshipped (it only ties AVIF on PSNR at ~5.7 KB and trails on SSIMULACRA2).
