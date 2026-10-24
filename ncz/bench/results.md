@@ -1108,3 +1108,15 @@ the rig (behind the qcompress jobs): q0 (teacher fine-tuned to lambda 0.0006 + p
 student (v3: 128/128/128/96/64).
 Decode-side sharpening (unsharp mask, sigma 0.8 / 1.5, amount 0.3-1.0) on tiny q1: SSIMULACRA2 0.7 -> 0.8 at best
 (sigma 0.8, 0.3), worse above, PSNR always down. AVIF's lead on that metric is not edge softness; rejected.
+
+### q0: the teacher fine-tuned to a lower rate (2026-10-24, bench/wonder/q0train.py)
+
+cheng2020-anchor q1 fine-tuned 20k steps (batch 16, 256 px DIV2K crops, lambda 0.0006 vs q1's 0.0018, its own RD loss;
+43 min): Kodak 8 27.72 dB at 0.161 bpp (own rate) -> 25.17 dB at 0.068 bpp (stable from 5k steps). Our predictor
+(15k steps) codes those latents in 2.4-8.0 KB (4.76 KB mean): 44% above the teacher's own rate (q1: 22%). Teacher
+decode at ~5.7 KB total (latents + compact grain + ~0.6 KB swatches): SSIMULACRA2 -32.5 / 25.17 dB; AVIF at the same
+bytes -14.3 / 25.26. By eye q0 is a soft painting (forest a blur), AVIF blocky but more detail; swatches put texture
+back on q0's foliage and tyres but cost 1.4-2.2 KB at this size (up to 27% of the file). Not shipped. The q0 student
+run died of a CUDA OOM next to a second qcompress queue worker (capped at 60% of the GPU); re-queued at batch 8.
+Note: the rig's CompressAI saves EntropyBottleneck keys as matrices.N / biases.N / factors.N; the Mac's expects
+_matrixN / _biasN / _factorN (renamed for the CPU run).
