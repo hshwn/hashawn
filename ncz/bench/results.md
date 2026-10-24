@@ -1120,3 +1120,12 @@ back on q0's foliage and tyres but cost 1.4-2.2 KB at this size (up to 27% of th
 run died of a CUDA OOM next to a second qcompress queue worker (capped at 60% of the GPU); re-queued at batch 8.
 Note: the rig's CompressAI saves EntropyBottleneck keys as matrices.N / biases.N / factors.N; the Mac's expects
 _matrixN / _biasN / _factorN (renamed for the CPU run).
+
+### Wider q1 student (v3: 128/128/128/96/64) (2026-10-24)
+
+Same distillation recipe, but batch 8 for 120k steps at lr 2.5e-4 (v2: batch 16, 80k, 5e-4; batch 8 at 5e-4 diverged
+to 7 dB at 10k steps) because the rig GPU was shared: 0.96M vs 1.28M training crops, so not a matched control. Kodak 8,
+float: v2 27.33 dB / SSIMULACRA2 1.3, v3 27.39 / 1.6, teacher 27.72 / 3.9. +0.06 dB for ~60% more decode work: width is
+not what keeps the student under the teacher. Not shipped.
+student.py HOST=1: photos, latents and teacher outputs in CPU memory, the teacher run one photo at a time (setup used
+to peak at 13+ GB of GPU memory with everything resident; now ~11 GB in training at batch 8 v3).

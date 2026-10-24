@@ -59,17 +59,24 @@ class Student(nn.Module):
         s.n = nn.Sequential(QConv(M, c[0], 3, padding=1), nn.LeakyReLU(0.1), res(c[0], r), upb(c[0], c[1], r), upb(c[1], c[2], r), upb(c[2], c[3], r), upb(c[3], c[4], r), nn.Conv2d(c[4], 3, 3, padding=1))
     def forward(s, y): return s.n(y * s.inv) + 0.5
 
+HOST = bool(os.environ.get("HOST"))
 def setup(wpath, idir, L, keep_teacher=False):
-    T = teacher(wpath); ims = load_imgs(idir, 16 * L); lats = []
+    # HOST: photos, latents and teacher outputs live in CPU memory, the teacher runs one photo at a time and each batch
+    # goes to the GPU: the GPU holds one photo's activations at most (shares the GPU with other jobs)
+    T = teacher(wpath); lats = []
+    if HOST:
+        import pred as _p; _d = _p.dev; _p.dev = "cpu"; ims = load_imgs(idir, 16 * L); _p.dev = _d
+    else: ims = load_imgs(idir, 16 * L)
     t = time.time()
+    gs = T.g_s if keep_teacher else None; recs = []
     with torch.no_grad():
         for i, im in enumerate(ims):
             H, W = im.shape[-2:]; H, W = H // 64 * 64, W // 64 * 64; ims[i] = im[:, :H, :W].contiguous()
-            lats.append(torch.round(T.g_a(ims[i][None].float() / 255))[0].to(torch.int16))
-    gs = T.g_s if keep_teacher else None; recs = []
-    if keep_teacher:
-        with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
-            for l in lats: recs.append((gs(l[None].float()).float().clamp(0, 1)[0] * 255 + 0.5).to(torch.uint8))
+            y = torch.round(T.g_a(ims[i][None].to(dev).float() / 255))[0].to(torch.int16)
+            if keep_teacher:
+                with torch.autocast("cuda", torch.bfloat16): r = (gs(y[None].float()).float().clamp(0, 1)[0] * 255 + 0.5).to(torch.uint8)
+                recs.append(r.cpu() if HOST else r)
+            lats.append(y.cpu() if HOST else y)
     del T; torch.cuda.empty_cache(); torch.cuda.synchronize()
     print(f"latents of {len(ims)} photos in {time.time() - t:.0f}s", flush=True)
     torch.backends.cudnn.benchmark = True; torch.backends.cuda.matmul.allow_tf32 = True; torch.backends.cudnn.allow_tf32 = True
@@ -90,7 +97,8 @@ def pair_batch(ims, lats, B, L, recs=None):
         a, b = torch.randint(H - L + 1, (1,)).item(), torch.randint(W - L + 1, (1,)).item()
         ys.append(y[:, a:a + L, b:b + L]); xs.append(ims[k][:, 16 * a:16 * (a + L), 16 * b:16 * (b + L)])
         if recs: ts.append(recs[k][:, 16 * a:16 * (a + L), 16 * b:16 * (b + L)])
-    return torch.stack(ys).float(), torch.stack(xs).float() / 255, (torch.stack(ts).float() / 255 if recs else None)
+    g = lambda v: torch.stack(v).to(dev, non_blocking=True).float()
+    return g(ys), g(xs) / 255, (g(ts) / 255 if recs else None)
 
 def macs_per_px(net, M):
     tot = 0
