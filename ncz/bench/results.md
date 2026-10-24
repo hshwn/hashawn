@@ -1129,3 +1129,11 @@ float: v2 27.33 dB / SSIMULACRA2 1.3, v3 27.39 / 1.6, teacher 27.72 / 3.9. +0.06
 not what keeps the student under the teacher. Not shipped.
 student.py HOST=1: photos, latents and teacher outputs in CPU memory, the teacher run one photo at a time (setup used
 to peak at 13+ GB of GPU memory with everything resident; now ~11 GB in training at batch 8 v3).
+
+### Mean-centred rounding with our predictor: worse (2026-10-24, bench/wonder/meancentre.py)
+
+Symbols round(y - mu) instead of round(y), mu from our q1 predictor group by group on the rebuilt y^ = symbols + mu (as
+a decoder would): Kodak 8 Gaussian bits 0.2238 -> 0.2368 bpp (+5.8%; smooth photos +11-22%, busy ones about even);
+latent error 0.0363 -> 0.0296. Our means are not accurate enough: where latents are mostly zero, a small predicted
+offset turns zeros into +-1. The teacher's edge from mean-centring (its own Gaussian 0.161 vs 0.182 on our symbols)
+needs its accurate autoregressive mean; ours would need a predictor trained for mean-centred symbols. Not pursued.
