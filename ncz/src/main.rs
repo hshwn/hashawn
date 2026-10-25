@@ -3,6 +3,28 @@ use std::{env, fs, process};
 
 fn main() {
     let a: Vec<String> = env::args().collect();
+    if a.len() >= 4 && a[1] == "tm" {
+        // nczcli tm <weights.tm> <a.y.f32>...: latents through the teacher's ported entropy model (next to each a.y.f32,
+        // a.z.lat: the hyperprior's symbols); bytes, round trip (y^ bit for bit), time
+        let tm = ncz::tm::Tm::load(&fs::read(&a[2]).expect("weights")).expect("bad weights");
+        let mut tot = 0;
+        for f in &a[3..] {
+            let b = fs::read(f).expect("read"); let g = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as usize;
+            let (c, h, w) = (g(0), g(2), g(4));
+            let y: Vec<f32> = b[6..].chunks_exact(4).map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]])).collect(); assert_eq!(y.len(), c * h * w);
+            let zb = fs::read(f.replace(".y.f32", ".z.lat")).expect("z"); let zq: Vec<i16> = zb[6..].chunks_exact(2).map(|x| i16::from_le_bytes([x[0], x[1]])).collect();
+            let t = std::time::Instant::now(); let (z, yh) = ncz::tm::compress(&y, h, w, &zq, &tm).expect("compress"); let te = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now(); let back = ncz::tm::decompress(&z, &tm).expect("decode"); let td = t.elapsed().as_secs_f64();
+            let exact = back.0.iter().zip(&yh).all(|(p, q)| p.to_bits() == q.to_bits());
+            tot += z.len();
+            if let Ok(d) = std::env::var("TM_OUT") {   // y^ as <name>.yh.f32 (same layout as the input)
+                let mut v = b[..6].to_vec(); for x in &back.0 { v.extend_from_slice(&x.to_le_bytes()); }
+                fs::write(format!("{}/{}", d, f.rsplit('/').next().unwrap().replace(".y.f32", ".yh.f32")), v).unwrap(); }
+            println!("{} {} B  {:.4} bpp  enc {:.2}s dec {:.2}s  {}", f.rsplit('/').next().unwrap(), z.len(), 8.0 * z.len() as f64 / (h * 16 * w * 16) as f64, te, td, if exact { "exact" } else { "MISMATCH" });
+        }
+        println!("total {tot} B");
+        return;
+    }
     if a.len() == 5 && a[1] == "swatch" {
         // nczcli swatch <original.ppm> <decoded.ppm> <out.ppm>: tiny mode's swatch layer, encoded from the original and
         // the decoded picture, then laid from the section alone; prints what was chosen and the bytes

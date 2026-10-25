@@ -1150,3 +1150,23 @@ exceed what the decoder takes (lat::MAX_VALUES = 2^26: about 134 MP at q1/q2, 89
 nobody can open. Checked old (committed) vs new wasm, relaxed and base builds, with the shipped q1/q2/q4 predictors on
 synthetic latents: v6 = v5 + CRC byte for byte (version byte aside), v2-v5 files decode to the same latents, grain,
 swatches and dims; text, binary and PNG modes 0-2 give identical streams and outputs.
+### The teacher's own entropy model, ported: -16.6% latent bytes (2026-10-26)
+
+A wider / longer-trained group predictor does not close the gap to the teacher's rate: width 128 (2.39M params),
+23k steps (the run was OOM-killed by the kernel; rig RAM shared): Kodak 8 latent bytes 77,873 -> 77,281 (-0.8%). The
+gap is structural: the teacher predicts each latent from a hyperprior and the latents already decoded around it (causal
+5 x 5, all channels), and codes mean-centred symbols. Measured first (bench/wonder/teacher_mc.py, the teacher's serial
+decode on CPU): its own rate y 0.1618 + z 0.0014 bpp; its mean-centred symbols through NCZY with its scales as context
+64,163 B + z 748 B, vs 77,873 B now; teacher reconstruction from those y^ 27.69 dB vs 27.72 from round(y).
+
+Built: ncz::tm (src/tm.rs): h_s, the masked context conv (12 causal taps) and the entropy-parameter layers in plain f32
+with fixed-order sums (8 running partial sums per dot product), mean-centred symbols, y^ = symbol + mean; z coded by
+NCZY v1, y by a new position-major NCZY (lat.rs VERSION_POS = 3: raster positions, every channel strongest class first,
+per-position channel counts for the cross-channel contexts, the model's scales as context). `nczcli tm <w> <a.y.f32>`.
+Kodak 8, native: 64,921 B (f32 weights) / 65,010 B (8-bit weights, NCZU, 2.69 MB packed; the group predictor was
+0.55 MB) vs 77,873 B: -16.6%; y^ rebuilt bit for bit by the decoder; 0.24 s per photo each way.
+The student decoder trained on round(y) collapses on y^ (19.37 dB vs 27.33): fine-tuned on mean-centred latents (MC=1:
+the teacher's mean in one parallel pass over y, CompressAI's training shortcut; 300 DIV2K photos, 30k steps, lr 2e-4,
+from v2): 27.20 dB on the decoder's real y^ (v2 on round(y): 27.33). So -16.6% bytes for -0.13 dB; an 80k-step run is
+going. student.py: MC, INIT (fine-tune from a checkpoint), NPHOTOS, MEMFRAC (hard GPU memory cap); pred.py: HOST,
+MEMFRAC. Not in the page yet (its format is being changed on branch rnd/tiny-format-2026-10-25).

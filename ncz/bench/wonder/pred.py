@@ -92,11 +92,12 @@ def nll_bits(y, mu, ls):
     p = (n.cdf(y + 0.5) - n.cdf(y - 0.5)).clamp_min(1e-9)
     return -torch.log2(p)
 
+HOST = bool(os.environ.get("HOST"))   # photos and latents in CPU memory, the teacher one photo at a time (shares the GPU)
 def load_imgs(d, minside):
     ims = []
     for p in sorted(glob.glob(f"{d}/*.jpg") + glob.glob(f"{d}/*.png") + glob.glob(f"{d}/**/*.png", recursive=True)):
         im = np.asarray(Image.open(p).convert("RGB"))
-        if min(im.shape[:2]) >= minside: ims.append(torch.from_numpy(im.copy()).permute(2, 0, 1).to(dev))
+        if min(im.shape[:2]) >= minside: ims.append(torch.from_numpy(im.copy()).permute(2, 0, 1).to("cpu" if HOST else dev))
     return ims
 
 def batch(ims, B, S):
@@ -123,7 +124,7 @@ def latents(T, ims):
     with torch.no_grad():
         for im in ims:
             H, W = im.shape[-2:]; H, W = H // 64 * 64, W // 64 * 64
-            yf = T.g_a(im[None, :, :H, :W].float() / 255); lats.append(torch.round(yf)[0].to(torch.int16))
+            yf = T.g_a(im[None, :, :H, :W].to(dev).float() / 255); l = torch.round(yf)[0].to(torch.int16); lats.append(l.cpu() if HOST else l)
             if HYPER: feats.append(hyper(T, yf)[1][0].half())
     return (lats, feats) if HYPER else lats
 
@@ -134,7 +135,8 @@ def lat_batch(lats, B, L, feats=None):
         y0, x0 = torch.randint(H - L + 1, (1,)).item(), torch.randint(W - L + 1, (1,)).item()
         out.append(y[:, y0:y0 + L, x0:x0 + L])
         if feats is not None: fo.append(feats[k][:, y0:y0 + L, x0:x0 + L])
-    return (torch.stack(out).float(), torch.stack(fo).float()) if feats is not None else torch.stack(out).float()
+    g = lambda v: torch.stack(v).to(dev, non_blocking=True).float()
+    return (g(out), g(fo)) if feats is not None else g(out)
 
 def setup(wpath, idir, L):
     T = teacher(wpath); ims = load_imgs(idir, STRIDE * L)
@@ -173,6 +175,8 @@ def step_fn(T, lats, P, B, L):
 
 if __name__ == "__main__":
     cmd = sys.argv[1]
+    # MEMFRAC: hard cap on this process's share of GPU memory (runs beside other jobs: it fails, they don't)
+    if os.environ.get("MEMFRAC"): torch.cuda.set_per_process_memory_fraction(float(os.environ["MEMFRAC"]))
     if cmd in ("prof", "train"):
         B = int(os.environ.get("BATCH", "16")); S = int(os.environ.get("LCROP", "24"))      # crop in latents (x16 pixels)
         T, ims, P = setup(sys.argv[2], sys.argv[3], S)
