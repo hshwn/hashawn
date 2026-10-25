@@ -5,31 +5,44 @@
 let wasm = null, modelId = null;
 const STEP_LM = 4096, STEP = 64 * 1024;
 const bytes = () => new Uint8Array(wasm.memory.buffer);   // re-read after every call: memory can grow and detach
+// errors carry a code the page turns into what to say: unknown (not a file of ours), damaged, network, too-big,
+// version (made with a model or version this page does not have)
+const fail = (code, message) => Object.assign(new Error(message), { code });
+async function get(url) {
+  let res; try { res = await fetch(url); } catch { throw fail('network', `could not fetch ${url}: no connection?`); }
+  if (!res.ok) throw fail('network', `could not fetch ${url} (${res.status})`);
+  return res;
+}
+const readAll = async (res, onChunk) => {
+  const chunks = []; let got = 0; const reader = res.body.getReader();
+  try { for (;;) { const { value, done } = await reader.read(); if (done) break; chunks.push(value); got += value.byteLength; onChunk(got); } }
+  catch { throw fail('network', 'the download was cut off'); }
+  const out = new Uint8Array(got); let off = 0; for (const c of chunks) { out.set(c, off); off += c.byteLength; } return out;
+};
 
 // nczl.wasm uses relaxed SIMD (one int8 dot instruction, 2x faster); nczl-base.wasm is plain SIMD for
 // browsers without it. Both produce the same bytes.
 async function compile(url) {
-  const bytes = await (await fetch(url)).arrayBuffer();
+  const bytes = await (await get(url)).arrayBuffer();
   return (await WebAssembly.instantiate(bytes, {})).instance;
 }
 async function load() {
   if (wasm) return;
   let instance;
-  try { instance = await compile('nczl.wasm'); } catch { instance = await compile('nczl-base.wasm'); }
+  // ?v: the build with NCZW v6 (CRC) and nczl_w_check / nczl_w_fits, so a cached older build is not paired with this file
+  try { instance = await compile('nczl.wasm?v=6'); } catch (e) { if (e.code) throw e; instance = await compile('nczl-base.wasm?v=6'); }
   wasm = instance.exports;
 }
 async function loadModel(id) {
   if (modelId) return;
   postMessage({ id, type: 'model', done: 0, total: 0 });
-  const res = await fetch('model.slmq');
+  const res = await get('model.slmq');
   const total = Number(res.headers.get('content-length')) || 0;
-  const chunks = []; let got = 0; const reader = res.body.getReader();
-  for (;;) { const { value, done } = await reader.read(); if (done) break; chunks.push(value); got += value.byteLength; postMessage({ id, type: 'model', done: got, total }); }
-  const pack = new Uint8Array(got); let off = 0; for (const c of chunks) { pack.set(c, off); off += c.byteLength; }
+  const pack = await readAll(res, (got) => postMessage({ id, type: 'model', done: got, total }));
   const ptr = wasm.nczl_alloc(pack.length); bytes().set(pack, ptr);
   modelId = wasm.nczl_load(ptr, pack.length) >>> 0;
   wasm.nczl_free(ptr, pack.length);
-  if (!modelId) throw new Error('the model pack did not load');
+  if (!modelId) throw fail('network', 'the language model came down damaged; try again');
 }
 const put = (u8) => { const p = wasm.nczl_alloc(u8.length); bytes().set(u8, p); return p; };
 const takeOut = (ptr) => { const n = wasm.nczl_out_len(); const out = bytes().slice(ptr, ptr + n); wasm.nczl_free(ptr, n); return out; };
@@ -70,12 +83,18 @@ const pngMode = (u8) => { const p = put(u8); const m = wasm.nczl_png_mode(p, u8.
 
 async function decompress(u8, id, wantTex) {
   await load();
-  if (u8.length > 10 && u8[0] === 0x4e && u8[1] === 0x43 && u8[2] === 0x5a && u8[3] === 0x57) { const r = await learnedDecode(u8, id, wantTex); return { out: r.png, mode: r.tex ? 'tiny-tex' : 'tiny' }; }
+  if (u8.length >= 5 && u8[0] === 0x4e && u8[1] === 0x43 && u8[2] === 0x5a && u8[3] === 0x57) { const r = await learnedDecode(u8, id, wantTex); return { out: r.png, mode: r.tex ? 'tiny-tex' : 'tiny' }; }
   let inPtr = put(u8);
-  if (wasm.nczl_needs_model(inPtr, u8.length)) { wasm.nczl_free(inPtr, u8.length); await loadModel(id); inPtr = put(u8); }
+  const lm = wasm.nczl_needs_model(inPtr, u8.length);
+  if (lm) { wasm.nczl_free(inPtr, u8.length); await loadModel(id); inPtr = put(u8); }
   const dec = wasm.nczl_dec_new(inPtr, u8.length);
   wasm.nczl_free(inPtr, u8.length);
-  if (!dec) throw new Error('not one of mine, or made with a different model');
+  if (!dec) {                // an NCZL header that is whole but not for this page: another stream version, or another model
+    const nczl = u8.length >= 18 && u8[0] === 0x4e && u8[1] === 0x43 && u8[2] === 0x5a && u8[3] === 0x4c;
+    if (nczl && u8[4] !== wasm.nczl_version()) throw fail('version', 'made by a different version of this page');
+    if (nczl && lm && new DataView(u8.buffer, u8.byteOffset).getUint32(6, true) !== modelId) throw fail('version', 'made with a different language model than this page has');
+    throw fail('damaged', 'the file is damaged: its header does not add up');
+  }
   const mode = pngMode(u8);
   const total = wasm.nczl_dec_total(dec);           // bytes, or rows for a PNG (only the fraction is shown)
   let t0 = performance.now();
@@ -88,7 +107,7 @@ async function decompress(u8, id, wantTex) {
   }
   if (mode === 255) { postMessage({ id, type: 'progress', done: total, total, phase: 'grain' }); await new Promise((r) => setTimeout(r, 0)); }
   const ptr = wasm.nczl_dec_finish(dec);         // grain mode: the grain is regrown here
-  if (!ptr) throw new Error('the file is damaged');
+  if (!ptr) throw fail('damaged', 'the file is damaged');
   return { out: takeOut(ptr), mode };
 }
 
@@ -102,16 +121,17 @@ const TEX = new Set([1]);                                      // sizes with a t
 const SWATCH = new Set([1, 2, 4]);                                 // sizes whose files carry swatches (real texture samples)
 let ortReady = null; const sessions = {}; const predLoaded = {};
 function ortLoad() {
-  if (!ortReady) ortReady = (async () => { importScripts(ORT + 'ort.webgpu.min.js'); ort.env.wasm.wasmPaths = ORT;
+  if (!ortReady) ortReady = (async () => { try { importScripts(ORT + 'ort.webgpu.min.js'); } catch { throw fail('network', 'could not fetch the network runtime: no connection?'); }
+    ort.env.wasm.wasmPaths = ORT;
     // the CPU fallback can only use threads when the page is cross-origin isolated
-    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1; })();
+    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1; })()
+    .catch((e) => { ortReady = null; throw e; });         // offline: let the next try fetch it again
   return ortReady;
 }
 async function fetchProgress(url, id, label, part) {
-  const res = await fetch(url); if (!res.ok) throw new Error(`could not fetch ${url}`);
-  const total = Number(res.headers.get('content-length')) || 0; const chunks = []; let got = 0; const reader = res.body.getReader();
-  for (;;) { const { value, done } = await reader.read(); if (done) break; chunks.push(value); got += value.byteLength; postMessage({ id, type: 'model', done: got, total, label, part }); }
-  const out = new Uint8Array(got); let off = 0; for (const c of chunks) { out.set(c, off); off += c.byteLength; } return out;
+  const res = await get(url);
+  const total = Number(res.headers.get('content-length')) || 0;
+  return readAll(res, (got) => postMessage({ id, type: 'model', done: got, total, label, part }));
 }
 // the network files; '.ncz' ones are packed with our own codec (8-bit weights pack to ~6 bits, 4-bit to ~3) and unpacked here
 const file = (name, q) => `learned/q${q}.${name}${name === 'pred' ? '' : '.onnx'}.ncz${name === 'tex' ? '?v=7' : ''}`;   // ?v: the texture decoder was replaced (v7)
@@ -138,8 +158,8 @@ async function fetchModel(name, q, id) {
   let bytes = await fetchProgress(file(name, q), id, LABEL[name], name);
   {
     await load(); const p = put(bytes); const d = wasm.nczl_dec_new(p, bytes.length); wasm.nczl_free(p, bytes.length);
-    if (!d) throw new Error(`${LABEL[name]} is damaged`);
-    while (wasm.nczl_dec_step(d, 1 << 20) > 0); const o = wasm.nczl_dec_finish(d); if (!o) throw new Error(`${LABEL[name]} is damaged`); bytes = takeOut(o);
+    if (!d) throw fail('network', `${LABEL[name]} came down damaged; try again`);
+    while (wasm.nczl_dec_step(d, 1 << 20) > 0); const o = wasm.nczl_dec_finish(d); if (!o) throw fail('network', `${LABEL[name]} came down damaged; try again`); bytes = takeOut(o);
   }
   return bytes;
 }
@@ -156,23 +176,28 @@ async function predictor(q, id) {
   if (predLoaded[q]) return;
   const b = await fetchModel('pred', q, id);
   const p = put(b); const ok = wasm.nczl_w_load(p, b.length, q); wasm.nczl_free(p, b.length);
-  if (!ok) throw new Error('the predictor did not load'); predLoaded[q] = true;
+  if (!ok) throw fail('network', 'the predictor came down damaged; try again'); predLoaded[q] = true;
 }
 // Any size: both networks run in overlapping tiles (core T px, margin M px each side; the margins are cut away), so
 // memory stays flat. Cores and margins are multiples of 64 px, on the encoder's grid; a picture up to T px a side is
 // one tile, exactly as a single pass.
 const T = 1024, M = 128, TL = T / 16, ML = M / 16;
 const yieldNow = () => new Promise((r) => setTimeout(r, 0));
-async function learnedEncode(u8, id, q) {
+// Also gives back the picture as unpacking the file will show it (`wantTex`: textured), when the swatch step painted it
+// anyway: the same latents, decoder, grain and swatches as learnedDecode, composed the same way (toPng).
+async function learnedEncode(u8, id, q, wantTex) {
   if (!QUALITIES.includes(q)) throw new Error(`no tiny quality ${q}`);
   await load();
-  const bmp = await createImageBitmap(new Blob([u8]));
+  let bmp; try { bmp = await createImageBitmap(new Blob([u8])); } catch { throw fail('damaged', 'could not read that picture: it may be damaged'); }
   const pw = bmp.width, ph = bmp.height;
-  if (pw > 65535 || ph > 65535) throw new Error('that picture is wider or taller than 65535 pixels');
+  // the decoder takes so many latents and no more: refuse here rather than write a file nobody can open
+  await predictor(q, id);
+  if (!wasm.nczl_w_fits(q, pw, ph)) { bmp.close(); throw fail('too-big', `${pw} x ${ph} px is more than a tiny file can hold; try a smaller copy`); }
   const W = Math.ceil(pw / 64) * 64, H = Math.ceil(ph / 64) * 64;
   const cv = new OffscreenCanvas(pw, ph); const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0); bmp.close();
   const rgba = cx.getImageData(0, 0, pw, ph).data;
-  await predictor(q, id);
+  // tiny has no alpha (every pixel comes back opaque): tell the page when there was transparency to lose
+  let alpha = false; for (let i = 3; i < rgba.length; i += 4) if (rgba[i] < 255) { alpha = true; break; }
   // the photo's grain fingerprint (the decoder smooths grain away; it is regrown from this on unpack), on a centre crop
   postMessage({ id, type: 'progress', done: 0, total: 1, phase: 'learn-grain' }); await yieldNow();
   let grain = new Uint8Array(0);
@@ -197,9 +222,9 @@ async function learnedEncode(u8, id, q) {
     y.dispose && y.dispose();
   }
   // swatches: the picture as unpack will show it (decoded, grain regrown), then which real texture goes where
-  let sw = new Uint8Array(0);
+  let sw = new Uint8Array(0), d = null;
   if (SWATCH.has(q)) {
-    const d = await paint(lat, c, h, w, pw, ph, await session('dec', q, id), id, null);
+    d = await paint(lat, c, h, w, pw, ph, await session('dec', q, id), id, null);
     regrow(d, pw, ph, grain.length ? grain : null, id);
     postMessage({ id, type: 'progress', done: 0, total: 1, phase: 'learn-swatch' }); await yieldNow();
     const o = rgbOf(rgba), r = rgbOf(d); const op = put(o), rp = put(r);
@@ -210,7 +235,9 @@ async function learnedEncode(u8, id, q) {
   const zp = wasm.nczl_w_enc_sw(lp, c, h, w, pw, ph, q, gp, grain.length, 0, 0, sp, sw.length); wasm.nczl_free(lp, lat.length * 2);
   if (gp) wasm.nczl_free(gp, grain.length); if (sp) wasm.nczl_free(sp, sw.length);
   if (!zp) throw new Error('could not pack the latents');
-  return { out: takeOut(zp), ep: enc.ep };
+  const out = takeOut(zp);
+  const pic = d ? await toPng(d, pw, ph, wantTex && sw.length ? sw : null, id) : null;
+  return { out, ep: enc.ep, alpha, pic, picTex: !!(pic && wantTex && sw.length) };
 }
 // The texture decoder draws its texture from noise (input z: 9 channels at full resolution). Standard-normal-ish
 // values from a hash of the picture position (sum of 4 hash bytes, mean 0, sd 1), so tiles agree where they overlap
@@ -262,8 +289,12 @@ function regrow(d, pw, ph, grain, id) {
   wasm.nczl_free(rp, rgb.length); wasm.nczl_free(gp, grain.length);
 }
 async function learnedDecode(u8, id, wantTex) {
+  const cp = put(u8); const ck = wasm.nczl_w_check(cp, u8.length); wasm.nczl_free(cp, u8.length);
+  if (ck === 1) throw fail('unknown', 'not a file this page makes');
+  if (ck === 2) throw fail('version', 'made by a newer version of this page: reload it');
+  if (ck === 3) throw fail('damaged', 'the file is damaged or cut short');
   const pp = put(u8.subarray(0, 16)); const q = wasm.nczl_is_nczw(pp, 16) & 255; wasm.nczl_free(pp, 16);
-  if (!QUALITIES.includes(q)) throw new Error('made with a quality this page does not have');
+  if (!QUALITIES.includes(q)) throw fail('version', 'made with a tiny size this page does not have');
   await predictor(q, id);
   // textured, when asked for: the file's swatches (real texture samples) laid on the decoded picture; older files
   // carry a detail map instead, for the texture decoder
@@ -273,24 +304,26 @@ async function learnedDecode(u8, id, wantTex) {
   const dec = await session(texDec ? 'tex' : 'dec', q, id);
   postMessage({ id, type: 'progress', done: 0, total: 2, phase: 'learn-unpack' }); await new Promise((r) => setTimeout(r, 0));
   const p = put(u8);
-  if (!wasm.nczl_w_match(p, u8.length)) { wasm.nczl_free(p, u8.length); throw new Error('made with a different version of tiny mode'); }
+  if (!wasm.nczl_w_match(p, u8.length)) { wasm.nczl_free(p, u8.length); throw fail('version', 'made with a different version of tiny mode (another predictor)'); }
   const gq = wasm.nczl_w_grain(p, u8.length); const grain = gq ? takeOut(gq) : null;
   const lp = wasm.nczl_w_dec(p, u8.length); wasm.nczl_free(p, u8.length);
-  if (!lp) throw new Error('the file is damaged');
+  if (!lp) throw fail('damaged', 'the file is damaged: its latents do not decode');
   const raw = takeOut(lp); const lat = new Int16Array(raw.buffer, raw.byteOffset, raw.length / 2);
   const [c, h, w, pw, ph] = [0, 1, 2, 3, 4].map((i) => wasm.nczl_w_dim(i));
   const d = await paint(lat, c, h, w, pw, ph, dec, id, texDec ? mraw : null);
   regrow(d, pw, ph, grain, id);
-  if (swt) {                  // lay the real texture
+  return { png: await toPng(d, pw, ph, swt ? sw : null, id), tex: texDec || swt };
+}
+// the last steps of unpacking (the encoder's preview takes them too): the real texture laid when `sw`, then a PNG
+async function toPng(d, pw, ph, sw, id) {
+  if (sw) {
     postMessage({ id, type: 'progress', done: 1, total: 1, phase: 'learn-swatch-back' }); await yieldNow();
     const rgb = rgbOf(d); const rp = put(rgb), sp = put(sw);
     if (wasm.nczl_sw_apply(rp, pw, ph, sp, sw.length)) intoRgba(d, bytes().subarray(rp, rp + rgb.length));
     wasm.nczl_free(rp, rgb.length); wasm.nczl_free(sp, sw.length);
   }
-  const img = new ImageData(d, pw, ph); const tex = texDec || swt;
-  const cv = new OffscreenCanvas(pw, ph); cv.getContext('2d').putImageData(img, 0, 0);
-  const png = new Uint8Array(await (await cv.convertToBlob({ type: 'image/png' })).arrayBuffer());
-  return { png, tex };
+  const cv = new OffscreenCanvas(pw, ph); cv.getContext('2d').putImageData(new ImageData(d, pw, ph), 0, 0);
+  return new Uint8Array(await (await cv.convertToBlob({ type: 'image/png' })).arrayBuffer());
 }
 const isImage = (u8) => (u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4e && u8[3] === 0x47) || (u8[0] === 0xff && u8[1] === 0xd8 && u8[2] === 0xff)
   || (u8[0] === 0x52 && u8[1] === 0x49 && u8[2] === 0x46 && u8[3] === 0x46 && u8[8] === 0x57 && u8[9] === 0x45 && u8[10] === 0x42 && u8[11] === 0x50);
@@ -318,8 +351,9 @@ onmessage = async (e) => {
       postMessage({ id, type: 'done', gz: await gzipSize(u8) });
     } else if (type === 'learned') {
       if (!isImage(u8)) throw new Error('tiny mode takes photos (PNG, JPEG, WebP)');
-      const t = performance.now(); const { out, ep } = await learnedEncode(u8, id, e.data.q || 4);
-      postMessage({ id, type: 'done', buf: out.buffer, ms: performance.now() - t, gz: null, pngMode: 'tiny', ep }, [out.buffer]);
+      const t = performance.now(); const { out, ep, alpha, pic, picTex } = await learnedEncode(u8, id, e.data.q || 4, !!e.data.tex);
+      postMessage({ id, type: 'done', buf: out.buffer, ms: performance.now() - t, gz: null, pngMode: 'tiny', ep, alpha, pic: pic && pic.buffer, picTex },
+        pic ? [out.buffer, pic.buffer] : [out.buffer]);
     } else if (type === 'compress') {
       const t = performance.now();
       const out = await compress(u8, id, mode);
@@ -333,5 +367,5 @@ onmessage = async (e) => {
       const { out, mode: pm } = await decompress(u8, id, !!e.data.tex);
       postMessage({ id, type: 'done', buf: out.buffer, ms: performance.now() - t, pngMode: pm }, [out.buffer]);
     }
-  } catch (err) { postMessage({ id, type: 'error', message: String(err && err.message || err) }); }
+  } catch (err) { postMessage({ id, type: 'error', code: err && err.code, message: String(err && err.message || err) }); }
 };

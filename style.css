@@ -305,6 +305,7 @@ body.blog #face { pointer-events: none; }
 .job .row { display: grid; grid-template-columns: 64px 1fr 80px; align-items: center; gap: 12px; font-weight: 800; font-size: 14px; }
 .job .row .bar { margin: 0; }
 .job .row b { text-align: right; font-weight: 800; }
+.job .warn { margin: 12px 0 0; padding: 8px 12px; border-radius: 12px; background: var(--amber); color: #141311; font-size: 14px; font-weight: 800; }
 .btn {
   margin-top: 18px; border: 0; border-radius: 999px; padding: 12px 20px; cursor: pointer;
   font: inherit; font-weight: 900; font-size: 16px; background: #141311; color: #fff;

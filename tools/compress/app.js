@@ -1,5 +1,5 @@
-// app.js — drop a file: it gets compressed with ncz in your browser and handed back as .ncz.
-// Drop a .ncz: you get the original back. Nothing leaves the machine.
+// app.js — drop a file: it gets compressed with ncz in your browser and handed back as .ncz (tiny photos: .nczw).
+// Drop one of those (known by its first bytes, whatever its name): you get the original back. Nothing leaves the machine.
 (() => {
   const drop = document.getElementById('drop'), input = document.getElementById('file');
   const result = document.getElementById('result');
@@ -10,7 +10,8 @@
 
   // ---------- PNG mode: 0 every pixel exact, 1 every sample within +-1, 2 looks the same (grain regrown) ----------
   const modes = document.getElementById('modes');
-  let mode = 0; try { mode = Math.min(3, Math.max(0, +localStorage.getItem('pngMode') || 0)); } catch {}
+  // lossy modes are not remembered: every visit starts exact, so nothing is lost without picking it that visit
+  let mode = 0; try { localStorage.removeItem('pngMode'); } catch {}
   // tiny mode's size: the teacher quality (1 smallest .. 4 sharpest); its networks are fetched when first used
   const tinyq = document.getElementById('tinyq');
   let tq = 4; try { tq = [1, 2, 4].includes(+localStorage.getItem('tinyQ')) ? +localStorage.getItem('tinyQ') : 4; } catch {}
@@ -24,7 +25,7 @@
   tinytex.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || busy) return; texPref = b.dataset.t === '1'; showTex(); try { localStorage.setItem('tinyTex', texPref ? '1' : '0'); } catch {} });
   showTex();
   const showMode = () => { modes.querySelectorAll('button').forEach((b) => { const on = +b.dataset.m === mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); }); tinyq.hidden = mode !== 3; tinytex.hidden = mode !== 3; };
-  modes.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || busy) return; mode = +b.dataset.m; showMode(); try { localStorage.setItem('pngMode', mode); } catch {} });
+  modes.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || busy) return; mode = +b.dataset.m; showMode(); });
   showMode();
   // what came back: 0 exact, k within +-k, 255 grain mode
   const isTiny = (m) => m === 'tiny' || m === 'tiny-tex';
@@ -71,9 +72,9 @@
   let urls = []; const blobUrl = (data, type) => { const u = URL.createObjectURL(new Blob([data], { type })); urls.push(u); return u; };
   const dropUrls = () => { urls.forEach((u) => URL.revokeObjectURL(u)); urls = []; };
   // one picture, or the original and what comes back with a slider between them
-  const viewer = (outUrl, origUrl) => origUrl
+  const viewer = (outUrl, origUrl, ext) => origUrl
     ? `<div class="view cmp" id="cmp"><img src="${origUrl}" alt="original"><img class="top" src="${outUrl}" alt="what comes back"><i class="seam"></i>
-         <span class="tag l">original</span><span class="tag r">from the .ncz</span></div>
+         <span class="tag l">original</span><span class="tag r">from the ${ext}</span></div>
        <input class="slide" id="slide" type="range" min="0" max="100" value="50" aria-label="compare">`
     : `<div class="view"><img src="${outUrl}" alt="the picture"></div>`;
   const wireSlider = () => {
@@ -83,7 +84,7 @@
     c.addEventListener('pointerdown', (e) => { drag(e); c.setPointerCapture(e.pointerId); c.onpointermove = drag; });
     c.addEventListener('pointerup', () => { c.onpointermove = null; });
   };
-  const download = (u8, name) => { const url = URL.createObjectURL(new Blob([u8])); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000); };
+  const download = (u8, name, type = 'application/octet-stream') => { const url = URL.createObjectURL(new Blob([u8], { type })); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000); };
 
   // ---------- the codec, across workers ----------
   // Big files are split into independent segments (where: decided by the codec itself, so the bytes match
@@ -101,7 +102,7 @@
     const results = new Array(n); let next = 0;
     await Promise.all(Array.from({ length: Math.min(k, n) }, async (_, wi) => {
       const w = getWorker(wi);
-      for (;;) { const i = next++; if (i >= n) return; results[i] = await job(w, i); if (results[i].type === 'error') throw new Error(results[i].message); }
+      for (;;) { const i = next++; if (i >= n) return; results[i] = await job(w, i); if (results[i].type === 'error') throw Object.assign(new Error(results[i].message), { code: results[i].code }); }
     }));
     return results;
   };
@@ -113,7 +114,7 @@
     const t0 = performance.now();
     if (mode === 3 && isImage(u8)) {      // tiny: the learned codec, one worker (the networks are big; one copy of them)
       const buf = u8.slice().buffer;
-      return call(pool[0], { type: 'learned', buf, q: tq }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.done / p.total * u8.length, phase: p.phase, k: 1 }));
+      return call(pool[0], { type: 'learned', buf, q: tq, tex: texPref }, [buf], (p) => onProgress(p.type === 'model' ? { model: p } : { done: p.done / p.total * u8.length, phase: p.phase, k: 1 }));
     }
     const pl = await call(pool[0], { type: 'plan', buf: u8.slice().buffer });
     if (pl.ends.length <= 1) {
@@ -141,6 +142,18 @@
     return { type: 'done', buf: out.buffer, ms: performance.now() - t0, gz: (await gzP).gz, k };
   };
 
+  // files of ours, known by their first bytes: NCZL (ncz, maybe with the language model), NCZP (PNGs), NCZW (tiny),
+  // NCZ3 / NCZ2 (the site's earlier files)
+  const MAGICS = ['NCZL', 'NCZP', 'NCZW', 'NCZ3', 'NCZ2'];
+  const isMine = (u8) => u8.length >= 5 && MAGICS.includes(String.fromCharCode(u8[0], u8[1], u8[2], u8[3]));
+  // what went wrong, by the worker's error code
+  const FAIL = {
+    unknown: ['not a file i know', "that's not one of mine."], damaged: ['that file is damaged', "that one's broken. i can't open it."],
+    network: ['could not fetch what it needs', "couldn't fetch what i need. check the connection."],
+    'too-big': ['that picture is too big', 'too big for me. try a smaller copy.'], version: ['made with a model this page does not have', "that's from a different version of me."],
+  };
+  const fail = (e) => { const [label, line] = FAIL[e.code] || ["couldn't do that", "that didn't work."]; render(`<div class="job"><p class="label">${label}</p><p class="sub">${esc(e.message || '')}</p></div>`); say(line); };
+
   const decompressAll = async (u8, onProgress) => {
     const t0 = performance.now();
     const seg = u8.length >= 22 && u8[0] === 78 && u8[1] === 67 && u8[2] === 90 && u8[3] === 76 && u8[5] === 3;
@@ -156,15 +169,15 @@
     });
     const out = new Uint8Array(total); let o = 0;
     for (const m of res) { const b = new Uint8Array(m.buf); out.set(b, o); o += b.length; }
-    if (o !== total) return { type: 'error', message: 'the file is damaged' };
+    if (o !== total) return { type: 'error', code: 'damaged', message: 'the file is damaged' };
     return { type: 'done', buf: out.buffer, ms: performance.now() - t0, k };
   };
 
   const run = async (file) => {
     if (busy) return; busy = true; drop.classList.add('busy');
-    const isNcz = /\.ncz$/i.test(file.name);
     const u8 = new Uint8Array(await file.arrayBuffer());
-    const total = u8.length;
+    const isNcz = isMine(u8), total = u8.length;
+    if (!isNcz && /\.nczw?$/i.test(file.name)) { busy = false; drop.classList.remove('busy'); fail({ code: 'unknown', message: 'it is named like one of mine, but it does not start like one' }); return; }
     progress(isNcz ? 'unpacking' : 'compressing', 0, total);
     const onProgress = (p) => {
       if (p.model) {
@@ -177,21 +190,22 @@
     };
     let done;
     try { done = await (isNcz ? decompressAll(u8, onProgress) : compressAll(u8, onProgress)); }
-    catch (err) { done = { type: 'error', message: String(err && err.message || err) }; }
+    catch (err) { done = { type: 'error', code: err && err.code, message: String(err && err.message || err) }; }
     busy = false; drop.classList.remove('busy');
-    if (done.type === 'error') { render(`<div class="job"><p class="label">couldn't do that</p><p class="sub">${esc(done.message)}</p></div>`); say("that's not one of mine."); return; }
+    if (done.type === 'error') { fail(done); return; }
     const out = new Uint8Array(done.buf); dropUrls();
     if (isNcz) {
-      let name = file.name.replace(/\.ncz$/i, '');
+      let name = file.name.replace(/\.nczw?$/i, '');
       if (isTiny(done.pngMode)) name = name.replace(/\.(jpe?g|webp|png)$/i, '') + '.png';
       const pic = isPng(out) ? viewer(blobUrl(out, 'image/png')) : '';
       render(`<div class="job"><p class="label">unpacked</p><p class="big">${fmt(out.length)}</p>${pic}<p class="sub">${esc(name)} · ${(done.ms / 1000).toFixed(1)}s${done.pngMode ? ' · ' + pngNote(isTiny(done.pngMode) ? done.pngMode : done.pngMode | 0).replace(/ · $/, '') : ''}</p><button class="btn" id="dl">save it</button></div>`);
-      document.getElementById('dl').onclick = () => download(out, name);
+      document.getElementById('dl').onclick = () => download(out, name, isPng(out) ? 'image/png' : undefined);
       const png = out.length > 8 && out[0] === 0x89 && out[1] === 0x50 && out[2] === 0x4e && out[3] === 0x47;
       const m = done.pngMode | 0;
       say(isTiny(done.pngMode) ? "there it is. close enough to fool you." : !png ? "there it is. every byte." : m === 255 ? "there it is. same look, fresh grain." : m > 0 ? "there it is. every pixel, give or take one." : "there it is. every pixel.");
       return;
     }
+    const ext = isTiny(done.pngMode) ? '.nczw' : '.ncz';
     const ratio = total / out.length, gzRatio = done.gz ? total / done.gz : null;
     const pct = (n) => `${Math.min(100, n / total * 100).toFixed(1)}%`;
     render(`<div class="job">
@@ -203,20 +217,22 @@
         <div class="row"><span>ncz</span><div class="bar"><i style="width:${pct(out.length)};background:#009f4d"></i></div><b>${fmt(out.length)}</b></div>
       </div>
       <p class="sub">${(done.ms / 1000).toFixed(1)}s · ${done.pngMode || /\.png$/i.test(file.name) ? pngNote(isTiny(done.pngMode) ? done.pngMode : done.pngMode | 0) : ''}nothing left your browser</p>
+      ${done.alpha ? '<p class="warn">this picture has see-through parts. tiny has none: they come back solid. pick exact to keep them.</p>' : ''}
       <div id="peek"></div>
-      <button class="btn" id="dl">save .ncz</button><button class="btn ghost" id="dlpic" hidden>save the picture</button>
+      <button class="btn" id="dl">save ${ext}</button><button class="btn ghost" id="dlpic" hidden>save the picture</button>
     </div>`);
-    document.getElementById('dl').onclick = () => download(out, file.name + '.ncz');
-    say(lineFor(ratio, gzRatio));
-    // a lossy picture mode: unpack it straight away and show it next to the original
+    document.getElementById('dl').onclick = () => download(out, file.name + ext);
+    say(done.alpha ? "careful: tiny fills in the see-through parts." : lineFor(ratio, gzRatio));
+    // a lossy picture mode: show what comes back next to the original. Tiny hands back the picture its encoder already
+    // painted (composed exactly as unpacking does, see worker.js learnedEncode); the others are unpacked straight away
     const lossy = isTiny(done.pngMode) || (done.pngMode | 0) > 0;
     if (lossy) {
       const peek = document.getElementById('peek'); peek.innerHTML = '<p class="sub">unpacking it so you can see it…</p>';
-      const back = await decompressAll(out.slice(), () => {});
+      const back = done.pic ? { type: 'done', buf: done.pic } : await decompressAll(out.slice(), () => {});
       if (back.type === 'done' && document.getElementById('peek') === peek) {
         const pic = new Uint8Array(back.buf);
-        peek.innerHTML = viewer(blobUrl(pic, 'image/png'), blobUrl(u8, file.type || 'image/png')); wireSlider();
-        const b = document.getElementById('dlpic'); b.hidden = false; b.onclick = () => download(pic, file.name.replace(/\.(jpe?g|webp|png)$/i, '') + '.ncz.png');
+        peek.innerHTML = viewer(blobUrl(pic, 'image/png'), blobUrl(u8, file.type || 'image/png'), ext); wireSlider();
+        const b = document.getElementById('dlpic'); b.hidden = false; b.onclick = () => download(pic, file.name.replace(/\.(jpe?g|webp|png)$/i, '') + ext + '.png', 'image/png');
       } else if (back.type !== 'done') peek.innerHTML = `<p class="sub">couldn't unpack it to show: ${esc(back.message || '')}</p>`;
     }
   };
