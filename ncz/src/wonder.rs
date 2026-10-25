@@ -10,13 +10,14 @@
 //! grain fingerprint (grain::measure; 0 bytes = none) | NCZY v2 stream. The decoder regrows the photo's grain from the
 //! fingerprint on top of the decoded picture (the learned decoder smooths it away). Version 2 (no grain) still decodes.
 //! Version 4 adds a detail map (length u32 + bytes) after the grain, version 5 a swatch section (swatch.rs; length u32 +
-//! bytes) after that.
+//! bytes) after that. Version 6 ends with a CRC-32 (LE) of every byte before it: a damaged or cut-short file is
+//! refused instead of decoding to garbage.
 //! The predictor id (FNV-1a of its file) ties a file to the exact predictor that made it: another one would decode
 //! garbage, so the decoder refuses.
 use crate::lat::{self, GroupModel};
 
 pub const MAGIC: &[u8; 4] = b"NCZW";
-pub const VERSION: u8 = 5;      // 5: + swatch section; 4: + detail map section; 3: + grain; 2: none (all still decode)
+pub const VERSION: u8 = 6;      // 6: + CRC-32; 5: + swatch section; 4: + detail map section; 3: + grain; 2: none (all still decode)
 const HEAD2: usize = 4 + 1 + 1 + 4 + 4;
 
 // scale buckets: log(scale) against log((((11 << b) >> 2) - 0.5) / 64); scale >= 0.11
@@ -187,7 +188,7 @@ pub fn compress_full(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph: u
 /// With a grain fingerprint, a detail map and a swatch section (swatch::encode; empty: none).
 #[allow(clippy::too_many_arguments)]
 pub fn compress_swatch(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u8, p: &Predictor, grain: &[u8], dmap: &[u8], sw: &[u8]) -> Option<Vec<u8>> {
-    if c != p.channels() || pw > w * 16 || ph > h * 16 || pw + 64 <= w * 16 || ph + 64 <= h * 16 || pw > 65535 || ph > 65535 { return None; }
+    if c != p.channels() || !fits(c, pw, ph) || pw > w * 16 || ph > h * 16 || pw + 64 <= w * 16 || ph + 64 <= h * 16 { return None; }
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC); out.push(VERSION); out.push(q);
     out.extend_from_slice(&(pw as u16).to_le_bytes()); out.extend_from_slice(&(ph as u16).to_le_bytes());
@@ -195,16 +196,38 @@ pub fn compress_swatch(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph:
     out.extend_from_slice(&(grain.len() as u32).to_le_bytes()); out.extend_from_slice(grain);
     out.extend_from_slice(&(dmap.len() as u32).to_le_bytes()); out.extend_from_slice(dmap);
     out.extend_from_slice(&(sw.len() as u32).to_le_bytes()); out.extend_from_slice(sw);
-    out.extend_from_slice(&lat::compress_groups(lat, c, h, w, p)); Some(out)
+    out.extend_from_slice(&lat::compress_groups(lat, c, h, w, p));
+    let crc = crate::pngc::crc32(&out); out.extend_from_slice(&crc.to_le_bytes()); Some(out)
+}
+/// Can a `pw` x `ph` picture with `c` latent channels be stored (and so opened again)? The decoder refuses more than
+/// lat::MAX_VALUES latents; the picture is padded to a multiple of 64 px, a latent per 16 x 16 px.
+pub fn fits(c: usize, pw: usize, ph: usize) -> bool {
+    pw > 0 && ph > 0 && pw <= 65535 && ph <= 65535 && c * pw.div_ceil(64) * 4 * ph.div_ceil(64) * 4 <= lat::MAX_VALUES
+}
+/// What a reader can say about a stream before decoding it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Check { Ok = 0, NotMine = 1, Newer = 2, Damaged = 3 }
+/// Is this an NCZW stream this reader can open, and is it whole (sections in bounds; version 6: the CRC matches)?
+pub fn check(b: &[u8]) -> Check {
+    if b.len() < 5 || &b[..4] != MAGIC || b[4] < 2 { return Check::NotMine; }
+    if b[4] > VERSION { return Check::Newer; }
+    if parts(b).is_none() { return Check::Damaged; }
+    Check::Ok
 }
 /// (quality, picture width, height, predictor id) of an NCZW stream, without decoding it.
 pub fn info(b: &[u8]) -> Option<(u8, usize, usize, u32)> {
-    if b.len() < HEAD2 || &b[..4] != MAGIC || !(2..=VERSION).contains(&b[4]) { return None; }
+    if b.len() < HEAD2 || &b[..4] != MAGIC || !(2..=VERSION).contains(&b[4]) || (b[4] >= 6 && b.len() < HEAD2 + 4) { return None; }
     Some((b[5], u16::from_le_bytes([b[6], b[7]]) as usize, u16::from_le_bytes([b[8], b[9]]) as usize, u32::from_le_bytes(b[10..14].try_into().ok()?)))
 }
-/// (grain fingerprint, detail map, swatch section, latent stream) parts of an NCZW stream.
+/// (grain fingerprint, detail map, swatch section, latent stream) parts of an NCZW stream. Version 6: None unless the
+/// CRC matches; the parts are laid out as in version 5.
 fn parts(b: &[u8]) -> Option<(&[u8], &[u8], &[u8], &[u8])> {
     info(b)?; let e = &b[..0];
+    let b = if b[4] < 6 { b } else {
+        let (body, crc) = b.split_at(b.len() - 4);
+        if crate::pngc::crc32(body) != u32::from_le_bytes(crc.try_into().ok()?) { return None; }
+        body
+    };
     if b[4] == 2 { return Some((e, e, e, &b[HEAD2..])); }
     let n = u32::from_le_bytes(b.get(HEAD2..HEAD2 + 4)?.try_into().ok()?) as usize; let g0 = HEAD2 + 4;
     let grain = b.get(g0..g0 + n)?;
@@ -223,6 +246,60 @@ pub fn detail_map(b: &[u8]) -> Option<&[u8]> { parts(b).map(|p| p.1) }
 pub fn swatches(b: &[u8]) -> Option<&[u8]> { parts(b).map(|p| p.2) }
 /// Returns (latents, c, h, w). None if damaged, or made with a different predictor.
 pub fn decompress(b: &[u8], p: &Predictor) -> Option<(Vec<i16>, usize, usize, usize)> {
-    let (_, _, _, id) = info(b)?; if id != p.id { return None; }
-    lat::decompress_groups(parts(b)?.3, p)
+    let (_, pw, ph, id) = info(b)?; if id != p.id { return None; }
+    let (lat, c, h, w) = lat::decompress_groups(parts(b)?.3, p)?;
+    if pw > w * 16 || ph > h * 16 { return None; }        // the latents must cover the picture (else: a damaged header)
+    Some((lat, c, h, w))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// A one-group predictor (a bias: mean 0, log-scale 1 everywhere) over `c` channels.
+    fn tiny_predictor(c: u16) -> Predictor {
+        let mut b = b"NCZP".to_vec();
+        for v in [c, 1, 1, c] { b.extend_from_slice(&v.to_le_bytes()); }
+        for ch in 0..c { b.extend_from_slice(&ch.to_le_bytes()); }
+        for k in 0..2 * c { b.extend_from_slice(&(if k < c { 0.0f32 } else { 1.0 }).to_le_bytes()); }
+        Predictor::load(&b).unwrap()
+    }
+    fn sample() -> (Predictor, Vec<i16>, Vec<u8>) {
+        let p = tiny_predictor(4); let (c, h, w) = (4, 8, 8);
+        let mut x = 12345u32;
+        let lat: Vec<i16> = (0..c * h * w).map(|_| { x = x.wrapping_mul(1_103_515_245).wrapping_add(12345); ((x >> 16) % 9) as i16 - 4 }).collect();
+        let z = compress_swatch(&lat, c, h, w, 120, 100, 1, &p, b"grain", &[], b"swatches").unwrap();
+        (p, lat, z)
+    }
+    #[test] fn v6_round_trip() {
+        let (p, lat, z) = sample();
+        assert_eq!(z[4], 6); assert_eq!(check(&z), Check::Ok);
+        assert_eq!(info(&z), Some((1, 120, 100, p.id)));
+        assert_eq!(grain(&z), Some(&b"grain"[..])); assert_eq!(swatches(&z), Some(&b"swatches"[..]));
+        assert_eq!(decompress(&z, &p), Some((lat, 4, 8, 8)));
+    }
+    #[test] fn v6_damaged_byte_is_refused() {
+        let (p, _, z) = sample();
+        for i in [14, 20, z.len() / 2, z.len() - 6, z.len() - 1] {      // grain length, grain, latents, latent tail, the CRC
+            let mut bad = z.clone(); bad[i] ^= 0x10;
+            assert_eq!(check(&bad), Check::Damaged, "byte {i}"); assert!(decompress(&bad, &p).is_none(), "byte {i}");
+        }
+    }
+    #[test] fn truncated_is_refused() {
+        let (p, lat, z) = sample();
+        // version 5 (no CRC): the same file without its last 4 bytes still decodes, and cut short it is refused
+        let mut v5 = z[..z.len() - 4].to_vec(); v5[4] = 5;
+        assert_eq!(check(&v5), Check::Ok); assert_eq!(decompress(&v5, &p), Some((lat, 4, 8, 8)));
+        for cut in 1..12 {
+            assert!(decompress(&z[..z.len() - cut], &p).is_none(), "v6 cut {cut}");
+            assert!(decompress(&v5[..v5.len() - cut], &p).is_none(), "v5 cut {cut}");
+        }
+    }
+    #[test] fn too_big_is_refused_when_writing() {
+        assert!(fits(192, 4096, 4096) && fits(192, 9000, 9000) && !fits(192, 12000, 12000) && !fits(4, 65536, 64));
+        let p = tiny_predictor(8);           // 8 x 4096 x 4096 latents: twice what the decoder takes
+        assert!(compress_swatch(&[], 8, 4096, 4096, 65535, 65535, 1, &p, &[], &[], &[]).is_none());
+    }
+    #[test] fn other_files_are_not_mine() {
+        assert_eq!(check(b"NCZL\x02\x00"), Check::NotMine); assert_eq!(check(b"NCZW\x07rest"), Check::Newer);
+    }
 }

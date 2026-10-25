@@ -33,7 +33,7 @@ const K_GRAY: u8 = 0; const K_GRAYA: u8 = 1; const K_RGB: u8 = 2; const K_RGBA: 
 
 pub fn is_png(b: &[u8]) -> bool { b.len() > 8 && b[..8] == SIG }
 
-fn crc32(data: &[u8]) -> u32 {
+pub(crate) fn crc32(data: &[u8]) -> u32 {
     static T: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
     let t = T.get_or_init(|| { let mut t = [0u32; 256]; for n in 0..256 { let mut c = n as u32; for _ in 0..8 { c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 }; } t[n] = c; } t });
     let mut c = 0xFFFF_FFFFu32; for &b in data { c = t[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8); } c ^ 0xFFFF_FFFF

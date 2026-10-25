@@ -1139,3 +1139,14 @@ offset turns zeros into +-1. The teacher's edge from mean-centring (its own Gaus
 needs its accurate autoregressive mean; ours would need a predictor trained for mean-centred symbols. Not pursued.
 q0 student (v2, HOST=1, batch 8, 120k steps, lr 2.5e-4): Kodak 8 25.01 dB vs its teacher's 25.17 (gap 0.16 dB; q1's is
 0.39). q0 stays unshipped (it only ties AVIF on PSNR at ~5.7 KB and trails on SSIMULACRA2).
+
+### NCZW v6: CRC-32, truncation refused, size limit at encode (2026-10-25)
+
+New tiny files end with a CRC-32 (LE) of every byte before it, +4 B; otherwise laid out as v5. A flipped bit or a cut
+file is refused (nczl_w_check: 0 ok, 1 not NCZW, 2 newer version, 3 damaged) instead of painting garbage. The NCZY
+decoder now also refuses a stream it read past the end of (the decoder reads exactly the bytes the encoder wrote), so
+cut-short v2-v5 files fail too; the committed build decoded them to garbage. The encoder refuses pictures whose latents
+exceed what the decoder takes (lat::MAX_VALUES = 2^26: about 134 MP at q1/q2, 89 MP at q4) instead of writing a file
+nobody can open. Checked old (committed) vs new wasm, relaxed and base builds, with the shipped q1/q2/q4 predictors on
+synthetic latents: v6 = v5 + CRC byte for byte (version byte aside), v2-v5 files decode to the same latents, grain,
+swatches and dims; text, binary and PNG modes 0-2 give identical streams and outputs.

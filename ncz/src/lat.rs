@@ -14,6 +14,8 @@ use crate::tables::{SQUASH, STRETCH};
 pub const MAGIC: &[u8; 4] = b"NCZY";
 pub const VERSION: u8 = 1;
 const HEADER: usize = 4 + 1 + 6;
+/// The most values (c x h x w) a stream may hold; the decoder refuses more, so the encoders must too.
+pub const MAX_VALUES: usize = 1 << 26;
 
 const NSETS: usize = 10;
 const N_IN: usize = NSETS + 1;
@@ -292,7 +294,7 @@ pub fn decompress(blob: &[u8], prior: Option<&Prior>) -> Option<(Vec<i16>, usize
     if blob.len() < HEADER || &blob[..4] != MAGIC || blob[4] != VERSION { return None; }
     let g = |i: usize| u16::from_le_bytes([blob[i], blob[i + 1]]) as usize;
     let (c, h, w) = (g(5), g(7), g(9));
-    if c == 0 || h == 0 || w == 0 || c * h * w > 1 << 26 { return None; }
+    if c == 0 || h == 0 || w == 0 || c * h * w > MAX_VALUES { return None; }
     let mut d = Dec { x1: 0, x2: 0xFFFF_FFFF, x: 0, buf: blob[HEADER..].to_vec(), pos: 0 };
     for _ in 0..4 { d.x = (d.x << 8) | d.next_in(); }
     let mut cls = vec![0u8; c]; let mut csm = vec![SM_INIT; NCLS * 32]; code_classes(&mut d, &mut cls, &mut csm);
@@ -300,6 +302,7 @@ pub fn decompress(blob: &[u8], prior: Option<&Prior>) -> Option<(Vec<i16>, usize
     for ch in 0..c { m.cls[ch] = cls[ch]; m.s16[ch] = s16_of(cls[ch]); }
     let zeros = vec![0i16; c * h * w];
     m.run(&mut d, &zeros);
+    if d.pos > d.buf.len() { return None; }             // read past the end: the stream is cut short
     Some((m.lat.iter().map(|&v| v as i16).collect(), c, h, w))
 }
 
@@ -336,7 +339,7 @@ pub fn decompress_groups(blob: &[u8], gm: &dyn GroupModel) -> Option<(Vec<i16>, 
     if blob.len() < HEADER || &blob[..4] != MAGIC || blob[4] != VERSION_GROUPS { return None; }
     let g = |i: usize| u16::from_le_bytes([blob[i], blob[i + 1]]) as usize;
     let (c, h, w) = (g(5), g(7), g(9));
-    if c == 0 || h == 0 || w == 0 || c * h * w > 1 << 26 || gm.groups().iter().map(|v| v.len()).sum::<usize>() != c { return None; }
+    if c == 0 || h == 0 || w == 0 || c * h * w > MAX_VALUES || gm.groups().iter().map(|v| v.len()).sum::<usize>() != c { return None; }
     let mut d = Dec { x1: 0, x2: 0xFFFF_FFFF, x: 0, buf: blob[HEADER..].to_vec(), pos: 0 };
     for _ in 0..4 { d.x = (d.x << 8) | d.next_in(); }
     let mut cls = vec![0u8; c]; let mut csm = vec![SM_INIT; NCLS * 32]; code_classes(&mut d, &mut cls, &mut csm);
@@ -344,5 +347,7 @@ pub fn decompress_groups(blob: &[u8], gm: &dyn GroupModel) -> Option<(Vec<i16>, 
     for ch in 0..c { m.cls[ch] = cls[ch].max(1); m.s16[ch] = s16_of(cls[ch]); }
     let zeros = vec![0i16; c * h * w];
     m.run_groups(&mut d, &zeros, gm);
+    // the decoder reads exactly the bytes the encoder wrote; reading past the end means the stream was cut short
+    if d.pos > d.buf.len() { return None; }
     Some((m.lat.iter().map(|&v| v as i16).collect(), c, h, w))
 }

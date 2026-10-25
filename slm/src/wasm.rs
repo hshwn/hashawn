@@ -8,7 +8,8 @@
 //!   nczl_enc_new_mode(p, n, mode): PNGs only, mode 0 exact, 1 within +-1, 2 grain (looks the same) ; nczl_png_mode(p, n)
 //!   learned mode: nczl_w_load(p, n, q) predictor for quality q ; nczl_w_enc(lat i16*, c, h, w, pw, ph, q) -> ptr ;
 //!   nczl_w_dec(p, n) -> i16 latents ptr (0 = bad) ; nczl_w_dim(i) = c, h, w, picture width, height, q of the last decode ;
-//!   nczl_is_nczw(p, n). The learned encoder and decoder networks run outside (ONNX in the page's worker).
+//!   nczl_is_nczw(p, n) ; nczl_w_check(p, n) 0 ok, 1 not NCZW, 2 newer version, 3 damaged ; nczl_w_fits(q, pw, ph) can a
+//!   picture that size be stored (and opened again) at quality q. The learned encoder and decoder networks run outside (ONNX in the page's worker).
 #![allow(clippy::missing_safety_doc)]
 use crate::codec::{Assets, LmDecoder, LmEncoder, looks_like_text, header, MODE_NCZ, MODE_STORE, HEADER};
 use ncz::v3::Encoder;
@@ -178,6 +179,10 @@ fn leak(mut v: Vec<u8>) -> *mut u8 { v.shrink_to_fit(); unsafe { OUT_LEN = v.len
     ncz::grain::apply_grain(std::slice::from_raw_parts_mut(rgb, w * h * 3), w, h, std::slice::from_raw_parts(g, gn)).is_some() as u32
 }
 #[no_mangle] pub unsafe extern "C" fn nczl_is_nczw(p: *const u8, n: usize) -> u32 { ncz::wonder::info(std::slice::from_raw_parts(p, n)).map_or(0, |i| i.0 as u32 | 256) }
+/// Can this NCZW stream be opened at all: 0 yes, 1 not NCZW, 2 made by a newer version, 3 damaged (cut short, or the CRC is wrong).
+#[no_mangle] pub unsafe extern "C" fn nczl_w_check(p: *const u8, n: usize) -> u32 { ncz::wonder::check(std::slice::from_raw_parts(p, n)) as u32 }
+/// Can a pw x ph picture be stored at quality q (its predictor loaded)? 1 yes, 0 too big (or no predictor).
+#[no_mangle] pub extern "C" fn nczl_w_fits(q: u32, pw: usize, ph: usize) -> u32 { predictor(q as u8).is_some_and(|pr| ncz::wonder::fits(pr.channels(), pw, ph)) as u32 }
 /// Was this NCZW stream made with the predictor loaded for its quality? (1 yes, 0 no or not loaded)
 #[no_mangle] pub unsafe extern "C" fn nczl_w_match(p: *const u8, n: usize) -> u32 {
     let Some((q, _, _, id)) = ncz::wonder::info(std::slice::from_raw_parts(p, n)) else { return 0 };
