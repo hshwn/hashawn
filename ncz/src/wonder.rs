@@ -25,12 +25,12 @@ const LN_T: [f32; 23] = [-3.753418, -2.654806, -1.807508, -1.09083, -0.3861221, 
 const LN_MIN: f32 = -2.2072749; const LN_1_5: f32 = 0.4054651;
 fn bucket(ls: f32) -> u8 { let ls = if ls > LN_MIN { ls } else { LN_MIN }; let mut b = 0; while b < 23 && ls >= LN_T[b] { b += 1; } b as u8 }
 
-struct Conv { ci: usize, co: usize, k: usize, w: Vec<f32>, b: Vec<f32> }
+pub(crate) struct Conv { pub(crate) ci: usize, pub(crate) co: usize, pub(crate) k: usize, pub(crate) w: Vec<f32>, pub(crate) b: Vec<f32> }
 impl Conv {
     /// x: ci planes of h*w -> co planes, zero padding. Sum order per output: bias, then input channel, then kernel row,
     /// column (fixed: this feeds the entropy decoder). Computed one output row at a time for a block of output channels,
     /// so the accumulators stay in cache; the order of every sum is the same as a plain plane-by-plane loop.
-    fn run(&self, x: &[f32], h: usize, w: usize) -> Vec<f32> {
+    pub(crate) fn run(&self, x: &[f32], h: usize, w: usize) -> Vec<f32> {
         let (ci, co, k) = (self.ci, self.co, self.k); let hw = h * w; let p = (k / 2) as isize;
         const OB: usize = 16;
         let mut out = vec![0f32; co * hw];

@@ -60,6 +60,14 @@ class Student(nn.Module):
     def forward(s, y): return s.n(y * s.inv) + 0.5
 
 HOST = bool(os.environ.get("HOST"))
+# MC=1: train on mean-centred latents, y^ = round(y - mean) + mean with the teacher's own mean (hyperprior + context
+# model), as tiny mode's ported entropy model (ncz tm.rs) rebuilds them. The context model runs over y itself, in one
+# parallel pass (CompressAI's own training shortcut); the decoder's serial pass sees y^ instead, a small difference.
+MC = bool(os.environ.get("MC"))
+def mean_centred(T, y):
+    z = T.h_a(y); med = T.entropy_bottleneck._get_medians().reshape(1, -1, 1, 1); params = T.h_s(torch.round(z - med) + med)
+    sc, mu = T.entropy_parameters(torch.cat([params[..., :y.shape[-2], :y.shape[-1]], T.context_prediction(y)], 1)).chunk(2, 1)
+    return torch.round(y - mu) + mu
 def setup(wpath, idir, L, keep_teacher=False):
     # HOST: photos, latents and teacher outputs live in CPU memory, the teacher runs one photo at a time and each batch
     # goes to the GPU: the GPU holds one photo's activations at most (shares the GPU with other jobs)
@@ -67,12 +75,14 @@ def setup(wpath, idir, L, keep_teacher=False):
     if HOST:
         import pred as _p; _d = _p.dev; _p.dev = "cpu"; ims = load_imgs(idir, 16 * L); _p.dev = _d
     else: ims = load_imgs(idir, 16 * L)
+    if os.environ.get("NPHOTOS"): ims = ims[:int(os.environ["NPHOTOS"])]       # fewer photos (fine-tunes, tight RAM)
     t = time.time()
     gs = T.g_s if keep_teacher else None; recs = []
     with torch.no_grad():
         for i, im in enumerate(ims):
             H, W = im.shape[-2:]; H, W = H // 64 * 64, W // 64 * 64; ims[i] = im[:, :H, :W].contiguous()
-            y = torch.round(T.g_a(ims[i][None].to(dev).float() / 255))[0].to(torch.int16)
+            yf = T.g_a(ims[i][None].to(dev).float() / 255)
+            y = (mean_centred(T, yf)[0].half() if MC else torch.round(yf)[0].to(torch.int16))
             if keep_teacher:
                 with torch.autocast("cuda", torch.bfloat16): r = (gs(y[None].float()).float().clamp(0, 1)[0] * 255 + 0.5).to(torch.uint8)
                 recs.append(r.cpu() if HOST else r)
@@ -112,6 +122,7 @@ def macs_per_px(net, M):
 
 if __name__ == "__main__":
     cmd = sys.argv[1]
+    if os.environ.get("MEMFRAC"): torch.cuda.set_per_process_memory_fraction(float(os.environ["MEMFRAC"]))   # hard cap (shared GPU)
     if cmd in ("prof", "train"):
         B = int(os.environ.get("BATCH", "16")); L = int(os.environ.get("LCROP", "16"))
         DISTIL = bool(os.environ.get("DISTIL")); DW_OUT = float(os.environ.get("DW_OUT", "1")); DW_FEAT = float(os.environ.get("DW_FEAT", "0.1"))
@@ -120,6 +131,7 @@ if __name__ == "__main__":
         S = Student(M, r=LOOPS, chans=ARCHS[ARCH]).to(dev, memory_format=torch.channels_last)
         sd_ = torch.stack([l.float().pow(2).mean((1, 2)) for l in lats]).mean(0).sqrt().clamp_min(0.05)
         S.inv.copy_((1 / sd_).view(1, M, 1, 1))
+        if os.environ.get("INIT"): S.load_state_dict(torch.load(os.environ["INIT"], map_location=dev)); print("from", os.environ["INIT"], flush=True)   # fine-tune
         print(f"student: {sum(p.numel() for p in S.parameters()) / 1e6:.2f}M params, {macs_per_px(S, M) / 1e3:.0f}k MAC per pixel", flush=True)
         LR = float(os.environ.get("LR", "5e-4"))
         proj = nn.ModuleList([nn.Conv2d(c, 192 if M == 192 else 128, 1) for c in S.chans[1:3]]).to(dev, memory_format=torch.channels_last)

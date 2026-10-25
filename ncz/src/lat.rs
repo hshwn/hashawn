@@ -45,6 +45,9 @@ struct Model {
     /// A predictor's mean (x16) and scale buckets (two offsets) per latent, used as context (and the mean as prediction).
     aux: Option<(Vec<i16>, Vec<u8>, Vec<u8>)>, pred: i32,
     sel: Option<bool>,       // checkerboard pass being coded (None: plain raster)
+    /// Position-major coding (VERSION_POS): channels coded so far at each position, the coding order, and the index in
+    /// it of the channel being coded.
+    pos: Option<(Vec<i32>, Vec<usize>, usize)>,
 }
 
 impl Model {
@@ -53,7 +56,7 @@ impl Model {
         for v in mix1.iter_mut().chain(mix2.iter_mut()) { *v = 65536 * 3 / 10; }
         Model { c, h, w, lat: vec![0; c * h * w], cls: vec![0; c], s16: vec![1; c], esum: vec![0; h * w], enext: vec![0; h * w], ecount: 0, prev: Vec::new(),
             sm: vec![SM_INIT; 1 << TBITS], mix1, mix2, apm: Apm::new(ND * 17),
-            ctx: [0; NSETS], sctx: [0; NSETS], st: [0; N_IN], sidx: [0; NSETS], ch: 0, qexp: 0, qloc: 0, bits: [0.0; 4], chbits: vec![0.0; c], aux: None, pred: 0, sel: None }
+            ctx: [0; NSETS], sctx: [0; NSETS], st: [0; N_IN], sidx: [0; NSETS], ch: 0, qexp: 0, qloc: 0, bits: [0.0; 4], chbits: vec![0.0; c], aux: None, pred: 0, sel: None, pos: None }
     }
 
     #[inline(always)] fn decide<I: BitIo>(&mut self, io: &mut I, d: usize, want: u32) -> u32 {
@@ -93,11 +96,20 @@ impl Model {
         let (vw, vn, vnw, vne, vww, vnn) = (at(xi - 1, yi), at(xi, yi - 1), at(xi - 1, yi - 1), at(xi + 1, yi - 1), at(xi - 2, yi), at(xi, yi - 2));
         let k = self.cls[ch] as u32; let s16 = self.s16[ch];
         // cross-channel energy: mean normalised |y| here (x256) over the coded channels, and over the 3x3 around
-        let ec = self.ecount.max(1);
-        let r = if self.ecount == 0 { 256 } else { self.esum[pos] / ec };
-        let mut r3 = 0; let mut n3 = 0;
-        for dy in -1i32..=1 { for dx in -1i32..=1 { let (xx, yy) = (x as i32 + dx, y as i32 + dy); if xx >= 0 && yy >= 0 && xx < w as i32 && yy < h as i32 { r3 += self.esum[yy as usize * w + xx as usize]; n3 += 1; } } }
-        let r3 = if self.ecount == 0 { 256 } else { r3 / (n3 * ec) };
+        let (r, r3) = if let Some((cnt, _, _)) = &self.pos {
+            // position-major: here, the channels already coded at this spot; around, the spots decoded so far
+            let r = if cnt[pos] == 0 { 256 } else { self.esum[pos] / cnt[pos] };
+            let (mut s3, mut n3) = (0, 0);
+            for dy in -1i32..=1 { for dx in -1i32..=1 { let (xx, yy) = (x as i32 + dx, y as i32 + dy);
+                if xx >= 0 && yy >= 0 && xx < w as i32 && yy < h as i32 { let q = yy as usize * w + xx as usize; if cnt[q] > 0 { s3 += self.esum[q] / cnt[q]; n3 += 1; } } } }
+            (r, if n3 == 0 { 256 } else { s3 / n3 })
+        } else {
+            let ec = self.ecount.max(1);
+            let r = if self.ecount == 0 { 256 } else { self.esum[pos] / ec };
+            let mut r3 = 0; let mut n3 = 0;
+            for dy in -1i32..=1 { for dx in -1i32..=1 { let (xx, yy) = (x as i32 + dx, y as i32 + dy); if xx >= 0 && yy >= 0 && xx < w as i32 && yy < h as i32 { r3 += self.esum[yy as usize * w + xx as usize]; n3 += 1; } } }
+            (r, if self.ecount == 0 { 256 } else { r3 / (n3 * ec) })
+        };
         let qexp = q16((r * s16) >> 10) as u32;              // expected |y| here, x4
         let qexp3 = q16((r3 * s16) >> 10) as u32;
         let qr = q16(r >> 5) as u32;                           // the ratio alone, x8
@@ -113,7 +125,9 @@ impl Model {
         let qlocn = q16((loc * 16 * 4) / (6 * s16)) as u32;    // relative to the channel's size, x4
         let cb = (self.ecount.min(15) as u32 + 3) / 4;
         // co-located values in the last three coded channels
-        let co = |i: usize| -> i32 { self.prev.len().checked_sub(i + 1).map_or(0, |j| self.lat[self.prev[j] * h * w + pos]) };
+        let co = |i: usize| -> i32 { match &self.pos {
+            Some((_, order, k)) => if *k > i { self.lat[order[k - 1 - i] * h * w + pos] } else { 0 },
+            None => self.prev.len().checked_sub(i + 1).map_or(0, |j| self.lat[self.prev[j] * h * w + pos]) } };
         let (c1, c2, c3) = (co(0), co(1), co(2));
         let m3 = |v: i32| v.abs().min(3) as u32; let sg = |v: i32| (v.signum() + 1) as u32;
         let chn = ch as u32 + 1;
@@ -301,6 +315,76 @@ pub fn decompress(blob: &[u8], prior: Option<&Prior>) -> Option<(Vec<i16>, usize
     let zeros = vec![0i16; c * h * w];
     m.run(&mut d, &zeros);
     Some((m.lat.iter().map(|&v| v as i16).collect(), c, h, w))
+}
+
+pub const VERSION_POS: u8 = 3;
+impl Model {
+    /// One position, every channel in coding order (position-major). The outside scales for this position are in aux.
+    fn position<I: BitIo>(&mut self, io: &mut I, src: &[i16], x: usize, y: usize) {
+        let (h, w) = (self.h, self.w); let p = y * w + x; let n = self.pos.as_ref().map_or(0, |v| v.1.len());
+        for k in 0..n {
+            let ch = { let ps = self.pos.as_mut().unwrap(); ps.2 = k; ps.1[k] };
+            let i = ch * h * w + p;
+            let v = self.value(io, ch, x, y, src[i] as i32); self.lat[i] = v;
+            self.esum[p] += (((v.abs() * 16) << 8) / self.s16[ch]).min(256 * 64);
+            self.pos.as_mut().unwrap().0[p] += 1;
+        }
+    }
+    fn set_scales(&mut self, x: usize, y: usize, sc64: &[u16]) {
+        let (h, w) = (self.h, self.w); let p = y * w + x;
+        if let Some((mu, qs, qs2)) = &mut self.aux {
+            for (ch, &v) in sc64.iter().enumerate() { let i = ch * h * w + p; mu[i] = 0; qs[i] = qs_of(v as i32); qs2[i] = qs_of(v as i32 * 3 / 2); }
+        }
+    }
+    fn start_positions(&mut self) {
+        let n = self.c * self.h * self.w; self.aux = Some((vec![0; n], vec![0; n], vec![0; n]));
+        let mut order: Vec<usize> = (0..self.c).filter(|&c| self.cls[c] > 0).collect();
+        order.sort_by_key(|&c| std::cmp::Reverse(self.cls[c]));
+        self.pos = Some((vec![0; self.h * self.w], order, 0));
+    }
+}
+/// Position-major NCZY (version 3), for an outside autoregressive model (tm.rs): positions in raster order, at each one
+/// every channel strongest class first, each value with the model's scale at that spot as context (symbols already
+/// mean-centred: mean 0). `sc64`: scale x64, channel-major, as the decoder will compute them.
+pub fn compress_positions(sym: &[i16], c: usize, h: usize, w: usize, sc64: &[u16]) -> Vec<u8> {
+    assert_eq!(sym.len(), c * h * w); assert_eq!(sc64.len(), c * h * w);
+    let mut m = Model::new(c, h, w);
+    let mut cls: Vec<u8> = (0..c).map(|ch| class_of(&sym[ch * h * w..(ch + 1) * h * w])).collect();
+    let mut e = Enc { x1: 0, x2: 0xFFFF_FFFF, out: Vec::new() };
+    let mut csm = vec![SM_INIT; NCLS * 32]; code_classes(&mut e, &mut cls, &mut csm);
+    for ch in 0..c { m.cls[ch] = cls[ch]; m.s16[ch] = s16_of(cls[ch]); }
+    m.start_positions(); let hw = h * w; let mut sc = vec![0u16; c];
+    for y in 0..h { for x in 0..w {
+        for ch in 0..c { sc[ch] = sc64[ch * hw + y * w + x]; }
+        m.set_scales(x, y, &sc); m.position(&mut e, sym, x, y);
+    } }
+    e.out.extend_from_slice(&e.x1.to_be_bytes());
+    let mut out = Vec::with_capacity(HEADER + e.out.len());
+    out.extend_from_slice(MAGIC); out.push(VERSION_POS);
+    for v in [c, h, w] { out.extend_from_slice(&(v as u16).to_le_bytes()); }
+    out.extend_from_slice(&e.out); out
+}
+/// Decoding side of compress_positions: the caller computes each position's scales from what is decoded so far.
+pub struct PosDecoder { m: Model, d: Dec, zeros: Vec<i16>, pub c: usize, pub h: usize, pub w: usize }
+impl PosDecoder {
+    pub fn new(blob: &[u8]) -> Option<PosDecoder> {
+        if blob.len() < HEADER || &blob[..4] != MAGIC || blob[4] != VERSION_POS { return None; }
+        let g = |i: usize| u16::from_le_bytes([blob[i], blob[i + 1]]) as usize;
+        let (c, h, w) = (g(5), g(7), g(9));
+        if c == 0 || h == 0 || w == 0 || c * h * w > 1 << 26 { return None; }
+        let mut d = Dec { x1: 0, x2: 0xFFFF_FFFF, x: 0, buf: blob[HEADER..].to_vec(), pos: 0 };
+        for _ in 0..4 { d.x = (d.x << 8) | d.next_in(); }
+        let mut cls = vec![0u8; c]; let mut csm = vec![SM_INIT; NCLS * 32]; code_classes(&mut d, &mut cls, &mut csm);
+        let mut m = Model::new(c, h, w);
+        for ch in 0..c { m.cls[ch] = cls[ch]; m.s16[ch] = s16_of(cls[ch]); }
+        m.start_positions();
+        Some(PosDecoder { m, d, zeros: vec![0; c * h * w], c, h, w })
+    }
+    /// The symbols at (x, y), every channel, given that position's scales x64 (per channel).
+    pub fn at(&mut self, x: usize, y: usize, sc64: &[u16]) -> Vec<i32> {
+        self.m.set_scales(x, y, sc64); self.m.position(&mut self.d, &self.zeros, x, y);
+        let hw = self.h * self.w; (0..self.c).map(|ch| self.m.lat[ch * hw + y * self.w + x]).collect()
+    }
 }
 
 /// A model that predicts each channel group's mean and scale from the groups before it (see wonder::Predictor).
