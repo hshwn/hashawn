@@ -43,7 +43,7 @@ fn shuffle(x: &[f32], c: usize, h: usize, w: usize) -> Vec<f32> {
     o
 }
 
-pub struct Tm { pub n: usize, pub medians: Vec<f32>, hs: Vec<Conv>, ctx: Dense, ep: [Dense; 3] }
+pub struct Tm { pub n: usize, pub medians: Vec<f32>, hs: Vec<Conv>, ctx: Dense, ep: [Dense; 3], pub id: u32 }
 impl Tm {
     pub fn load(b: &[u8]) -> Option<Tm> {
         if b.len() < 6 || !(&b[..4] == b"NCZT" || &b[..4] == b"NCZU") { return None; }
@@ -57,7 +57,9 @@ impl Tm {
         let mut d = |ci: usize, co: usize| -> Option<Dense> { Some(Dense { ci, co, w: r.mat(co, ci)?, b: r.f32s(co)? }) };
         let e1 = d(4 * n, a1)?; let e2 = d(a1, a2)?; let e3 = d(a2, 2 * n)?;
         if r.at != b.len() { return None; }
-        Some(Tm { n, medians, hs, ctx, ep: [e1, e2, e3] })
+        // id: FNV-1a of the weights file (ties a stream to the exact model that made it, as wonder::Predictor's id)
+        let mut id = 0x811c_9dc5u32; for &x in b { id = (id ^ x as u32).wrapping_mul(0x0100_0193); }
+        Some(Tm { n, medians, hs, ctx, ep: [e1, e2, e3], id })
     }
     /// h_s of the hyperprior symbols (N planes of hz x wz): 2N planes at (4 hz) x (4 wz).
     fn params(&self, zq: &[i16], hz: usize, wz: usize) -> Vec<f32> {
@@ -99,6 +101,10 @@ struct Buf { nb: Vec<f32>, e0: Vec<f32>, e1: Vec<f32>, e2: Vec<f32>, out: Vec<f3
 impl Buf { fn new(tm: &Tm) -> Buf { let n = tm.n; Buf { nb: vec![0.0; 12 * n], e0: vec![0.0; 4 * n], e1: vec![0.0; tm.ep[0].co], e2: vec![0.0; tm.ep[1].co], out: vec![0.0; 2 * n] } } }
 fn sc64(s: f32) -> u16 { (s.max(SCALE_MIN) * 64.0 + 0.5).min(65535.0) as u16 }
 
+/// The hyperprior's symbols from its encoder's float output z (N x hz x wz): round(z - median).
+pub fn z_symbols(z: &[f32], hz: usize, wz: usize, tm: &Tm) -> Vec<i16> {
+    let k = hz * wz; (0..z.len()).map(|i| (z[i] - tm.medians[i / k]).round().clamp(-32767.0, 32767.0) as i16).collect()
+}
 /// Code latents y (N x h x w, f32 from the encoder network) and the hyperprior's symbols (N x h/4 x w/4). Returns the
 /// stream and y^ (what the decoder will rebuild: the picture decoder's input).
 pub fn compress(y: &[f32], h: usize, w: usize, zq: &[i16], tm: &Tm) -> Option<(Vec<u8>, Vec<f32>)> {

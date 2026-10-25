@@ -1170,3 +1170,23 @@ the teacher's mean in one parallel pass over y, CompressAI's training shortcut; 
 from v2): 27.20 dB on the decoder's real y^ (v2 on round(y): 27.33). So -16.6% bytes for -0.13 dB; an 80k-step run is
 going. student.py: MC, INIT (fine-tune from a checkpoint), NPHOTOS, MEMFRAC (hard GPU memory cap); pred.py: HOST,
 MEMFRAC. Not in the page yet (its format is being changed on branch rnd/tiny-format-2026-10-25).
+
+### Ported entropy model in the page (q1), branch rnd/tm-2026-10-26 (2026-10-26)
+
+NCZW v7: the latent section is an NCZA stream (ncz::tm), id = the model's weights id (older files decode as before;
+older pages say "newer version"). Browser: the encoder keeps float latents, runs the teacher's hyperprior encoder h_a
+(new q1.ha.onnx, 8-bit, 0.57 MB packed; 99.9% of z symbols equal to PyTorch's), codes through the model (q1.tm, 8-bit
+NCZU, 2.69 MB), picks swatches against the decoded y^ and stitches them into the finished stream; unpacking rebuilds y^
+in wasm (bit for bit native's; 0.26 s a Kodak photo each way, relaxed and plain SIMD alike) and decodes it with the
+student fine-tuned on mean-centred latents (80k steps: 27.28 dB on the decoder's y^; v2 on round(y) 27.33). q1 download
+6.75 MB (was 4.0). Also fixed: the decoder read the quality from 16 header bytes, but the v6 header check wants 18, so
+every v6+ file was refused as "a tiny size this page does not have".
+Kodak 8, browser files, against the same tiny files before (compact fingerprint) and AVIF / JPEG XL at equal size:
+
+| q1 | bytes (mean) | tiny smooth | tiny textured | AVIF same size | JPEG XL |
+|---|---|---|---|---|---|
+| before (group predictor) | 11,188 | 0.7 / 27.24 | -5.4 / 26.64 | 19.9 / 27.52 | -5.4 / 21.45 |
+| now (ported model) | 9,578 (-14.4%) | -1.0 / 27.19 | -7.0 / 26.60 | 11.5 / 26.89 | does not fit on 3 of 8 |
+
+(SSIMULACRA2 / PSNR.) Tiny now beats AVIF on PSNR at equal size (+0.30 dB; was -0.28) and halves the SSIMULACRA2 gap.
+q2 and q4 still use the group predictor (they need their own weights export, h_a and a fine-tuned student).

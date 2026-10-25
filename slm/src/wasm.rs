@@ -20,6 +20,8 @@ static mut PREDICTORS: Vec<(u8, ncz::wonder::Predictor)> = Vec::new();
 static mut WDIM: [u32; 6] = [0; 6];
 #[allow(static_mut_refs)]
 fn predictor(q: u8) -> Option<&'static ncz::wonder::Predictor> { unsafe { PREDICTORS.iter().find(|p| p.0 == q).map(|p| &p.1) } }
+static mut TMS: Vec<(u8, ncz::tm::Tm)> = Vec::new();
+#[allow(static_mut_refs)] fn tm_for(q: u8) -> Option<&'static ncz::tm::Tm> { unsafe { TMS.iter().find(|p| p.0 == q).map(|p| &p.1) } }
 #[allow(static_mut_refs)]
 fn assets() -> Option<&'static Assets> { unsafe { ASSETS.as_deref() } }
 
@@ -182,7 +184,14 @@ fn leak(mut v: Vec<u8>) -> *mut u8 { v.shrink_to_fit(); unsafe { OUT_LEN = v.len
 /// Can this NCZW stream be opened at all: 0 yes, 1 not NCZW, 2 made by a newer version, 3 damaged (cut short, or the CRC is wrong).
 #[no_mangle] pub unsafe extern "C" fn nczl_w_check(p: *const u8, n: usize) -> u32 { ncz::wonder::check(std::slice::from_raw_parts(p, n)) as u32 }
 /// Can a pw x ph picture be stored at quality q (its predictor loaded)? 1 yes, 0 too big (or no predictor).
-#[no_mangle] pub extern "C" fn nczl_w_fits(q: u32, pw: usize, ph: usize) -> u32 { predictor(q as u8).is_some_and(|pr| ncz::wonder::fits(pr.channels(), pw, ph)) as u32 }
+#[no_mangle] pub extern "C" fn nczl_w_fits(q: u32, pw: usize, ph: usize) -> u32 {
+    predictor(q as u8).map(|pr| pr.channels()).or(tm_for(q as u8).map(|t| t.n)).is_some_and(|c| ncz::wonder::fits(c, pw, ph)) as u32
+}
+/// The stream with its swatch section replaced (sn 0: none): ptr (len nczl_out_len), 0 = not an NCZW v5+ stream.
+#[no_mangle] pub unsafe extern "C" fn nczl_w_set_swatch(p: *const u8, n: usize, s: *const u8, sn: usize) -> *mut u8 {
+    let sw = if sn == 0 { &[][..] } else { std::slice::from_raw_parts(s, sn) };
+    match ncz::wonder::with_swatches(std::slice::from_raw_parts(p, n), sw) { Some(v) => leak(v), None => std::ptr::null_mut() }
+}
 /// Was this NCZW stream made with the predictor loaded for its quality? (1 yes, 0 no or not loaded)
 #[no_mangle] pub unsafe extern "C" fn nczl_w_match(p: *const u8, n: usize) -> u32 {
     let Some((q, _, _, id)) = ncz::wonder::info(std::slice::from_raw_parts(p, n)) else { return 0 };
@@ -198,3 +207,40 @@ fn leak(mut v: Vec<u8>) -> *mut u8 { v.shrink_to_fit(); unsafe { OUT_LEN = v.len
     }
 }
 #[no_mangle] pub unsafe extern "C" fn nczl_w_dim(i: usize) -> u32 { WDIM[i.min(5)] }
+/// The teacher's entropy model (NCZT / NCZU weights, ncz::tm) for quality q: 1 loaded, 0 bad.
+#[no_mangle] #[allow(static_mut_refs)] pub unsafe extern "C" fn nczl_tm_load(p: *const u8, n: usize, q: u32) -> u32 {
+    match ncz::tm::Tm::load(std::slice::from_raw_parts(p, n)) { Some(t) => { TMS.retain(|x| x.0 != q as u8); TMS.push((q as u8, t)); 1 } None => 0 }
+}
+/// Version-7 NCZW from float latents y (c x h x w) and the hyperprior encoder's float z (c x h/4 x w/4), with the
+/// grain fingerprint, detail map and swatch section (n 0: none): ptr (len nczl_out_len). y^ (what the decoder will
+/// rebuild) is kept for nczl_w_yhat.
+#[no_mangle] #[allow(clippy::too_many_arguments, static_mut_refs)] pub unsafe extern "C" fn nczl_w_enc_tm(y: *const f32, c: usize, h: usize, w: usize, z: *const f32, pw: usize, ph: usize, q: u32,
+        g: *const u8, gn: usize, m: *const u8, mn: usize, s: *const u8, sn: usize) -> *mut u8 {
+    let Some(t) = tm_for(q as u8) else { return std::ptr::null_mut() };
+    let part = |p: *const u8, n: usize| if n == 0 { &[][..] } else { std::slice::from_raw_parts(p, n) };
+    let zq = ncz::tm::z_symbols(std::slice::from_raw_parts(z, c * h * w / 16), h / 4, w / 4, t);
+    match ncz::wonder::compress_tm(std::slice::from_raw_parts(y, c * h * w), c, h, w, pw, ph, q as u8, t, &zq, part(g, gn), part(m, mn), part(s, sn)) {
+        Some((v, yh)) => { YHAT = yh; leak(v) }
+        None => std::ptr::null_mut(),
+    }
+}
+static mut YHAT: Vec<f32> = Vec::new();
+/// y^ of the last nczl_w_enc_tm, f32 LE: ptr (len nczl_out_len).
+#[no_mangle] #[allow(static_mut_refs)] pub unsafe extern "C" fn nczl_w_yhat() -> *mut u8 { leak(std::mem::take(&mut YHAT).iter().flat_map(|v| v.to_le_bytes()).collect()) }
+/// Is this NCZW stream's latent section the teacher's entropy model (decode with nczl_w_dec_tm)? 1 yes, 0 no.
+#[no_mangle] pub unsafe extern "C" fn nczl_w_uses_tm(p: *const u8, n: usize) -> u32 { ncz::wonder::uses_tm(std::slice::from_raw_parts(p, n)) as u32 }
+/// Was this NCZA-carrying stream made with the entropy model loaded for its quality? 1 yes, 0 no or not loaded.
+#[no_mangle] pub unsafe extern "C" fn nczl_w_tm_match(p: *const u8, n: usize) -> u32 {
+    let Some((q, _, _, id)) = ncz::wonder::info(std::slice::from_raw_parts(p, n)) else { return 0 };
+    tm_for(q).map_or(0, |t| (t.id == id) as u32)
+}
+/// y^ (f32 LE, c x h x w) of a version-7 NCZA stream: ptr (len nczl_out_len), 0 = bad; dimensions in nczl_w_dim.
+#[no_mangle] pub unsafe extern "C" fn nczl_w_dec_tm(p: *const u8, n: usize) -> *mut u8 {
+    let b = std::slice::from_raw_parts(p, n);
+    let Some((q, pw, ph, _)) = ncz::wonder::info(b) else { return std::ptr::null_mut() };
+    let Some(t) = tm_for(q) else { return std::ptr::null_mut() };
+    match ncz::wonder::decompress_tm(b, t) {
+        Some((yh, c, h, w)) => { WDIM = [c as u32, h as u32, w as u32, pw as u32, ph as u32, q as u32]; leak(yh.iter().flat_map(|v| v.to_le_bytes()).collect()) }
+        None => std::ptr::null_mut(),
+    }
+}

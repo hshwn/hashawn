@@ -118,7 +118,11 @@ async function decompress(u8, id, wantTex) {
 const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
 const QUALITIES = [1, 2, 4];                                   // the teacher's qualities shipped: 1 smallest, 4 sharpest
 const TEX = new Set([1]);                                      // sizes with a texture decoder (files made before swatches)
-const SWATCH = new Set([1, 2, 4]);                                 // sizes whose files carry swatches (real texture samples)
+const SWATCH = new Set([1, 2, 4]);
+// sizes coded with the teacher's own entropy model (ncz tm.rs: hyperprior + causal context, mean-centred latents,
+// ~17% smaller than the group predictor): their files need the hyperprior encoder (ha), the model (tm) and a decoder
+// trained on mean-centred latents (dmc); the predictor (pred) and plain decoder (dec) are only for older files
+const TMQ = new Set([1]);                                 // sizes whose files carry swatches (real texture samples)
 let ortReady = null; const sessions = {}; const predLoaded = {};
 function ortLoad() {
   if (!ortReady) ortReady = (async () => { try { importScripts(ORT + 'ort.webgpu.min.js'); } catch { throw fail('network', 'could not fetch the network runtime: no connection?'); }
@@ -134,8 +138,8 @@ async function fetchProgress(url, id, label, part) {
   return readAll(res, (got) => postMessage({ id, type: 'model', done: got, total, label, part }));
 }
 // the network files; '.ncz' ones are packed with our own codec (8-bit weights pack to ~6 bits, 4-bit to ~3) and unpacked here
-const file = (name, q) => `learned/q${q}.${name}${name === 'pred' ? '' : '.onnx'}.ncz${name === 'tex' ? '?v=7' : ''}`;   // ?v: the texture decoder was replaced (v7)
-const LABEL = { enc: 'the encoder', dec: 'the decoder', pred: 'the predictor', tex: 'the texture decoder' };
+const file = (name, q) => `learned/q${q}.${name}${name === 'pred' || name === 'tm' ? '' : '.onnx'}.ncz${name === 'tex' ? '?v=7' : ''}`;   // ?v: the texture decoder was replaced (v7)
+const LABEL = { enc: 'the encoder', dec: 'the decoder', pred: 'the predictor', tex: 'the texture decoder', ha: 'the hyperprior', tm: 'the entropy model', dmc: 'the decoder' };
 // The texture decoder's side input: the original's fine-detail energy per 32 x 32 block (brightness minus its Gaussian
 // blur, sigma 1.5, rms; log2 in half steps, -4..15), measured on the picture padded to W x H by repeating its edges.
 // Must match bench/wonder/texture2.py's detail_map. Stored packed (ncz) in the file, ~150 B a photo.
@@ -178,6 +182,13 @@ async function predictor(q, id) {
   const p = put(b); const ok = wasm.nczl_w_load(p, b.length, q); wasm.nczl_free(p, b.length);
   if (!ok) throw fail('network', 'the predictor came down damaged; try again'); predLoaded[q] = true;
 }
+const tmLoaded = {};
+async function tmLoad(q, id) {
+  if (tmLoaded[q]) return;
+  const b = await fetchModel('tm', q, id);
+  const p = put(b); const ok = wasm.nczl_tm_load(p, b.length, q); wasm.nczl_free(p, b.length);
+  if (!ok) throw fail('network', 'the entropy model came down damaged; try again'); tmLoaded[q] = true;
+}
 // Any size: both networks run in overlapping tiles (core T px, margin M px each side; the margins are cut away), so
 // memory stays flat. Cores and margins are multiples of 64 px, on the encoder's grid; a picture up to T px a side is
 // one tile, exactly as a single pass.
@@ -191,7 +202,7 @@ async function learnedEncode(u8, id, q, wantTex) {
   let bmp; try { bmp = await createImageBitmap(new Blob([u8])); } catch { throw fail('damaged', 'could not read that picture: it may be damaged'); }
   const pw = bmp.width, ph = bmp.height;
   // the decoder takes so many latents and no more: refuse here rather than write a file nobody can open
-  await predictor(q, id);
+  const tmq = TMQ.has(q); if (tmq) await tmLoad(q, id); else await predictor(q, id);
   if (!wasm.nczl_w_fits(q, pw, ph)) { bmp.close(); throw fail('too-big', `${pw} x ${ph} px is more than a tiny file can hold; try a smaller copy`); }
   const W = Math.ceil(pw / 64) * 64, H = Math.ceil(ph / 64) * 64;
   const cv = new OffscreenCanvas(pw, ph); const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0); bmp.close();
@@ -215,27 +226,47 @@ async function learnedEncode(u8, id, q, wantTex) {
       for (let xx = 0; xx < tw; xx++) { const s = (sy * pw + Math.min(x0 + xx, pw - 1)) * 4, d = yy * tw + xx;
         x[d] = rgba[s] / 255; x[tw * th + d] = rgba[s + 1] / 255; x[2 * tw * th + d] = rgba[s + 2] / 255; } }
     const y = (await enc.run({ x: new ort.Tensor('float32', x, [1, 3, th, tw]) })).y;
-    const [, cc, lh, lw] = y.dims; if (!lat) { c = cc; lat = new Int16Array(c * h * w); }
+    const [, cc, lh, lw] = y.dims; if (!lat) { c = cc; lat = tmq ? new Float32Array(c * h * w) : new Int16Array(c * h * w); }
     const oy = (ty - y0) / 16, ox = (tx - x0) / 16, ch_ = Math.min(TL, h - ty / 16), cw_ = Math.min(TL, w - tx / 16);
-    for (let q = 0; q < c; q++) for (let yy = 0; yy < ch_; yy++) for (let xx = 0; xx < cw_; xx++)
-      lat[(q * h + ty / 16 + yy) * w + tx / 16 + xx] = Math.max(-32767, Math.min(32767, Math.round(y.data[(q * lh + oy + yy) * lw + ox + xx])));
+    for (let q = 0; q < c; q++) for (let yy = 0; yy < ch_; yy++) for (let xx = 0; xx < cw_; xx++) {
+      const v = y.data[(q * lh + oy + yy) * lw + ox + xx];
+      lat[(q * h + ty / 16 + yy) * w + tx / 16 + xx] = tmq ? v : Math.max(-32767, Math.min(32767, Math.round(v))); }
     y.dispose && y.dispose();
+  }
+  // the teacher's entropy model: hyperprior z from the float latents, then the latents coded (mean-centred); what the
+  // decoder will rebuild, y^, is what the swatches are chosen against
+  let tmOut = null, yh = null;
+  if (tmq) {
+    postMessage({ id, type: 'progress', done: tiles.length, total: tiles.length + 1, phase: 'learn-pack' }); await yieldNow();
+    const z = (await (await session('ha', q, id)).run({ y: new ort.Tensor('float32', lat, [1, c, h, w]) })).z;
+    const lp = put(new Uint8Array(lat.buffer)), zp = put(new Uint8Array(z.data.buffer, z.data.byteOffset, z.data.byteLength)); z.dispose && z.dispose();
+    const gp = grain.length ? put(grain) : 0;
+    const tp = wasm.nczl_w_enc_tm(lp, c, h, w, zp, pw, ph, q, gp, grain.length, 0, 0, 0, 0);
+    wasm.nczl_free(lp, lat.length * 4); wasm.nczl_free(zp, c * h * w / 4); if (gp) wasm.nczl_free(gp, grain.length);
+    if (!tp) throw new Error('could not pack the latents');
+    tmOut = takeOut(tp); const yb = takeOut(wasm.nczl_w_yhat()); yh = new Float32Array(yb.buffer, yb.byteOffset, yb.length / 4);
   }
   // swatches: the picture as unpack will show it (decoded, grain regrown), then which real texture goes where
   let sw = new Uint8Array(0), d = null;
   if (SWATCH.has(q)) {
-    d = await paint(lat, c, h, w, pw, ph, await session('dec', q, id), id, null);
+    d = tmq ? await paint(yh, c, h, w, pw, ph, await session('dmc', q, id), id, null) : await paint(lat, c, h, w, pw, ph, await session('dec', q, id), id, null);
     regrow(d, pw, ph, grain.length ? grain : null, id);
     postMessage({ id, type: 'progress', done: 0, total: 1, phase: 'learn-swatch' }); await yieldNow();
     const o = rgbOf(rgba), r = rgbOf(d); const op = put(o), rp = put(r);
     const sp = wasm.nczl_sw_enc(op, rp, pw, ph); wasm.nczl_free(op, o.length); wasm.nczl_free(rp, r.length); if (sp) sw = takeOut(sp);
   }
-  postMessage({ id, type: 'progress', done: tiles.length, total: tiles.length + 1, phase: 'learn-pack' }); await yieldNow();
-  const lp = put(new Uint8Array(lat.buffer)); const gp = grain.length ? put(grain) : 0; const sp = sw.length ? put(sw) : 0;
-  const zp = wasm.nczl_w_enc_sw(lp, c, h, w, pw, ph, q, gp, grain.length, 0, 0, sp, sw.length); wasm.nczl_free(lp, lat.length * 2);
-  if (gp) wasm.nczl_free(gp, grain.length); if (sp) wasm.nczl_free(sp, sw.length);
-  if (!zp) throw new Error('could not pack the latents');
-  const out = takeOut(zp);
+  let out;
+  if (tmq) {                  // the swatch section goes into the finished stream
+    if (sw.length) { const p = put(tmOut), sp = put(sw); const r = wasm.nczl_w_set_swatch(p, tmOut.length, sp, sw.length); wasm.nczl_free(p, tmOut.length); wasm.nczl_free(sp, sw.length);
+      if (!r) throw new Error('could not pack the latents'); out = takeOut(r); } else out = tmOut;
+  } else {
+    postMessage({ id, type: 'progress', done: tiles.length, total: tiles.length + 1, phase: 'learn-pack' }); await yieldNow();
+    const lp = put(new Uint8Array(lat.buffer)); const gp = grain.length ? put(grain) : 0; const sp = sw.length ? put(sw) : 0;
+    const zp = wasm.nczl_w_enc_sw(lp, c, h, w, pw, ph, q, gp, grain.length, 0, 0, sp, sw.length); wasm.nczl_free(lp, lat.length * 2);
+    if (gp) wasm.nczl_free(gp, grain.length); if (sp) wasm.nczl_free(sp, sw.length);
+    if (!zp) throw new Error('could not pack the latents');
+    out = takeOut(zp);
+  }
   const pic = d ? await toPng(d, pw, ph, wantTex && sw.length ? sw : null, id) : null;
   return { out, ep: enc.ep, alpha, pic, picTex: !!(pic && wantTex && sw.length) };
 }
@@ -293,22 +324,23 @@ async function learnedDecode(u8, id, wantTex) {
   if (ck === 1) throw fail('unknown', 'not a file this page makes');
   if (ck === 2) throw fail('version', 'made by a newer version of this page: reload it');
   if (ck === 3) throw fail('damaged', 'the file is damaged or cut short');
-  const pp = put(u8.subarray(0, 16)); const q = wasm.nczl_is_nczw(pp, 16) & 255; wasm.nczl_free(pp, 16);
+  const hn = Math.min(u8.length, 64); const pp = put(u8.subarray(0, hn)); const q = wasm.nczl_is_nczw(pp, hn) & 255; wasm.nczl_free(pp, hn);   // the header check wants >= 18 bytes from v6 on
   if (!QUALITIES.includes(q)) throw fail('version', 'made with a tiny size this page does not have');
-  await predictor(q, id);
+  const tp0 = put(u8); const tmf = !!wasm.nczl_w_uses_tm(tp0, u8.length); wasm.nczl_free(tp0, u8.length);
+  if (tmf) await tmLoad(q, id); else await predictor(q, id);
   // textured, when asked for: the file's swatches (real texture samples) laid on the decoded picture; older files
   // carry a detail map instead, for the texture decoder
   const mq0 = put(u8); const sq = wasm.nczl_w_swatch(mq0, u8.length); const sw = sq ? takeOut(sq) : null;
   const mq = sw ? 0 : wasm.nczl_w_dmap(mq0, u8.length); wasm.nczl_free(mq0, u8.length);
   const mraw = mq ? unpackBytes(takeOut(mq)) : null; const texDec = !!(wantTex && TEX.has(q) && mraw); const swt = !!(wantTex && sw);
-  const dec = await session(texDec ? 'tex' : 'dec', q, id);
+  const dec = await session(tmf ? 'dmc' : texDec ? 'tex' : 'dec', q, id);
   postMessage({ id, type: 'progress', done: 0, total: 2, phase: 'learn-unpack' }); await new Promise((r) => setTimeout(r, 0));
   const p = put(u8);
-  if (!wasm.nczl_w_match(p, u8.length)) { wasm.nczl_free(p, u8.length); throw fail('version', 'made with a different version of tiny mode (another predictor)'); }
+  if (!(tmf ? wasm.nczl_w_tm_match(p, u8.length) : wasm.nczl_w_match(p, u8.length))) { wasm.nczl_free(p, u8.length); throw fail('version', `made with a different version of tiny mode (another ${tmf ? 'entropy model' : 'predictor'})`); }
   const gq = wasm.nczl_w_grain(p, u8.length); const grain = gq ? takeOut(gq) : null;
-  const lp = wasm.nczl_w_dec(p, u8.length); wasm.nczl_free(p, u8.length);
+  const lp = tmf ? wasm.nczl_w_dec_tm(p, u8.length) : wasm.nczl_w_dec(p, u8.length); wasm.nczl_free(p, u8.length);
   if (!lp) throw fail('damaged', 'the file is damaged: its latents do not decode');
-  const raw = takeOut(lp); const lat = new Int16Array(raw.buffer, raw.byteOffset, raw.length / 2);
+  const raw = takeOut(lp); const lat = tmf ? new Float32Array(raw.buffer, raw.byteOffset, raw.length / 4) : new Int16Array(raw.buffer, raw.byteOffset, raw.length / 2);
   const [c, h, w, pw, ph] = [0, 1, 2, 3, 4].map((i) => wasm.nczl_w_dim(i));
   const d = await paint(lat, c, h, w, pw, ph, dec, id, texDec ? mraw : null);
   regrow(d, pw, ph, grain, id);

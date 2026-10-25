@@ -17,7 +17,7 @@
 use crate::lat::{self, GroupModel};
 
 pub const MAGIC: &[u8; 4] = b"NCZW";
-pub const VERSION: u8 = 6;      // 6: + CRC-32; 5: + swatch section; 4: + detail map section; 3: + grain; 2: none (all still decode)
+pub const VERSION: u8 = 7;      // 7: latents may be an NCZA stream (tm.rs); 6: + CRC-32; 5: + swatch section; 4: + detail map; 3: + grain; 2: none (all still decode)
 const HEAD2: usize = 4 + 1 + 1 + 4 + 4;
 
 // scale buckets: log(scale) against log((((11 << b) >> 2) - 0.5) / 64); scale >= 0.11
@@ -198,6 +198,42 @@ pub fn compress_swatch(lat: &[i16], c: usize, h: usize, w: usize, pw: usize, ph:
     out.extend_from_slice(&(sw.len() as u32).to_le_bytes()); out.extend_from_slice(sw);
     out.extend_from_slice(&lat::compress_groups(lat, c, h, w, p));
     let crc = crate::pngc::crc32(&out); out.extend_from_slice(&crc.to_le_bytes()); Some(out)
+}
+/// Version 7, the teacher's own entropy model (tm.rs): float latents y (C x H x W from the encoder network) and the
+/// hyperprior's symbols; the latent section is an NCZA stream and the id field holds the model's weights id. Returns
+/// the stream and y^, the mean-centred latents the decoder will rebuild (the picture decoder's input).
+#[allow(clippy::too_many_arguments)]
+pub fn compress_tm(y: &[f32], c: usize, h: usize, w: usize, pw: usize, ph: usize, q: u8, tm: &crate::tm::Tm, zq: &[i16], grain: &[u8], dmap: &[u8], sw: &[u8]) -> Option<(Vec<u8>, Vec<f32>)> {
+    if c != tm.n || !fits(c, pw, ph) || pw > w * 16 || ph > h * 16 || pw + 64 <= w * 16 || ph + 64 <= h * 16 { return None; }
+    let (ys, yh) = crate::tm::compress(y, h, w, zq, tm)?;
+    let mut out = Vec::new();
+    out.extend_from_slice(MAGIC); out.push(VERSION); out.push(q);
+    out.extend_from_slice(&(pw as u16).to_le_bytes()); out.extend_from_slice(&(ph as u16).to_le_bytes());
+    out.extend_from_slice(&tm.id.to_le_bytes());
+    out.extend_from_slice(&(grain.len() as u32).to_le_bytes()); out.extend_from_slice(grain);
+    out.extend_from_slice(&(dmap.len() as u32).to_le_bytes()); out.extend_from_slice(dmap);
+    out.extend_from_slice(&(sw.len() as u32).to_le_bytes()); out.extend_from_slice(sw);
+    out.extend_from_slice(&ys);
+    let crc = crate::pngc::crc32(&out); out.extend_from_slice(&crc.to_le_bytes()); Some((out, yh))
+}
+/// The same stream with its swatch section replaced (the encoder builds swatches from the picture the latents decode
+/// to, so they come after the latents are coded). Written as the stream's own version, CRC recomputed (version 6 on).
+pub fn with_swatches(b: &[u8], sw: &[u8]) -> Option<Vec<u8>> {
+    let (grain, dmap, _, lat) = parts(b)?; let v = b[4]; if v < 5 { return None; }
+    let mut out = b[..HEAD2].to_vec();
+    out.extend_from_slice(&(grain.len() as u32).to_le_bytes()); out.extend_from_slice(grain);
+    out.extend_from_slice(&(dmap.len() as u32).to_le_bytes()); out.extend_from_slice(dmap);
+    out.extend_from_slice(&(sw.len() as u32).to_le_bytes()); out.extend_from_slice(sw);
+    out.extend_from_slice(lat);
+    if v >= 6 { let crc = crate::pngc::crc32(&out); out.extend_from_slice(&crc.to_le_bytes()); }
+    Some(out)
+}
+/// Is the latent section an NCZA stream (decode with decompress_tm)?
+pub fn uses_tm(b: &[u8]) -> bool { parts(b).is_some_and(|p| p.3.starts_with(crate::tm::MAGIC)) }
+/// y^ (C x H x W) and (C, H, W) from a version-7 NCZA stream. None if damaged or made with other weights.
+pub fn decompress_tm(b: &[u8], tm: &crate::tm::Tm) -> Option<(Vec<f32>, usize, usize, usize)> {
+    let (_, _, _, id) = info(b)?; if id != tm.id { return None; }
+    crate::tm::decompress(parts(b)?.3, tm)
 }
 /// Can a `pw` x `ph` picture with `c` latent channels be stored (and so opened again)? The decoder refuses more than
 /// lat::MAX_VALUES latents; the picture is padded to a multiple of 64 px, a latent per 16 x 16 px.

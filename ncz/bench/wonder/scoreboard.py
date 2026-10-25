@@ -55,6 +55,7 @@ for n in NAMES:
     print(line, flush=True)
     if n in ("13", "08", "05"):
         H, W = o.shape[:2]; y0, x0 = (40, 60) if n == "13" else (H // 2 - 100, W // 2 - 150)
-        rows.append(np.concatenate([a[y0:y0 + 200, x0:x0 + 300] for a in [o] + [ims[c][1] for c in ("tiny textured", "JPEG XL", "AVIF", "WebP") if ims[c] is not None]], 1))
+        # columns: original, tiny textured, JPEG XL, AVIF (grey where a codec cannot get that small)
+        rows.append(np.concatenate([a[y0:y0 + 200, x0:x0 + 300] for a in [o] + [ims[c][1] if ims[c] is not None else np.full_like(o, 128) for c in ("tiny textured", "JPEG XL", "AVIF")]], 1))
 print(f"{'mean':8s} {'':7s} " + "".join(f"{tot[c][0] / len(NAMES):9.1f} /{tot[c][1] / len(NAMES):6.2f} ({tot[c][2] / len(NAMES):6.0f})" for c in cols))
 g = np.concatenate(rows, 0); Image.fromarray(g).resize((g.shape[1] * 2, g.shape[0] * 2), Image.NEAREST).save(outp)
