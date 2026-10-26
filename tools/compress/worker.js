@@ -118,11 +118,11 @@ async function decompress(u8, id, wantTex) {
 const ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
 const QUALITIES = [1, 2, 4];                                   // the teacher's qualities shipped: 1 smallest, 4 sharpest
 const TEX = new Set([1]);                                      // sizes with a texture decoder (files made before swatches)
-const SWATCH = new Set([1, 2, 4]);
+const SWATCH = new Set([1, 2, 4]);                             // sizes whose files carry swatches (real texture samples)
 // sizes coded with the teacher's own entropy model (ncz tm.rs: hyperprior + causal context, mean-centred latents,
 // ~17% smaller than the group predictor): their files need the hyperprior encoder (ha), the model (tm) and a decoder
 // trained on mean-centred latents (dmc); the predictor (pred) and plain decoder (dec) are only for older files
-const TMQ = new Set([1]);                                 // sizes whose files carry swatches (real texture samples)
+const TMQ = new Set([1, 2]);
 let ortReady = null; const sessions = {}; const predLoaded = {};
 function ortLoad() {
   if (!ortReady) ortReady = (async () => { try { importScripts(ORT + 'ort.webgpu.min.js'); } catch { throw fail('network', 'could not fetch the network runtime: no connection?'); }

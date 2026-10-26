@@ -1190,3 +1190,7 @@ Kodak 8, browser files, against the same tiny files before (compact fingerprint)
 
 (SSIMULACRA2 / PSNR.) Tiny now beats AVIF on PSNR at equal size (+0.30 dB; was -0.28) and halves the SSIMULACRA2 gap.
 q2 and q4 still use the group predictor (they need their own weights export, h_a and a fine-tuned student).
+q2 too: ported model 99,189 B for Kodak 8's latents (group predictor ~113,400: -12.5%); student fine-tuned on q2's
+mean-centred latents (80k) 28.60 dB on the decoder's y^ (v2 on round(y) 28.61). Browser, Kodak 8: q2 files 15,234 ->
+13,515 B (-11.3%), tiny smooth 18.2 / 28.48, textured 12.9 / 28.09; AVIF at the same size 26.0 / 28.06 (+0.42 dB PSNR
+to tiny; SSIMULACRA2 gap 13.1 -> 7.8). q4 (192-channel teacher) not ported yet.
