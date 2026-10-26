@@ -1194,3 +1194,8 @@ q2 too: ported model 99,189 B for Kodak 8's latents (group predictor ~113,400: -
 mean-centred latents (80k) 28.60 dB on the decoder's y^ (v2 on round(y) 28.61). Browser, Kodak 8: q2 files 15,234 ->
 13,515 B (-11.3%), tiny smooth 18.2 / 28.48, textured 12.9 / 28.09; AVIF at the same size 26.0 / 28.06 (+0.42 dB PSNR
 to tiny; SSIMULACRA2 gap 13.1 -> 7.8). q4 (192-channel teacher) not ported yet.
+q4 (192 channels): ported model 222,284 B for Kodak 8's latents vs 244,153 with the group predictor (-9.0%); 8-bit
+weights 5.94 MB packed + h_a 1.33 MB (q4 now fetches ~13 MB). Student fine-tuned from the shipped q4 one (v2 float,
+250 photos, 80k): 30.87 dB on the decoder's y^ (shipped on round(y): 30.91). Browser, Kodak 8: q4 files 32,397 ->
+28,506 B (-12%), tiny smooth 42.7 / 30.67, textured 41.3 / 30.61; AVIF at the same size 55.1 / 31.29: AVIF still
+ahead at q4, where the student is ~2 dB under the teacher (q1 0.4 dB) - the decoder is q4's lever.

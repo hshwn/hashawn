@@ -122,7 +122,7 @@ const SWATCH = new Set([1, 2, 4]);                             // sizes whose fi
 // sizes coded with the teacher's own entropy model (ncz tm.rs: hyperprior + causal context, mean-centred latents,
 // ~17% smaller than the group predictor): their files need the hyperprior encoder (ha), the model (tm) and a decoder
 // trained on mean-centred latents (dmc); the predictor (pred) and plain decoder (dec) are only for older files
-const TMQ = new Set([1, 2]);
+const TMQ = new Set([1, 2, 4]);
 let ortReady = null; const sessions = {}; const predLoaded = {};
 function ortLoad() {
   if (!ortReady) ortReady = (async () => { try { importScripts(ORT + 'ort.webgpu.min.js'); } catch { throw fail('network', 'could not fetch the network runtime: no connection?'); }
