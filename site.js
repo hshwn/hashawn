@@ -18,8 +18,10 @@
     hello: ["hi! i'm hassan. well, my face.", "hello. yes, it's a ball. keep scrolling.", "oh, hi. don't mind me."],
     poke: ["ow.", "stop that.", "hey!", "my face.", "rude.", "boop yourself."],
     dizzy: ["ok that's enough spinning", "i'm gonna be sick", "where am i", "the room is spinning. or i am."],
-    corner: ["i'm down here.", "those are mine, by the way.", "go on, pull one out."],
-    idle: ["psst.", "spin me.", "still here.", "you can drag the posters out, you know.", "i'm a ball. deal with it."],
+    corner: ["i'm down here.", "those are mine, by the way.", "go on, tap the pile."],
+    idle: ["psst.", "spin me.", "still here.", "you can throw the top poster, you know.", "i'm a ball. deal with it."],
+    spread: ["all of them. so far.", "a poster a week. that's the deal."],
+    riffle: ["ooh, that one.", "keep going.", "next."],
     unmute: ["oh hi.", "can you hear me now?"],
     bye: ["ok bye.", "that one's good right?", "next."],
   };
@@ -224,30 +226,109 @@
     if (Math.random() < 0.4) setTimeout(() => quip(pick(LINES.bye)), 500);
   };
   shade.addEventListener('click', closeIt);
-  addEventListener('keydown', (e) => { if (e.key === 'Escape') closeIt(); });
+  addEventListener('keydown', (e) => { if (e.key !== 'Escape') return; if (openPoster) closeIt(); else if (spread) flip(false); });
+
+  // ---------- posters: a pile you riffle, spread into the grid ----------
+  // every transform here has the same shape, translate rotate scale, so any two of them interpolate cleanly
+  const grid = document.getElementById('grid');
+  const gather = document.getElementById('gather');
+  let order = [...posters];          // order[0] is on top of the pile
+  let spread = false;
+  // each poster lies a little crooked, the same way every visit
+  const lie = posters.map((_, i) => { const h = (n) => (Math.sin((i + 1) * n) * 43758.5453) % 1; return { r: h(12.9898) * 7, x: h(78.233) * 12, y: h(39.425) * 10 }; });
+  const pose = (el, d, fan = 1, dx = 0, dy = 0, dr = 0, s = 1) => {
+    const j = lie[posters.indexOf(el)], k = d === 0 ? 0.25 : 1;   // the top one sits almost straight
+    return `translate(${j.x * k * fan + dx}px, ${j.y * k * fan + Math.min(d, 4) * 3 + dy}px) rotate(${j.r * k * fan + dr}deg) scale(${s})`;
+  };
+  const FLAT = 'translate(0px, 0px) rotate(0deg) scale(1)';
+  const pile = () => order.forEach((el, d) => { el.style.zIndex = String(order.length - d + 2); el.style.transform = pose(el, d); });
+  // move the pile to a new pose from wherever it is right now (mid-animation included)
+  const pileTo = (fan, ms) => order.forEach((el, d) => {
+    if (el.classList.contains('lifted')) return;
+    const from = getComputedStyle(el).transform, to = pose(el, d, fan);
+    el.getAnimations().forEach((a) => a.cancel());
+    el.style.transform = to;
+    el.animate([{ transform: from === 'none' ? FLAT : from }, { transform: to }], { duration: ms, easing: 'cubic-bezier(.2,.9,.3,1.15)' });
+  });
+  const layoutRect = (el) => { const t = el.style.transform; el.style.transform = 'none'; const r = el.getBoundingClientRect(); el.style.transform = t; return r; };
+  // the same posters, measured before and after the layout swap, flown between the two
+  const flip = (toSpread) => {
+    if (openPoster || toSpread === spread) return;
+    const before = posters.map((el) => ({ r: layoutRect(el), t: spread ? FLAT : el.style.transform }));
+    posters.forEach((el) => el.getAnimations().forEach((a) => a.cancel()));
+    spread = toSpread;
+    grid.classList.toggle('stacked', !spread);
+    gather.hidden = !spread;
+    if (spread) posters.forEach((el) => { el.style.transform = ''; el.style.zIndex = ''; });
+    else {
+      pile();
+      // gathering from deep in the grid: bring the pile into view first so they fly to where you can see it
+      const top = grid.getBoundingClientRect().top, want = phone() ? 80 : 110;
+      if (top < want) scrollBy({ top: top - want, behavior: 'instant' });
+    }
+    posters.forEach((el, i) => {
+      const a = before[i].r, b = layoutRect(el);
+      const dx = a.left + a.width / 2 - (b.left + b.width / 2), dy = a.top + a.height / 2 - (b.top + b.height / 2);
+      const n = spread ? i : order.indexOf(el);
+      el.animate([
+        { transform: `translate(${dx}px, ${dy}px) ${before[i].t} scale(${a.width / b.width})` },
+        { transform: `translate(0px, 0px) ${spread ? FLAT : el.style.transform} scale(1)` },
+      ], { duration: 520, delay: n * 45, easing: 'cubic-bezier(.2,.9,.25,1.08)', fill: 'backwards' });
+    });
+    lastTouch = performance.now();
+    if (spread) setTimeout(() => quip(pick(LINES.spread)), 450);
+  };
+  // throw the top poster: it leaves the way you threw it and tucks under the pile
+  const riffle = (el, dx, dy) => {
+    const from = el.style.transform, dir = Math.sign(dx) || 1, w = el.offsetWidth;
+    order.push(order.shift());
+    pile();
+    const to = el.style.transform, under = el.style.zIndex;
+    el.style.zIndex = String(order.length + 5);
+    el.animate([
+      { transform: from },
+      { transform: `translate(${dir * Math.max(Math.abs(dx), w * 0.9)}px, ${dy * 0.5}px) rotate(${dir * 12}deg) scale(1)`, offset: 0.45 },
+      { transform: to },
+    ], { duration: 560, easing: 'cubic-bezier(.3,.7,.3,1)' });
+    setTimeout(() => { el.style.zIndex = under; }, 250);
+    order.slice(0, -1).forEach((o, d) => o.animate([{ transform: pose(o, d + 1) }, { transform: pose(o, d) }], { duration: 380, delay: 120, easing: 'cubic-bezier(.2,.9,.3,1.3)', fill: 'backwards' }));
+    if (Math.random() < 0.25) quip(pick(LINES.riffle));
+  };
+  pile();
+  gather.addEventListener('click', () => flip(false));
+  grid.addEventListener('pointerenter', (e) => { if (!spread && e.pointerType === 'mouse') pileTo(1.9, 320); });
+  grid.addEventListener('pointerleave', (e) => { if (!spread && e.pointerType === 'mouse' && !grid.querySelector('.lifted')) pileTo(1, 320); });
 
   posters.forEach((el) => {
     let p = null;
     el.addEventListener('pointerdown', (e) => {
       if (el.classList.contains('open') || e.button !== 0) return;
-      Voice.unlock();
-      p = { x: e.clientX, y: e.clientY, dx: 0, dy: 0, lifted: false, id: e.pointerId };
+      Voice.unlock(); lastTouch = performance.now();
+      // in the pile, whatever you grab, you grab the top one
+      p = { t: spread ? el : order[0], x: e.clientX, y: e.clientY, dx: 0, dy: 0, lifted: false, id: e.pointerId };
     });
     el.addEventListener('pointermove', (e) => {
       if (!p) return;
       p.dx = e.clientX - p.x; p.dy = e.clientY - p.y;
       const d = Math.hypot(p.dx, p.dy);
       if (!p.lifted && d > 8 && (!phone() || Math.abs(p.dx) > Math.abs(p.dy) * 1.4)) {
-        p.lifted = true; el.classList.add('lifted'); try { el.setPointerCapture(p.id); } catch {}
+        p.lifted = true; p.t.getAnimations().forEach((a) => a.cancel());
+        p.t.classList.add('lifted'); try { el.setPointerCapture(p.id); } catch {}
       }
-      if (p.lifted) el.style.transform = `translate(${p.dx}px, ${p.dy}px) scale(1.04) rotate(${p.dx * 0.01}deg)`;
+      if (!p.lifted) return;
+      p.t.style.transform = spread ? `translate(${p.dx}px, ${p.dy}px) rotate(${p.dx * 0.01}deg) scale(1.04)` : pose(p.t, 0, 1, p.dx, p.dy, p.dx * 0.03, 1.04);
     });
     const up = () => {
       if (!p) return;
-      const d = Math.hypot(p.dx, p.dy);
-      if (p.lifted && d > 36) openIt(el);
+      const t = p.t, d = Math.hypot(p.dx, p.dy);
+      if (!spread) {
+        t.classList.remove('lifted');
+        if (p.lifted && d > 80) riffle(t, p.dx, p.dy);
+        else if (p.lifted) { const from = t.style.transform; t.style.transform = pose(t, 0); t.animate([{ transform: from }, { transform: t.style.transform }], { duration: 300, easing: 'cubic-bezier(.2,.9,.3,1.2)' }); }
+        else if (d < 6) flip(true);
+      } else if (p.lifted && d > 36) openIt(el);
       else if (p.lifted) {
-        el.animate([{ transform: el.style.transform }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.2,.9,.3,1.2)' });
+        el.animate([{ transform: el.style.transform }, { transform: FLAT }], { duration: 300, easing: 'cubic-bezier(.2,.9,.3,1.2)' });
         el.style.transform = ''; el.classList.remove('lifted');
       } else if (d < 6) openIt(el);
       p = null;

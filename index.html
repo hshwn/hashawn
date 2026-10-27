@@ -32,7 +32,8 @@
     </nav>
   </header>
 
-  <section class="grid" id="grid" aria-label="Posters">
+  <section class="shelf" aria-label="Posters">
+  <div class="grid stacked" id="grid">
     <a class="poster" href="assets/poupees.webp" data-id="poupees" data-title="Les Poupées de Paris" data-line="twelve badges. one afternoon. five colors and a lot of liberace.">
       <img src="assets/poupees-thumb.jpg" alt="Les Poupées de Paris, a sheet of twelve showbiz badges" width="1131" height="1600" loading="lazy">
       <div class="meta">
@@ -51,6 +52,8 @@
         <p class="cap"><b>RAM!</b><span>2026</span><span>collage, type</span></p>
       </div>
     </a>
+  </div>
+  <button class="dk gather" id="gather" hidden aria-label="Stack the posters" title="stack"><svg><use href="#i-stack"/></svg></button>
   </section>
 </main>
 
