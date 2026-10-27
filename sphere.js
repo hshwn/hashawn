@@ -1,5 +1,6 @@
 // sphere.js — his face on a ball. Raw WebGL2, one sphere, five 2k textures.
-// Screen-space API: the ball lives at (x, y) px with radius r px on a fixed full-window canvas.
+// Screen-space API: the ball lives at (x, y) px with radius r px. The canvas is a fixed square only as
+// big as the ball, moved by transform, and it is only redrawn when the ball changes.
 window.Face = (() => {
   const VS = `#version 300 es
   precision highp float;
@@ -158,7 +159,7 @@ window.Face = (() => {
       poke() { F.squashV = -1.6; },
     };
 
-    let last = performance.now();
+    let last = performance.now(), box = 0, sig = '';
     const spring = (p, v, t, dt, k = 220, c = 26) => { const a = (t - p) * k - v * c; v += a * dt; p += v * dt; return [p, v]; };
     const step = (now) => {
       try { frame(now); } catch (e) { F.error = String(e && e.stack || e); }
@@ -192,16 +193,23 @@ window.Face = (() => {
       }
       [F.squash, F.squashV] = spring(F.squash, F.squashV, 0, dt, 300, 16);
 
-      const w = canvas.clientWidth, h = canvas.clientHeight, dpr = Math.min(devicePixelRatio || 1, 3);
-      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+      // room for the squash, sized in 32px steps so the buffer is rarely reallocated while he grows or shrinks
+      const dpr = Math.min(devicePixelRatio || 1, 3), S = Math.max(32, Math.ceil((F.r * 2.6 + 8) / 32) * 32);
+      if (S !== box) { box = S; canvas.style.width = canvas.style.height = `${S}px`; canvas.width = canvas.height = Math.round(S * dpr); sig = ''; }
+      const ox = Math.round((F.x - S / 2) * dpr) / dpr, oy = Math.round((F.y - S / 2) * dpr) / dpr;
+      const key = `${F.eyesShut || F.dizzy ? 'shut' : 'open'}_${F.mouthOpen ? 'open' : 'closed'}`;
+      const now_ = [ox, oy, F.x, F.y, F.r, F.squash, ...F.q, ...F.roll].map((v) => v.toFixed(3)).join() + key + F.ready;
+      if (now_ === sig) return;           // nothing moved: the last frame is still on screen
+      sig = now_;
+      canvas.style.transform = `translate(${ox}px, ${oy}px)`;
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      const w = S, h = S;
       if (F.ready) {
-        const key = `${F.eyesShut || F.dizzy ? 'shut' : 'open'}_${F.mouthOpen ? 'open' : 'closed'}`;
         gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[key]); gl.uniform1i(U.uAlbedo, 0);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tex.normal); gl.uniform1i(U.uNormal, 1);
         gl.uniformMatrix3fv(U.uRot, false, new Float32Array(mul(qToMat(F.roll), qToMat(F.q))));
-        gl.uniform2f(U.uViewport, w, h); gl.uniform2f(U.uCenter, F.x, F.y); gl.uniform1f(U.uRadius, F.r); gl.uniform1f(U.uSquash, F.squash);
+        gl.uniform2f(U.uViewport, w, h); gl.uniform2f(U.uCenter, F.x - ox, F.y - oy); gl.uniform1f(U.uRadius, F.r); gl.uniform1f(U.uSquash, F.squash);
         gl.drawElements(gl.TRIANGLES, g.idx.length, gl.UNSIGNED_SHORT, 0);
       }
     };

@@ -31,7 +31,7 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- the ball ---------- */
 #face {
-  position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; height: 100lvh;   /* large viewport: never resizes when the phone toolbar collapses */
+  position: fixed; left: 0; top: 0; width: 0; height: 0;   /* a square around the ball, sized and moved by sphere.js */
   z-index: 45; pointer-events: none;          /* above the shade and an open poster; hit-testing is done in JS */
   touch-action: none;
 }
